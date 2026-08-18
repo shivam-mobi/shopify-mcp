@@ -36,8 +36,13 @@ export const AppConfig = {
     genericError: "Failed to get a response from the LLM provider"
   },
 
+  mcp: {
+    ucpAgentProfile: process.env.UCP_AGENT_PROFILE ||
+      "https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json"
+  },
+
   tools: {
-    productSearchName: "search_shop_catalog",
+    productSearchNames: ["search_catalog", "search_shop_catalog"],
     maxProductsToDisplay: 3
   }
 };

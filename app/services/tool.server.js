@@ -10,15 +10,6 @@ import AppConfig from "./config.server";
  * @returns {Object} Tool service with methods for managing tools
  */
 export function createToolService() {
-  /**
-   * Handles a tool error response
-   * @param {Object} toolUseResponse - The error response from the tool
-   * @param {string} toolName - The name of the tool
-   * @param {string} toolUseId - The ID of the tool use request
-   * @param {Array} conversationHistory - The conversation history
-   * @param {Function} sendMessage - Function to send messages to the client
-   * @param {string} conversationId - The conversation ID
-   */
   const handleToolError = async (toolUseResponse, toolName, toolUseId, conversationHistory, sendMessage, conversationId) => {
     if (toolUseResponse.error.type === "auth_required") {
       console.log("Auth required for tool:", toolName);
@@ -30,93 +21,101 @@ export function createToolService() {
     }
   };
 
-  /**
-   * Handles a successful tool response
-   * @param {Object} toolUseResponse - The response from the tool
-   * @param {string} toolName - The name of the tool
-   * @param {string} toolUseId - The ID of the tool use request
-   * @param {Array} conversationHistory - The conversation history
-   * @param {Array} productsToDisplay - Array to add product results to
-   * @param {string} conversationId - The conversation ID
-   */
   const handleToolSuccess = async (toolUseResponse, toolName, toolUseId, conversationHistory, productsToDisplay, conversationId) => {
-    // Check if this is a product search result
-    if (toolName === AppConfig.tools.productSearchName) {
+    if (AppConfig.tools.productSearchNames.includes(toolName)) {
       productsToDisplay.push(...processProductSearchResult(toolUseResponse));
     }
 
     addToolResultToHistory(conversationHistory, toolUseId, toolUseResponse.content, conversationId);
   };
 
-  /**
-   * Processes product search results
-   * @param {Object} toolUseResponse - The response from the tool
-   * @returns {Array} Processed product data
-   */
   const processProductSearchResult = (toolUseResponse) => {
     try {
       console.log("Processing product search result");
-      let products = [];
+      const responseData = extractToolResponseData(toolUseResponse);
+      const products = extractProductsFromResponse(responseData);
 
-      if (toolUseResponse.content && toolUseResponse.content.length > 0) {
-        const content = toolUseResponse.content[0].text;
-
-        try {
-          let responseData;
-          if (typeof content === 'object') {
-            responseData = content;
-          } else if (typeof content === 'string') {
-            responseData = JSON.parse(content);
-          }
-
-          if (responseData?.products && Array.isArray(responseData.products)) {
-            products = responseData.products
-              .slice(0, AppConfig.tools.maxProductsToDisplay)
-              .map(formatProductData);
-
-            console.log(`Found ${products.length} products to display`);
-          }
-        } catch (e) {
-          console.error("Error parsing product data:", e);
-        }
-      }
-
-      return products;
+      return products
+        .slice(0, AppConfig.tools.maxProductsToDisplay)
+        .map(formatProductData);
     } catch (error) {
       console.error("Error processing product search results:", error);
       return [];
     }
   };
 
-  /**
-   * Formats a product data object
-   * @param {Object} product - Raw product data
-   * @returns {Object} Formatted product data
-   */
+  const extractToolResponseData = (toolUseResponse) => {
+    if (toolUseResponse.structuredContent) {
+      return toolUseResponse.structuredContent;
+    }
+
+    if (toolUseResponse.content?.length > 0) {
+      const content = toolUseResponse.content[0].text;
+
+      if (typeof content === "object") {
+        return content;
+      }
+
+      if (typeof content === "string") {
+        try {
+          return JSON.parse(content);
+        } catch {
+          return null;
+        }
+      }
+    }
+
+    return null;
+  };
+
+  const extractProductsFromResponse = (responseData) => {
+    if (!responseData) {
+      return [];
+    }
+
+    if (Array.isArray(responseData.products)) {
+      return responseData.products;
+    }
+
+    if (Array.isArray(responseData.ucp?.products)) {
+      return responseData.ucp.products;
+    }
+
+    return [];
+  };
+
   const formatProductData = (product) => {
-    const price = product.price_range
-      ? `${product.price_range.currency} ${product.price_range.min}`
-      : (product.variants && product.variants.length > 0
-        ? `${product.variants[0].currency} ${product.variants[0].price}`
-        : 'Price not available');
+    const variant = product.variants?.[0] || product.variant;
+    const priceAmount = variant?.price?.amount ?? variant?.price;
+    const priceCurrency = variant?.price?.currency ?? variant?.currency ?? product.price_range?.currency;
+
+    let price = "Price not available";
+    if (priceAmount != null && priceCurrency) {
+      const majorUnits = formatMinorCurrencyAmount(priceAmount, priceCurrency);
+      price = `${priceCurrency} ${majorUnits}`;
+    } else if (product.price_range) {
+      price = `${product.price_range.currency} ${product.price_range.min}`;
+    }
 
     return {
-      id: product.product_id || `product-${Math.random().toString(36).substring(7)}`,
-      title: product.title || 'Product',
-      price: price,
-      image_url: product.image_url || '',
-      description: product.description || '',
-      url: product.url || ''
+      id: product.product_id || product.id || variant?.id || `product-${Math.random().toString(36).substring(7)}`,
+      title: product.title || product.name || "Product",
+      price,
+      image_url: product.image_url || product.image?.url || product.featured_image?.url || "",
+      description: product.description || "",
+      url: product.url || product.online_store_url || ""
     };
   };
 
-  /**
-   * Adds a tool result to the conversation history
-   * @param {Array} conversationHistory - The conversation history
-   * @param {string} toolUseId - The ID of the tool use request
-   * @param {string} content - The content of the tool result
-   * @param {string} conversationId - The conversation ID
-   */
+  const formatMinorCurrencyAmount = (amount, currency) => {
+    const zeroDecimalCurrencies = new Set(["JPY", "KRW", "VND"]);
+    if (zeroDecimalCurrencies.has(currency)) {
+      return String(amount);
+    }
+
+    return (Number(amount) / 100).toFixed(2);
+  };
+
   const addToolResultToHistory = async (conversationHistory, toolUseId, content, conversationId) => {
     const toolResultMessage = {
       role: 'user',
@@ -127,10 +126,8 @@ export function createToolService() {
       }]
     };
 
-    // Add to in-memory history
     conversationHistory.push(toolResultMessage);
 
-    // Save to database with special format to indicate tool result
     if (conversationId) {
       try {
         await saveMessage(conversationId, 'user', JSON.stringify(toolResultMessage.content));

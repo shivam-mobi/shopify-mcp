@@ -140,16 +140,33 @@ async function handleChatSession({
     stream.sendMessage({ type: 'id', conversation_id: conversationId });
 
     // Connect to MCP servers and get available tools
-    let storefrontMcpTools = [], customerMcpTools = [];
+    let storefrontMcpTools = [], ucpMcpTools = [], customerMcpTools = [];
+
+    try {
+      ucpMcpTools = await mcpClient.connectToUcpServer();
+      console.log(`Connected to UCP MCP with ${ucpMcpTools.length} tools`);
+    } catch (error) {
+      console.warn('Failed to connect to UCP MCP server:', error.message);
+    }
 
     try {
       storefrontMcpTools = await mcpClient.connectToStorefrontServer();
-      customerMcpTools = await mcpClient.connectToCustomerServer();
+      console.log(`Connected to storefront MCP with ${storefrontMcpTools.length} tools`);
+    } catch (error) {
+      console.warn('Failed to connect to storefront MCP server:', error.message);
+    }
 
-      console.log(`Connected to MCP with ${storefrontMcpTools.length} tools`);
+    try {
+      customerMcpTools = await mcpClient.connectToCustomerServer();
       console.log(`Connected to customer MCP with ${customerMcpTools.length} tools`);
     } catch (error) {
-      console.warn('Failed to connect to MCP servers, continuing without tools:', error.message);
+      console.warn('Failed to connect to customer MCP server:', error.message);
+    }
+
+    console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length}`);
+
+    if (mcpClient.tools.length === 0) {
+      console.warn('No MCP tools available for this chat session');
     }
 
     // Prepare conversation state
