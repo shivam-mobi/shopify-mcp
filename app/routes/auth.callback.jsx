@@ -1,4 +1,5 @@
 import { getCodeVerifier, storeCustomerToken, getCustomerAccountUrls } from "../db.server";
+import { getRedirectUrl } from "../services/app-url.server";
 
 /**
  * Handle OAuth callback from Shopify Customer API
@@ -96,7 +97,7 @@ async function exchangeCodeForToken(code, state) {
     throw new Error("SHOPIFY_CLIENT_ID and SHOPIFY_SHOP_ID environment variables are required");
   }
 
-  const redirectUri = process.env.REDIRECT_URL;
+  const redirectUri = getRedirectUrl();
 
   // Correct token URL format
   const tokenUrl = await getTokenUrl(conversationId);

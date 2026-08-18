@@ -31,7 +31,7 @@ A Shopify template app that lets you embed an AI-powered chat widget on your sto
 ### Components
 This app consists of two main components:
 
-1. **Backend**: A React Router app server that handles communication with Claude, processes chat messages, and acts as an MCP Client.
+1. **Backend**: A React Router app server that handles communication with the configured LLM (Gemini or Claude), processes chat messages, and acts as an MCP Client.
 2. **Chat UI**: A Shopify theme extension that provides the customer-facing chat interface.
 
 When you start the app, it will:
@@ -48,7 +48,7 @@ For direct testing, point your test suite at the `/chat` endpoint (GET or POST f
 
 ### Tech Stack
 - **Framework**: [React Router](https://reactrouter.com/)
-- **AI**: [Claude by Anthropic](https://www.anthropic.com/claude)
+- **AI**: Pluggable LLM providers — [Gemini](https://ai.google.dev/) or [Claude](https://www.anthropic.com/claude). Set `LLM_PROVIDER` in `.env`.
 - **Shopify Integration**: [@shopify/shopify-app-react-router](https://www.npmjs.com/package/@shopify/shopify-app-react-router)
 - **Database**: SQLite (via Prisma) for session storage
 

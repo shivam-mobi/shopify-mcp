@@ -1,12 +1,12 @@
 /**
  * Chat API Route
- * Handles chat interactions with Claude API and tools
+ * Handles chat interactions with the configured LLM provider and tools
  */
 import MCPClient from "../mcp-client";
 import { saveMessage, getConversationHistory, storeCustomerAccountUrls, getCustomerAccountUrls as getCustomerAccountUrlsFromDb } from "../db.server";
 import AppConfig from "../services/config.server";
 import { createSseStream } from "../services/streaming.server";
-import { createClaudeService } from "../services/claude.server";
+import { createLlmService } from "../services/llm.server";
 import { createToolService } from "../services/tool.server";
 
 
@@ -120,7 +120,7 @@ async function handleChatSession({
   stream
 }) {
   // Initialize services
-  const claudeService = createClaudeService();
+  const llmService = createLlmService();
   const toolService = createToolService();
 
   // Initialize MCP client
@@ -162,7 +162,7 @@ async function handleChatSession({
     // Fetch all messages from the database for this conversation
     const dbMessages = await getConversationHistory(conversationId);
 
-    // Format messages for Claude API
+    // Format messages for the LLM provider
     conversationHistory = dbMessages.map(dbMessage => {
       let content;
       try {
@@ -180,7 +180,7 @@ async function handleChatSession({
     let finalMessage = { role: 'user', content: userMessage };
 
     while (finalMessage.stop_reason !== "end_turn") {
-      finalMessage = await claudeService.streamConversation(
+      finalMessage = await llmService.streamConversation(
         {
           messages: conversationHistory,
           promptType,

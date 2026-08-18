@@ -15,8 +15,8 @@ if (
   delete process.env.HOST;
 }
 
-const host = new URL(process.env.SHOPIFY_APP_URL || "http://localhost")
-  .hostname;
+const appUrl = process.env.APP_URL || process.env.SHOPIFY_APP_URL || "http://localhost";
+const host = new URL(appUrl).hostname;
 let hmrConfig;
 
 if (host === "localhost") {
@@ -37,7 +37,7 @@ if (host === "localhost") {
 
 export default defineConfig({
   server: {
-    allowedHosts: [host],
+    allowedHosts: [host, ".ngrok-free.dev", ".trycloudflare.com"],
     cors: {
       preflightContinue: true,
     },

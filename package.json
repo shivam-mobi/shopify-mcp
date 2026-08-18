@@ -3,10 +3,11 @@
   "private": true,
   "scripts": {
     "build": "react-router build",
-    "dev": "shopify app dev",
+    "predev": "node scripts/sync-app-url.mjs",
+    "dev": "npm run predev && shopify app dev",
+    "dev:localhost": "npm run predev && shopify app dev --use-localhost",
+    "deploy": "npm run predev && shopify app deploy",
     "config:link": "shopify app config link",
-    "generate": "shopify app generate",
-    "deploy": "shopify app deploy",
     "config:use": "shopify app config use",
     "env": "shopify app env",
     "start": "react-router-serve ./build/server/index.js",
@@ -24,6 +25,8 @@
     "node": ">=20.10"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.1",
+    "@google/genai": "^1.52.0",
     "@prisma/client": "^6.2.1",
     "@react-router/dev": "^7.9.1",
     "@react-router/fs-routes": "^7.9.1",
@@ -32,14 +35,13 @@
     "@shopify/app-bridge-react": "^4.1.6",
     "@shopify/shopify-app-react-router": "^1.0.0",
     "@shopify/shopify-app-session-storage-prisma": "^7.0.0",
+    "dotenv": "^16.3.1",
     "isbot": "^5.1.0",
     "prisma": "^6.2.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router": "^7.9.1",
-    "vite-tsconfig-paths": "^5.0.1",
-    "@anthropic-ai/sdk": "^0.40.0",
-    "dotenv": "^16.3.1"
+    "vite-tsconfig-paths": "^5.0.1"
   },
   "devDependencies": {
     "@shopify/api-codegen-preset": "^1.1.1",

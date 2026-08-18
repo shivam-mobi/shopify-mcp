@@ -8,7 +8,7 @@ export default function Index() {
           <s-heading>Congrats on creating a new Shopify app 🎉</s-heading>
           <s-paragraph>
             This is a reference app that adds a chat agent on your storefront,
-            which is powered via claude and can connect shopify mcp platform.
+            which is powered by a pluggable LLM (Gemini or Claude) and can connect to Shopify MCP.
           </s-paragraph>
         </s-stack>
       </s-section>

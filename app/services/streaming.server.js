@@ -50,25 +50,36 @@ export function createStreamManager(encoder, controller) {
    * @param {Error} error - The error that occurred
    */
   const handleStreamingError = (error) => {
-    console.error('Error processing streaming request:', error);
+    // Log detailed error information for debugging
+    console.error('=== LLM API ERROR ===');
+    console.error('Error message:', error.message);
+    console.error('Error status:', error.status);
+    console.error('Full error:', JSON.stringify(error, null, 2));
+    console.error('========================');
 
-    if (error.status === 401 || error.message.includes('auth') || error.message.includes('key')) {
+    if (error.status === 401 || error.status === 403 || error.message?.includes('API key') || error.message?.includes('API_KEY') || error.message?.includes('auth')) {
       sendError({
         type: 'error',
-        error: 'Authentication failed with Claude API',
-        details: 'Please check your API key in environment variables'
+        error: 'Authentication failed with the LLM provider',
+        details: 'Please check LLM_PROVIDER and the matching API key in .env'
       });
-    } else if (error.status === 429 || error.status === 529 || error.message.includes('Overloaded')) {
+    } else if (error.status === 429 || error.status === 529 || error.message?.includes('RESOURCE_EXHAUSTED') || error.message?.includes('Overloaded') || error.message?.includes('quota')) {
       sendError({
         type: 'rate_limit_exceeded',
         error: 'Rate limit exceeded',
         details: 'Please try again later'
       });
+    } else if (error.message?.includes('billing') || error.message?.includes('credit')) {
+      sendError({
+        type: 'error',
+        error: 'LLM billing or quota issue',
+        details: error.message
+      });
     } else {
       sendError({
         type: 'error',
-        error: 'Failed to get response from Claude',
-        details: error.message
+        error: 'Failed to get a response from the LLM provider',
+        details: error.message || 'Unknown error occurred'
       });
     }
   };

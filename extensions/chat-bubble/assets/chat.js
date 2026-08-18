@@ -10,6 +10,27 @@
   /**
    * Application namespace to prevent global scope pollution
    */
+  /**
+   * Resolve the backend API base URL from theme config.
+   */
+  function getApiBaseUrl() {
+    const apiUrl = window.shopChatConfig?.apiUrl;
+    if (!apiUrl) {
+      throw new Error('Chat API URL is not configured');
+    }
+    return apiUrl.replace(/\/+$/, '');
+  }
+
+  /**
+   * Build request headers for backend API calls.
+   */
+  function getApiHeaders(extraHeaders = {}) {
+    return {
+      'ngrok-skip-browser-warning': 'true',
+      ...extraHeaders
+    };
+  }
+
   const ShopAIChat = {
     /**
      * UI-related elements and functionality
@@ -248,7 +269,7 @@
         try {
           ShopAIChat.API.streamResponse(userMessage, conversationId, messagesContainer);
         } catch (error) {
-          console.error('Error communicating with Claude API:', error);
+          console.error('Error communicating with the LLM API:', error);
           ShopAIChat.UI.removeTypingIndicator();
           this.add("Sorry, I couldn't process your request at the moment. Please try again later.", 'assistant', messagesContainer);
         }
@@ -481,16 +502,17 @@
             prompt_type: promptType
           });
 
-          const streamUrl = 'https://localhost:3458/chat';
+          const apiBaseUrl = getApiBaseUrl();
+          const streamUrl = `${apiBaseUrl}/chat`;
           const shopId = window.shopId;
 
           const response = await fetch(streamUrl, {
             method: 'POST',
-            headers: {
+            headers: getApiHeaders({
               'Content-Type': 'application/json',
               'Accept': 'text/event-stream',
               'X-Shopify-Shop-Id': shopId
-            },
+            }),
             body: requestBody
           });
 
@@ -630,15 +652,16 @@
           messagesContainer.appendChild(loadingMessage);
 
           // Fetch history from the server
-          const historyUrl = `https://localhost:3458/chat?history=true&conversation_id=${encodeURIComponent(conversationId)}`;
+          const apiBaseUrl = getApiBaseUrl();
+          const historyUrl = `${apiBaseUrl}/chat?history=true&conversation_id=${encodeURIComponent(conversationId)}`;
           console.log('Fetching history from:', historyUrl);
 
           const response = await fetch(historyUrl, {
             method: 'GET',
-            headers: {
+            headers: getApiHeaders({
               'Accept': 'application/json',
               'Content-Type': 'application/json'
-            },
+            }),
             mode: 'cors'
           });
 
@@ -779,9 +802,11 @@
           attemptCount++;
 
           try {
-            const tokenUrl = 'https://localhost:3458/auth/token-status?conversation_id=' +
-              encodeURIComponent(conversationId);
-            const response = await fetch(tokenUrl);
+            const apiBaseUrl = getApiBaseUrl();
+            const tokenUrl = `${apiBaseUrl}/auth/token-status?conversation_id=${encodeURIComponent(conversationId)}`;
+            const response = await fetch(tokenUrl, {
+              headers: getApiHeaders()
+            });
 
             if (!response.ok) {
               throw new Error('Token status check failed: ' + response.status);
