@@ -33,6 +33,7 @@
 <script src="{{ 'chat.js' | asset_url }}" defer></script>
 <script>
   window.shopChatConfig = {
+    apiUrl: "https://struggle-throwing-recycled.ngrok-free.dev",
     promptType: {{ block.settings.system_prompt | json }},
     welcomeMessage: {{ block.settings.welcome_message | json }}
   };
