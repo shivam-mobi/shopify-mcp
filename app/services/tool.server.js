@@ -90,20 +90,24 @@ export function createToolService() {
     const priceCurrency = variant?.price?.currency ?? variant?.currency ?? product.price_range?.currency;
 
     let price = "Price not available";
-    if (priceAmount != null && priceCurrency) {
+    if (product.price && typeof product.price === "string") {
+      price = product.price;
+    } else if (priceAmount != null && priceCurrency) {
       const majorUnits = formatMinorCurrencyAmount(priceAmount, priceCurrency);
       price = `${priceCurrency} ${majorUnits}`;
     } else if (product.price_range) {
       price = `${product.price_range.currency} ${product.price_range.min}`;
     }
 
+    const variantId = product.variantId || variant?.id;
+
     return {
-      id: product.product_id || product.id || variant?.id || `product-${Math.random().toString(36).substring(7)}`,
-      title: product.title || product.name || "Product",
+      id: variantId || product.product_id || product.id || product.partNumber || `product-${Math.random().toString(36).substring(7)}`,
+      title: product.title || product.partTypeName || product.name || "Product",
       price,
-      image_url: product.image_url || product.image?.url || product.featured_image?.url || "",
-      description: product.description || "",
-      url: product.url || product.online_store_url || ""
+      image_url: product.image_url || product.partImage || product.image?.url || product.featured_image?.url || "",
+      description: product.description || product.note || "",
+      url: product.url || (product.handle ? `/products/${product.handle}` : product.online_store_url || "")
     };
   };
 

@@ -41,8 +41,17 @@ export const AppConfig = {
       "https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json"
   },
 
+  fitment: {
+    enabled: process.env.FITMENT_ENABLED === "true"
+  },
+
   tools: {
-    productSearchNames: ["search_catalog", "search_shop_catalog"],
+    productSearchNames: [
+      "search_catalog",
+      "search_shop_catalog",
+      "find_fitment_products",
+      "get_fitment_next_step"
+    ],
     maxProductsToDisplay: 3
   }
 };

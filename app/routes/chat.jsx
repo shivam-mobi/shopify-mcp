@@ -8,6 +8,12 @@ import AppConfig from "../services/config.server";
 import { createSseStream } from "../services/streaming.server";
 import { createLlmService } from "../services/llm.server";
 import { createToolService } from "../services/tool.server";
+import { isFitmentConfigured } from "../fitment/database.server.js";
+import {
+  callFitmentTool,
+  getFitmentTools,
+  isFitmentTool
+} from "../fitment/fitment-tools.server.js";
 
 
 /**
@@ -126,7 +132,9 @@ async function handleChatSession({
   // Initialize MCP client
   const shopId = request.headers.get("X-Shopify-Shop-Id");
   const shopDomain = request.headers.get("Origin");
-  const { mcpApiUrl } = await getCustomerAccountUrls(shopDomain, conversationId);
+  const shop = getShopHostname(shopDomain);
+  const customerAccountUrls = await getCustomerAccountUrls(shopDomain, conversationId);
+  const mcpApiUrl = customerAccountUrls?.mcpApiUrl ?? null;
 
   const mcpClient = new MCPClient(
     shopDomain,
@@ -163,10 +171,17 @@ async function handleChatSession({
       console.warn('Failed to connect to customer MCP server:', error.message);
     }
 
-    console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length}`);
+    const fitmentTools = isFitmentConfigured() ? getFitmentTools() : [];
+    const allTools = [...mcpClient.tools, ...fitmentTools];
 
-    if (mcpClient.tools.length === 0) {
-      console.warn('No MCP tools available for this chat session');
+    console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length}`);
+    if (fitmentTools.length) {
+      console.log(`Fitment tools enabled: ${fitmentTools.length}`);
+    }
+    console.log(`Combined tools available to LLM: ${allTools.length}`);
+
+    if (allTools.length === 0) {
+      console.warn('No tools available for this chat session');
     }
 
     // Prepare conversation state
@@ -201,7 +216,7 @@ async function handleChatSession({
         {
           messages: conversationHistory,
           promptType,
-          tools: mcpClient.tools
+          tools: allTools
         },
         {
           // Handle text chunks
@@ -241,8 +256,22 @@ async function handleChatSession({
               tool_use_message: toolUseMessage
             });
 
-            // Call the tool
-            const toolUseResponse = await mcpClient.callTool(toolName, toolArgs);
+            // Route fitment tools locally; keep Shopify MCP tools unchanged
+            let toolUseResponse;
+            if (isFitmentTool(toolName)) {
+              try {
+                toolUseResponse = await callFitmentTool(toolName, toolArgs, { shop });
+              } catch (error) {
+                toolUseResponse = {
+                  error: {
+                    type: "internal_error",
+                    data: `Fitment tool failed: ${error.message}`
+                  }
+                };
+              }
+            } else {
+              toolUseResponse = await mcpClient.callTool(toolName, toolArgs);
+            }
 
             // Handle tool response based on success/error
             if (toolUseResponse.error) {
@@ -337,7 +366,20 @@ async function getCustomerAccountUrls(shopDomain, conversationId) {
 
     return urls;
   } catch (error) {
-    console.error("Error getting customer MCP API URL:", error);
+    console.warn("Error getting customer MCP API URL (customer accounts may be disabled):", error.message);
+    return null;
+  }
+}
+
+/**
+ * Extract myshopify.com hostname from the storefront Origin header.
+ */
+function getShopHostname(origin) {
+  if (!origin) return null;
+
+  try {
+    return new URL(origin).hostname;
+  } catch {
     return null;
   }
 }
