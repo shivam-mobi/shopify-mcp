@@ -80,3 +80,12 @@ model CustomerAccountUrls {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 }
+
+model LlmRequestLog {
+  id         String   @id @default(cuid())
+  request    String
+  response   String
+  statusCode Int
+  provider   String
+  createdAt  DateTime @default(now())
+}

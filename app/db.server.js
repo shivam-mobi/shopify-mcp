@@ -257,3 +257,51 @@ export async function getCustomerAccountUrls(conversationId) {
     return null;
   }
 }
+
+/**
+ * Persist the exact payload sent to an LLM and the exact payload returned.
+ * Logging failures must not break the chat.
+ */
+export async function storeLlmRequestLog({ request, response, statusCode, provider }) {
+  try {
+    return await prisma.llmRequestLog.create({
+      data: {
+        request: stringifyLlmPayload(request),
+        response: stringifyLlmPayload(response),
+        statusCode: Number.isInteger(statusCode) ? statusCode : 0,
+        provider: String(provider || "unknown")
+      }
+    });
+  } catch (error) {
+    console.error("Error storing LLM request log:", error);
+    return null;
+  }
+}
+
+function stringifyLlmPayload(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value, llmJsonReplacer);
+  } catch (error) {
+    return JSON.stringify({
+      unserializable: true,
+      error: error.message,
+      fallback: String(value)
+    });
+  }
+}
+
+function llmJsonReplacer(_key, value) {
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+
+  if (typeof value === "function") {
+    return undefined;
+  }
+
+  return value;
+}

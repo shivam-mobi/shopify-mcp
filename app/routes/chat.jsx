@@ -195,18 +195,10 @@ async function handleChatSession({
     const dbMessages = await getConversationHistory(conversationId);
 
     // Format messages for the LLM provider
-    conversationHistory = dbMessages.map(dbMessage => {
-      let content;
-      try {
-        content = JSON.parse(dbMessage.content);
-      } catch (e) {
-        content = dbMessage.content;
-      }
-      return {
-        role: dbMessage.role,
-        content
-      };
-    });
+    conversationHistory = dbMessages.map(dbMessage => ({
+      role: dbMessage.role,
+      content: parseStoredMessageContent(dbMessage.content)
+    }));
 
     // Execute the conversation stream
     let finalMessage = { role: 'user', content: userMessage };
@@ -381,6 +373,26 @@ function getShopHostname(origin) {
     return new URL(origin).hostname;
   } catch {
     return null;
+  }
+}
+
+function parseStoredMessageContent(raw) {
+  if (raw == null) return "";
+  if (typeof raw !== "string") return raw;
+
+  const trimmed = raw.trim();
+  if (!trimmed) return raw;
+
+  // Years like "2005" are valid JSON numbers. Keep them as plain text
+  // so Gemini still sees a user turn.
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return raw;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return raw;
   }
 }
 

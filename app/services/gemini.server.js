@@ -4,6 +4,7 @@
  * same streaming + tool-use interface used by the chat route.
  */
 import { GoogleGenAI } from "@google/genai";
+import { storeLlmRequestLog } from "../db.server";
 import AppConfig, { getLlmProviderConfig } from "./config.server";
 import { getSystemPrompt } from "./prompts.server";
 
@@ -38,46 +39,81 @@ export function createGeminiService(apiKey = process.env.GEMINI_API_KEY) {
     // Use non-streaming requests when tools are enabled so Gemini 3.6
     // functionCall parts retain required thought signatures across turns.
     if (geminiTools) {
-      const response = await ai.models.generateContent(request);
-      return processGenerateContentResponse(response, streamHandlers);
+      try {
+        const response = await ai.models.generateContent(request);
+        await storeLlmRequestLog({
+          provider: "gemini",
+          statusCode: 200,
+          request,
+          response: serializeGeminiSdkValue(response)
+        });
+        return processGenerateContentResponse(response, streamHandlers);
+      } catch (error) {
+        await storeLlmRequestLog({
+          provider: "gemini",
+          statusCode: getLlmStatusCode(error),
+          request,
+          response: serializeLlmError(error)
+        });
+        throw error;
+      }
     }
 
-    const stream = await ai.models.generateContentStream(request);
+    try {
+      const stream = await ai.models.generateContentStream(request);
 
-    let streamedText = "";
-    const functionCalls = [];
+      let streamedText = "";
+      const functionCalls = [];
+      const chunks = [];
 
-    for await (const chunk of stream) {
-      const text = typeof chunk.text === "string" ? chunk.text : "";
-      if (text) {
-        streamedText += text;
-        streamHandlers.onText?.(text);
-      }
+      for await (const chunk of stream) {
+        chunks.push(serializeGeminiSdkValue(chunk));
+        const text = typeof chunk.text === "string" ? chunk.text : "";
+        if (text) {
+          streamedText += text;
+          streamHandlers.onText?.(text);
+        }
 
-      const chunkCalls = chunk.functionCalls || [];
-      for (const call of chunkCalls) {
-        if (!call?.name) continue;
-        const alreadyAdded = functionCalls.some(
-          (existing) => existing.name === call.name && JSON.stringify(existing.args) === JSON.stringify(call.args)
-        );
-        if (!alreadyAdded) {
-          functionCalls.push(call);
+        const chunkCalls = chunk.functionCalls || [];
+        for (const call of chunkCalls) {
+          if (!call?.name) continue;
+          const alreadyAdded = functionCalls.some(
+            (existing) => existing.name === call.name && JSON.stringify(existing.args) === JSON.stringify(call.args)
+          );
+          if (!alreadyAdded) {
+            functionCalls.push(call);
+          }
         }
       }
-    }
 
-    return buildFinalMessageFromParts(
-      [
-        ...(streamedText ? [{ text: streamedText }] : []),
-        ...functionCalls.map((call) => ({
-          functionCall: {
-            name: call.name,
-            args: call.args || {}
-          }
-        }))
-      ],
-      streamHandlers
-    );
+      await storeLlmRequestLog({
+        provider: "gemini",
+        statusCode: 200,
+        request,
+        response: { streamed: true, chunks }
+      });
+
+      return buildFinalMessageFromParts(
+        [
+          ...(streamedText ? [{ text: streamedText }] : []),
+          ...functionCalls.map((call) => ({
+            functionCall: {
+              name: call.name,
+              args: call.args || {}
+            }
+          }))
+        ],
+        streamHandlers
+      );
+    } catch (error) {
+      await storeLlmRequestLog({
+        provider: "gemini",
+        statusCode: getLlmStatusCode(error),
+        request,
+        response: serializeLlmError(error)
+      });
+      throw error;
+    }
   };
 
   const getSystemPromptForType = (promptType) => getSystemPrompt(promptType);
@@ -179,6 +215,8 @@ function convertMessagesToGemini(messages = []) {
       if (content.trim()) {
         parts.push({ text: content });
       }
+    } else if (typeof content === "number" || typeof content === "boolean") {
+      parts.push({ text: String(content) });
     } else if (Array.isArray(content)) {
       for (const block of content) {
         if (block.type === "gemini_parts") {
@@ -219,6 +257,14 @@ function convertMessagesToGemini(messages = []) {
 
   if (contents.length && contents[0].role !== "user") {
     contents.unshift({ role: "user", parts: [{ text: "Hello" }] });
+  }
+
+  const lastContent = contents[contents.length - 1];
+  if (lastContent?.role === "model") {
+    contents.push({
+      role: "user",
+      parts: [{ text: "Please continue." }]
+    });
   }
 
   return contents;
@@ -330,6 +376,54 @@ function sanitizeSchema(schema) {
   }
 
   return cleaned;
+}
+
+function serializeGeminiSdkValue(value) {
+  if (value == null) {
+    return value;
+  }
+
+  if (typeof value.toJSON === "function") {
+    try {
+      return value.toJSON();
+    } catch {
+      // Fall through to JSON clone.
+    }
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return {
+      text: typeof value.text === "string" ? value.text : undefined,
+      functionCalls: value.functionCalls,
+      candidates: value.candidates,
+      usageMetadata: value.usageMetadata,
+      promptFeedback: value.promptFeedback,
+      modelVersion: value.modelVersion
+    };
+  }
+}
+
+function getLlmStatusCode(error) {
+  return (
+    error?.status ||
+    error?.statusCode ||
+    error?.httpStatusCode ||
+    error?.cause?.status ||
+    error?.error?.code ||
+    0
+  );
+}
+
+function serializeLlmError(error) {
+  return {
+    error: true,
+    name: error?.name,
+    message: error?.message,
+    status: getLlmStatusCode(error),
+    details: error?.error || error?.cause || error?.response
+  };
 }
 
 export default {
