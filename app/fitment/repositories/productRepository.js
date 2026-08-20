@@ -1,12 +1,11 @@
-import { MASTER_DATA_TABLES } from "../catalogTables.js";
+import { MASTER_DATA_TABLES, SHOPIFY_TABLES } from "../catalogTables.js";
 import {
   BRAND_IDS_PUREFLOW_AND_FEBREZE,
   PART_TERMINOLOGY_CABIN_AIR_FILTER,
   PG_IMAGE_ASSET_BASE_URL
 } from "../constants.js";
 import { QUALIFIER_COLUMNS } from "../qualifierConfig.js";
-import { getMasterDataPool, queryPool } from "../database.server.js";
-import { fetchShopifyVariantsBySkus } from "../../services/shopify-products.server.js";
+import { getMasterDataPool, getShopifySyncPool, queryPool } from "../database.server.js";
 import { sanitizeEngineIdList } from "./engineRepository.js";
 
 function buildProductQualifierWhere(selectedQualifiers = []) {
@@ -112,12 +111,62 @@ async function fetchPartImageMap(skus) {
   return map;
 }
 
+/**
+ * Match catalog part numbers to shopify_products_new (same as pureflow-chatbot2).
+ * variant_id from this table is what cart/MCP uses.
+ */
+async function fetchShopifyProducts(skus, vehicle = {}) {
+  if (!skus.length) return [];
+
+  const year = vehicle?.year ? Number(vehicle.year) : null;
+  const make = vehicle?.make ?? "";
+  const model = vehicle?.model ?? "";
+
+  const placeholders = skus.map(() => "?").join(", ");
+  const rows = await queryPool(
+    getShopifySyncPool(),
+    `SELECT
+      product_sku AS sku,
+      product_title,
+      product_price,
+      images,
+      handle,
+      brand,
+      variant_id
+     FROM ${SHOPIFY_TABLES.shopifyProductsNew}
+     WHERE product_sku IN (${placeholders})
+       AND (deleted IS NULL OR deleted = 0)
+     ORDER BY
+       CASE WHEN ? != '' AND make = ? THEN 0 ELSE 1 END,
+       CASE WHEN ? != '' AND model = ? THEN 0 ELSE 1 END,
+       CASE WHEN ? IS NOT NULL AND year = ? THEN 0 ELSE 1 END`,
+    [...skus, make, make, model, model, year, year]
+  );
+
+  return rows.map((row) => ({
+    sku: String(row.sku ?? "").trim(),
+    product_title: row.product_title ? String(row.product_title) : "",
+    product_price: row.product_price != null ? String(row.product_price) : "",
+    images: row.images ? String(row.images) : "",
+    handle: row.handle ? String(row.handle) : "",
+    brand: row.brand ? String(row.brand) : "",
+    variant_id:
+      row.variant_id !== undefined && row.variant_id !== null
+        ? row.variant_id
+        : undefined
+  }));
+}
+
+/**
+ * Catalog applications → part numbers, then keep only SKUs in shopify_products_new
+ * (with variant_id). Matches pureflow-chatbot2 ProductListController::productlist.
+ */
 export async function fetchProductList(
   baseVehicleId,
   engineId,
   selectedQualifiers = [],
   vehicle = {},
-  shop = null
+  _shop = null
 ) {
   const safeEngineId = sanitizeEngineIdList(engineId);
   if (!safeEngineId) return [];
@@ -126,14 +175,9 @@ export async function fetchProductList(
   const catalogParts = await fetchCatalogPartNumbers(baseVehicleId, safeEngineId, qualifierWhere);
   if (!catalogParts.length) return [];
 
-  if (!shop) {
-    console.warn("Fitment product lookup skipped: missing shop domain for Shopify Admin API");
-    return [];
-  }
-
-  const shopifyRows = await fetchShopifyVariantsBySkus(
-    shop,
-    catalogParts.map((part) => part.partNumber)
+  const shopifyRows = await fetchShopifyProducts(
+    catalogParts.map((part) => part.partNumber),
+    vehicle
   );
   const partImages = await fetchPartImageMap(catalogParts.map((part) => part.partNumber));
   const notes = new Map(catalogParts.map((part) => [part.partNumber, part.note_merged ?? ""]));

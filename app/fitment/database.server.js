@@ -20,6 +20,7 @@ export function isFitmentConfigured() {
   return Boolean(
     process.env.FITMENT_ENABLED === "true" &&
     process.env.DB_HOST_1 &&
+    process.env.DB_HOST_2 &&
     process.env.DB_HOST_3
   );
 }

@@ -16,8 +16,8 @@ flowchart TB
   llm -->|add to cart / checkout| cart[Shopify cart and checkout MCP]
 
   fitment --> mysql[(MySQL VCDB + master data)]
-  mysql -->|SKUs| shopifyAdmin[Shopify Admin API by SKU]
-  shopifyAdmin --> products[Product cards in chat]
+  mysql -->|partNumber SKUs| shopifyDb[(MySQL shopify_products_new)]
+  shopifyDb -->|variant_id price handle| products[Product cards in chat]
   catalog --> products
   products --> cart
 ```
@@ -65,8 +65,8 @@ flowchart TD
   askQ --> step
 
   qualifier -->|no more| products[status: success<br/>Find SKUs in MySQL]
-  products --> shopify[Match SKUs in Shopify]
-  shopify --> show[Show products in chat]
+  products --> shopifyDb[Match SKUs in shopify_products_new]
+  shopifyDb --> show[Show products with variant_id]
 ```
 
 ### Status meanings
@@ -111,8 +111,8 @@ sequenceDiagram
     Chat-->>User: Ask next filter from DB options
   else ready
     Fitment->>MySQL: cabin air filter SKUs
-    Fitment->>Shopify: lookup variants by SKU
-    Fitment-->>Chat: success + products with variantId
+    Fitment->>MySQL: shopify_products_new by product_sku
+    Fitment-->>Chat: success + products with variant_id
     Chat-->>User: Here are matching filters
   end
 
@@ -127,15 +127,15 @@ sequenceDiagram
 flowchart LR
   A[Year + make + model + engine + qualifiers] --> B[MySQL applications + partnumberinfo]
   B --> C[Part numbers / SKUs]
-  C --> D[Shopify Admin API: variants by SKU]
-  D --> E[Product cards: title, price, image, variantId]
+  C --> D[MySQL shopify_products_new by product_sku]
+  D --> E[Product cards: title, price, image, variant_id]
   E --> F[Shopify MCP cart tools]
 ```
 
-1. MySQL finds **cabin air filter SKUs** for that vehicle.
-2. Shopify Admin API turns those SKUs into live products (`variantId`, price, handle).
+1. MySQL master data finds **cabin air filter part numbers** for that vehicle.
+2. MySQL `shopify_products_new` matches those part numbers to `product_sku` and returns **`variant_id`**, price, handle (same as pureflow-chatbot2).
 3. Chat shows the products.
-4. Add to cart uses Shopify MCP, **not** MySQL.
+4. Add to cart uses Shopify MCP with that `variant_id`, **not** another product lookup.
 
 ## Databases used for fitment
 
@@ -144,8 +144,8 @@ Configured in `.env` when `FITMENT_ENABLED=true`.
 | Pool | Typical DB | Purpose |
 |---|---|---|
 | `DB_HOST_1` | VCDB | Years, makes, models, engines |
+| `DB_HOST_2` | Shopify sync | `shopify_products_new` → `variant_id`, price, handle |
 | `DB_HOST_3` | Master data | Applications, part numbers, images, qualifiers |
-| Shopify Admin API | Store catalog | Live price, variant, product URL |
 
 ## Fitment tools (custom, not Shopify MCP)
 
@@ -201,6 +201,6 @@ If you see the last one for “Honda air filter”, the LLM skipped the fitment 
 
 ## Summary
 
-- **Vehicle product suggestion** = MySQL filter wizard (`year → make → model → engine → qualifier → SKUs`) then Shopify for live product/cart.
+- **Vehicle product suggestion** = MySQL filter wizard (`year → make → model → engine → qualifier → partNumbers`) then MySQL `shopify_products_new` for `variant_id` / price / handle, then Shopify MCP for cart.
 - **Generic catalog search** = Shopify `search_catalog` only. It does **not** run your MySQL queries.
-- **Cart / checkout** = always Shopify MCP.
+- **Cart / checkout** = always Shopify MCP with the `variant_id` from `shopify_products_new`.
