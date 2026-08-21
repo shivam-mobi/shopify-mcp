@@ -131,8 +131,18 @@ async function handleChatSession({
 
   // Initialize MCP client
   const shopId = request.headers.get("X-Shopify-Shop-Id");
+  const shopDomainHeader = request.headers.get("X-Shopify-Shop-Domain");
   const shopDomain = request.headers.get("Origin");
-  const shop = getShopHostname(shopDomain);
+  // Admin API requires *.myshopify.com — never pass a custom storefront domain.
+  const shop = resolveAdminShopDomain({
+    shopDomainHeader,
+    origin: shopDomain
+  });
+  console.log("[chat] shop resolve:", {
+    shopDomainHeader,
+    origin: shopDomain,
+    adminShop: shop
+  });
   const customerAccountUrls = await getCustomerAccountUrls(shopDomain, conversationId);
   const mcpApiUrl = customerAccountUrls?.mcpApiUrl ?? null;
 
@@ -252,8 +262,22 @@ async function handleChatSession({
             let toolUseResponse;
             if (isFitmentTool(toolName)) {
               try {
+                console.log("[chat] fitment tool invoke", { toolName, toolArgs, shop });
                 toolUseResponse = await callFitmentTool(toolName, toolArgs, { shop });
+                console.log("[chat] fitment tool success", { toolName });
               } catch (error) {
+                console.error("[chat] fitment tool catch", {
+                  toolName,
+                  toolArgs,
+                  shop,
+                  message: error.message,
+                  code: error.code,
+                  errno: error.errno,
+                  address: error.address,
+                  port: error.port,
+                  syscall: error.syscall,
+                  stack: error.stack
+                });
                 toolUseResponse = {
                   error: {
                     type: "internal_error",
@@ -364,16 +388,58 @@ async function getCustomerAccountUrls(shopDomain, conversationId) {
 }
 
 /**
- * Extract myshopify.com hostname from the storefront Origin header.
+ * Extract hostname from Origin URL or bare shop domain header.
  */
 function getShopHostname(origin) {
   if (!origin) return null;
 
+  const value = String(origin).trim();
+  if (!value) return null;
+
+  // Already a bare hostname (e.g. store.myshopify.com from theme)
+  if (!value.includes("://") && /^[a-z0-9.-]+$/i.test(value)) {
+    return value.toLowerCase();
+  }
+
   try {
-    return new URL(origin).hostname;
+    return new URL(value).hostname.toLowerCase();
   } catch {
     return null;
   }
+}
+
+function isMyshopifyDomain(hostname) {
+  return Boolean(hostname && /\.myshopify\.com$/i.test(hostname));
+}
+
+/**
+ * Admin API / offline sessions only accept *.myshopify.com shop args.
+ * Prefer theme permanent_domain header, then env, never a custom domain like pureflowair.com.
+ */
+function resolveAdminShopDomain({ shopDomainHeader, origin } = {}) {
+  const fromHeader = getShopHostname(shopDomainHeader);
+  if (isMyshopifyDomain(fromHeader)) {
+    return fromHeader;
+  }
+
+  const fromOrigin = getShopHostname(origin);
+  if (isMyshopifyDomain(fromOrigin)) {
+    return fromOrigin;
+  }
+
+  const fromEnv = getShopHostname(
+    process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP || ""
+  );
+  if (isMyshopifyDomain(fromEnv)) {
+    return fromEnv;
+  }
+
+  console.warn("[chat] No valid *.myshopify.com shop for Admin API", {
+    shopDomainHeader,
+    origin,
+    envShop: process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP || null
+  });
+  return null;
 }
 
 function parseStoredMessageContent(raw) {

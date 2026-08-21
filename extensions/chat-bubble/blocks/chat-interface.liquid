@@ -38,6 +38,7 @@
     welcomeMessage: {{ block.settings.welcome_message | json }}
   };
   window.shopId = {{ shop.id }};
+  window.shopDomain = {{ shop.permanent_domain | json }};
 </script>
 
 {% schema %}

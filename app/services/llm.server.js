@@ -2,7 +2,7 @@
  * LLM factory
  *
  * Chat code should only import createLlmService().
- * Switch models with LLM_PROVIDER in .env (gemini | claude).
+ * Switch models with LLM_PROVIDER in .env (gemini | claude | openai).
  *
  * To add a new provider:
  * 1. Create app/services/<provider>.server.js
@@ -19,11 +19,13 @@
  */
 import { createGeminiService } from "./gemini.server";
 import { createClaudeService } from "./claude.server";
+import { createOpenAIService } from "./openai.server";
 import AppConfig, { getLlmProviderConfig } from "./config.server";
 
 const llmProviders = {
   gemini: createGeminiService,
-  claude: createClaudeService
+  claude: createClaudeService,
+  openai: createOpenAIService
 };
 
 export function registerLlmProvider(name, factory) {

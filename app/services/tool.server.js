@@ -105,10 +105,34 @@ export function createToolService() {
       id: variantId || product.product_id || product.id || product.partNumber || `product-${Math.random().toString(36).substring(7)}`,
       title: product.title || product.partTypeName || product.name || "Product",
       price,
-      image_url: product.image_url || product.partImage || product.image?.url || product.featured_image?.url || "",
+      image_url: resolveProductImageUrl(product),
       description: product.description || product.note || "",
       url: product.url || (product.handle ? `/products/${product.handle}` : product.online_store_url || "")
     };
+  };
+
+  const resolveProductImageUrl = (product) => {
+    if (product.image_url) return product.image_url;
+    if (product.partImage) return product.partImage;
+    if (product.image?.url) return product.image.url;
+    if (product.featured_image?.url) return product.featured_image.url;
+
+    // UCP search_catalog uses media[] (first image = featured)
+    if (Array.isArray(product.media)) {
+      const mediaImage = product.media.find(
+        (item) => item?.url && (!item.type || item.type === "image")
+      );
+      if (mediaImage?.url) return mediaImage.url;
+    }
+
+    if (Array.isArray(product.images) && product.images.length) {
+      const first = product.images[0];
+      if (typeof first === "string") return first;
+      if (first?.url) return first.url;
+      if (first?.src) return first.src;
+    }
+
+    return "";
   };
 
   const formatMinorCurrencyAmount = (amount, currency) => {

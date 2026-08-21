@@ -5,6 +5,12 @@ let masterDataPool;
 let shopifyPool;
 
 function createPool(config) {
+  console.log("[fitment:db] createPool", {
+    host: config.host,
+    port: config.port,
+    database: config.database,
+    user: config.user
+  });
   return mysql.createPool({
     host: config.host,
     port: config.port,
@@ -27,6 +33,7 @@ export function isFitmentConfigured() {
 
 export function getVcdbPool() {
   if (!vcdbPool) {
+    console.log("[fitment:db] init VCDB pool (DB_HOST_1)");
     vcdbPool = createPool({
       host: process.env.DB_HOST_1 || "localhost",
       port: Number(process.env.DB_PORT_1 || 3306),
@@ -40,6 +47,7 @@ export function getVcdbPool() {
 
 export function getMasterDataPool() {
   if (!masterDataPool) {
+    console.log("[fitment:db] init master-data pool (DB_HOST_3)");
     masterDataPool = createPool({
       host: process.env.DB_HOST_3 || "localhost",
       port: Number(process.env.DB_PORT_3 || 3306),
@@ -53,6 +61,7 @@ export function getMasterDataPool() {
 
 export function getShopifySyncPool() {
   if (!shopifyPool) {
+    console.log("[fitment:db] init shopify-sync pool (DB_HOST_2)");
     shopifyPool = createPool({
       host: process.env.DB_HOST_2 || "localhost",
       port: Number(process.env.DB_PORT_2 || 3306),
@@ -65,6 +74,34 @@ export function getShopifySyncPool() {
 }
 
 export async function queryPool(pool, sql, params = []) {
-  const [rows] = await pool.execute(sql, params);
-  return rows;
+  const started = Date.now();
+  const sqlPreview = String(sql).replace(/\s+/g, " ").trim().slice(0, 120);
+  console.log("[fitment:db] query start", {
+    sqlPreview,
+    params,
+    elapsedMsHint: "pending"
+  });
+  try {
+    const [rows] = await pool.execute(sql, params);
+    console.log("[fitment:db] query ok", {
+      sqlPreview,
+      rowCount: Array.isArray(rows) ? rows.length : null,
+      ms: Date.now() - started
+    });
+    return rows;
+  } catch (error) {
+    console.error("[fitment:db] query FAIL", {
+      sqlPreview,
+      params,
+      ms: Date.now() - started,
+      code: error.code,
+      errno: error.errno,
+      message: error.message,
+      address: error.address,
+      port: error.port,
+      syscall: error.syscall,
+      fatal: error.fatal
+    });
+    throw error;
+  }
 }

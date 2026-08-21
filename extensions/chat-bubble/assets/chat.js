@@ -505,13 +505,15 @@
           const apiBaseUrl = getApiBaseUrl();
           const streamUrl = `${apiBaseUrl}/chat`;
           const shopId = window.shopId;
+          const shopDomain = window.shopDomain;
 
           const response = await fetch(streamUrl, {
             method: 'POST',
             headers: getApiHeaders({
               'Content-Type': 'application/json',
               'Accept': 'text/event-stream',
-              'X-Shopify-Shop-Id': shopId
+              'X-Shopify-Shop-Id': shopId,
+              ...(shopDomain ? { 'X-Shopify-Shop-Domain': shopDomain } : {})
             }),
             body: requestBody
           });

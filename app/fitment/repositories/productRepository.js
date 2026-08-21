@@ -1,11 +1,14 @@
 import { MASTER_DATA_TABLES, SHOPIFY_TABLES } from "../catalogTables.js";
 import {
   BRAND_IDS_PUREFLOW_AND_FEBREZE,
-  PART_TERMINOLOGY_CABIN_AIR_FILTER,
-  PG_IMAGE_ASSET_BASE_URL
+  PART_TERMINOLOGY_CABIN_AIR_FILTER
 } from "../constants.js";
 import { QUALIFIER_COLUMNS } from "../qualifierConfig.js";
 import { getMasterDataPool, getShopifySyncPool, queryPool } from "../database.server.js";
+import {
+  fetchShopifyVariantsByIds,
+  toVariantGid
+} from "../../services/shopify-products.server.js";
 import { sanitizeEngineIdList } from "./engineRepository.js";
 
 function buildProductQualifierWhere(selectedQualifiers = []) {
@@ -21,36 +24,6 @@ function buildProductQualifierWhere(selectedQualifiers = []) {
   }
 
   return clauses.join("");
-}
-
-function firstImage(raw) {
-  if (!raw) return "";
-  const trimmed = String(raw).trim();
-  if (!trimmed) return "";
-
-  if (trimmed.startsWith("[")) {
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (Array.isArray(parsed) && parsed.length) {
-        const first = parsed[0];
-        if (typeof first === "string") return first;
-        if (first && typeof first === "object" && first.src) {
-          return String(first.src);
-        }
-      }
-    } catch {
-      // fall through
-    }
-  }
-
-  return trimmed.split(",")[0]?.trim() ?? "";
-}
-
-function buildPartImageUrl(fileName) {
-  const name = String(fileName).trim();
-  if (!name) return "";
-  if (name.startsWith("http://") || name.startsWith("https://")) return name;
-  return `${PG_IMAGE_ASSET_BASE_URL}${name.replace(/^\//, "")}`;
 }
 
 async function fetchCatalogPartNumbers(baseVehicleId, engineId, qualifierWhere) {
@@ -80,42 +53,11 @@ async function fetchCatalogPartNumbers(baseVehicleId, engineId, qualifierWhere) 
     .filter((row) => row.partNumber);
 }
 
-async function fetchPartImageMap(skus) {
-  const safeSkus = skus
-    .map((sku) => sku.trim())
-    .filter((sku) => /^[A-Za-z0-9._-]+$/.test(sku));
-
-  if (!safeSkus.length) return new Map();
-
-  const inList = safeSkus.map((sku) => `'${sku.replace(/'/g, "''")}'`).join(",");
-  const rows = await queryPool(
-    getMasterDataPool(),
-    `SELECT p.partNumber, im.fileName
-     FROM ${MASTER_DATA_TABLES.partnumberinfo} p
-     JOIN ${MASTER_DATA_TABLES.imageMapper} im ON im.part_id = p.part_id
-     WHERE p.partNumber IN (${inList})
-     ORDER BY p.partNumber,
-       CASE WHEN im.AssetType = 'p04' THEN 1 ELSE 0 END ASC,
-       im.AssetType DESC,
-       SUBSTRING(im.fileName, INSTR(im.fileName, '-') + 1, 1)`
-  );
-
-  const map = new Map();
-  for (const row of rows) {
-    const sku = String(row.partNumber ?? "").trim();
-    const fileName = String(row.fileName ?? "").trim();
-    if (!sku || !fileName || map.has(sku)) continue;
-    map.set(sku, buildPartImageUrl(fileName));
-  }
-
-  return map;
-}
-
 /**
- * Match catalog part numbers to shopify_products_new (same as pureflow-chatbot2).
- * variant_id from this table is what cart/MCP uses.
+ * Resolve catalog SKUs → variant_id only from shopify_products_new.
+ * Title, price, and image are loaded from Shopify Admin API.
  */
-async function fetchShopifyProducts(skus, vehicle = {}) {
+async function fetchVariantIdsBySkus(skus, vehicle = {}) {
   if (!skus.length) return [];
 
   const year = vehicle?.year ? Number(vehicle.year) : null;
@@ -127,15 +69,13 @@ async function fetchShopifyProducts(skus, vehicle = {}) {
     getShopifySyncPool(),
     `SELECT
       product_sku AS sku,
-      product_title,
-      product_price,
-      images,
-      handle,
-      brand,
       variant_id
      FROM ${SHOPIFY_TABLES.shopifyProductsNew}
      WHERE product_sku IN (${placeholders})
        AND (deleted IS NULL OR deleted = 0)
+       AND variant_id IS NOT NULL
+       AND variant_id != ''
+       AND variant_id != '0'
      ORDER BY
        CASE WHEN ? != '' AND make = ? THEN 0 ELSE 1 END,
        CASE WHEN ? != '' AND model = ? THEN 0 ELSE 1 END,
@@ -143,30 +83,23 @@ async function fetchShopifyProducts(skus, vehicle = {}) {
     [...skus, make, make, model, model, year, year]
   );
 
-  return rows.map((row) => ({
-    sku: String(row.sku ?? "").trim(),
-    product_title: row.product_title ? String(row.product_title) : "",
-    product_price: row.product_price != null ? String(row.product_price) : "",
-    images: row.images ? String(row.images) : "",
-    handle: row.handle ? String(row.handle) : "",
-    brand: row.brand ? String(row.brand) : "",
-    variant_id:
-      row.variant_id !== undefined && row.variant_id !== null
-        ? row.variant_id
-        : undefined
-  }));
+  return rows
+    .map((row) => ({
+      sku: String(row.sku ?? "").trim(),
+      variant_id: row.variant_id
+    }))
+    .filter((row) => row.sku && toVariantGid(row.variant_id));
 }
 
 /**
- * Catalog applications → part numbers, then keep only SKUs in shopify_products_new
- * (with variant_id). Matches pureflow-chatbot2 ProductListController::productlist.
+ * Catalog applications → part numbers → MySQL variant_id → Shopify title/price/image.
  */
 export async function fetchProductList(
   baseVehicleId,
   engineId,
   selectedQualifiers = [],
   vehicle = {},
-  _shop = null
+  shop = null
 ) {
   const safeEngineId = sanitizeEngineIdList(engineId);
   if (!safeEngineId) return [];
@@ -175,32 +108,58 @@ export async function fetchProductList(
   const catalogParts = await fetchCatalogPartNumbers(baseVehicleId, safeEngineId, qualifierWhere);
   if (!catalogParts.length) return [];
 
-  const shopifyRows = await fetchShopifyProducts(
+  const variantRows = await fetchVariantIdsBySkus(
     catalogParts.map((part) => part.partNumber),
     vehicle
   );
-  const partImages = await fetchPartImageMap(catalogParts.map((part) => part.partNumber));
+
+  console.log("[fitment] MySQL part numbers:", catalogParts.map((p) => p.partNumber));
+  console.log("[fitment] MySQL variant_id rows (before Shopify):", variantRows);
+
+  if (!variantRows.length) {
+    console.warn("[fitment] No variant_id found in shopify_products_new — skipping Shopify call");
+    return [];
+  }
+
   const notes = new Map(catalogParts.map((part) => [part.partNumber, part.note_merged ?? ""]));
+  console.log(
+    "[fitment] Calling Shopify with variant_ids:",
+    variantRows.map((row) => row.variant_id)
+  );
+  const shopifyById = await fetchShopifyVariantsByIds(
+    shop,
+    variantRows.map((row) => row.variant_id)
+  );
 
   const seen = new Set();
   const products = [];
 
-  for (const row of shopifyRows) {
+  for (const row of variantRows) {
     if (!row.sku || seen.has(row.sku)) continue;
     seen.add(row.sku);
 
+    const gid = toVariantGid(row.variant_id);
+    const live =
+      shopifyById.get(gid) ||
+      shopifyById.get(String(row.variant_id).trim()) ||
+      null;
+
+    if (!live) {
+      console.warn(
+        `Shopify variant not found for sku=${row.sku} variant_id=${row.variant_id} shop=${shop}`
+      );
+      continue;
+    }
+
     products.push({
       partNumber: row.sku,
-      title: row.product_title || row.brand || row.sku,
+      title: live.title || row.sku,
       note: notes.get(row.sku) ?? "",
-      image_url: partImages.get(row.sku) || firstImage(row.images),
-      price: row.product_price ? `$${row.product_price}` : "",
-      handle: row.handle ?? "",
-      variantId:
-        row.variant_id !== undefined && row.variant_id !== null
-          ? String(row.variant_id)
-          : "",
-      url: row.handle ? `/products/${row.handle}` : ""
+      image_url: live.image_url || "",
+      price: live.price || "",
+      handle: live.handle ?? "",
+      variantId: live.variantId || gid,
+      url: live.url || ""
     });
   }
 

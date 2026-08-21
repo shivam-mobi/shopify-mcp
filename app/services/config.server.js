@@ -22,6 +22,12 @@ export const AppConfig = {
         displayName: "Claude",
         model: process.env.CLAUDE_MODEL || "claude-sonnet-4-20250514",
         apiKeyEnv: "CLAUDE_API_KEY"
+      },
+      openai: {
+        name: "openai",
+        displayName: "OpenAI",
+        model: process.env.OPENAI_MODEL || "gpt-4o",
+        apiKeyEnv: "OPENAI_API_KEY"
       }
     }
   },

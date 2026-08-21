@@ -51,6 +51,7 @@ function formatProducts(products, vehicle, qualifiers) {
 }
 
 async function resolveProductsFlow({ year, make, model, engine, qualifiers = [], shop = null }) {
+  console.log("[fitment:products] resolveProductsFlow start", { year, make, model, engine, qualifiers, shop });
   const selectedQualifiers = normalizeQualifiers(qualifiers);
   let engineSelection = null;
 
@@ -128,7 +129,7 @@ async function resolveProductsFlow({ year, make, model, engine, qualifiers = [],
 
 /**
  * Main orchestrator — call whenever the user mentions year, make, model, or vehicle fitment.
- * Accepts partial info and returns the next filter to ask, or products when ready.
+ * Accepts partial info and returns missing filters (batched when possible), or products when ready.
  */
 export async function getFitmentNextStep({
   year,
@@ -138,60 +139,93 @@ export async function getFitmentNextStep({
   qualifiers = [],
   shop = null
 } = {}) {
+  console.log("[fitment:next_step] start", { year, make, model, engine, qualifiers, shop });
   const known = {};
-
-  if (!year && !make && !model) {
-    const years = await fetchYears();
-    return {
-      status: "need_year",
-      message: "Ask the customer for their vehicle year.",
-      known,
-      options: years.slice(0, 25).map((row) => String(row.year))
-    };
-  }
-
-  if (!year && make) {
-    const yearsForMake = await fetchYearsForMake(make);
-    if (yearsForMake.length) {
-      known.make = make;
-      return {
-        status: "need_year",
-        message: `Ask which year their ${make} is.`,
-        known,
-        options: yearsForMake.slice(0, 25).map((row) => String(row.year))
-      };
-    }
-
-    const makeMatches = await searchMakeNames(make);
-    if (makeMatches.length === 1) {
-      known.make = makeMatches[0].make;
-      const yearsForMatchedMake = await fetchYearsForMake(known.make);
-      return {
-        status: "need_year",
-        message: `Ask which year their ${known.make} is.`,
-        known,
-        options: yearsForMatchedMake.slice(0, 25).map((row) => String(row.year))
-      };
-    }
-
-    if (makeMatches.length > 1) {
-      return {
-        status: "need_make",
-        message: "Multiple makes match. Ask the customer to clarify their make.",
-        known,
-        options: makeMatches.map((row) => row.make)
-      };
-    }
-
-    return {
-      status: "need_year",
-      message: "Could not find that make. Ask for the vehicle year first.",
-      known,
-      options: (await fetchYears()).slice(0, 25).map((row) => String(row.year))
-    };
-  }
-
+  console.log("[fitment:next_step] fetching years from VCDB...");
   const allYears = await fetchYears();
+  console.log("[fitment:next_step] years fetched", { count: allYears.length });
+  const yearOptions = allYears.slice(0, 25).map((row) => String(row.year));
+
+  // Nothing known yet — ask year, brand, and model together
+  if (!year && !make && !model) {
+    return {
+      status: "need_filters",
+      message:
+        "Ask the customer for their vehicle year, brand (make), and model in one message.",
+      known,
+      ask: ["year", "make", "model"],
+      options: {
+        year: yearOptions
+      }
+    };
+  }
+
+  // Make/brand known, year missing — ask year + model together
+  if (!year && make) {
+    const makeMatches = await searchMakeNames(make);
+    let resolvedMake = make;
+
+    if (makeMatches.length === 1) {
+      resolvedMake = makeMatches[0].make;
+    } else if (makeMatches.length > 1) {
+      const exact = makeMatches.find(
+        (row) => row.make.toLowerCase() === String(make).trim().toLowerCase()
+      );
+      if (exact) {
+        resolvedMake = exact.make;
+      } else {
+        return {
+          status: "need_make",
+          message:
+            "Multiple brands match. Ask the customer to clarify their vehicle brand (make).",
+          known,
+          ask: ["make"],
+          options: makeMatches.map((row) => row.make)
+        };
+      }
+    }
+
+    const yearsForMake = await fetchYearsForMake(resolvedMake);
+    if (!yearsForMake.length && !makeMatches.length) {
+      return {
+        status: "need_filters",
+        message:
+          "Could not find that brand. Ask for vehicle year, brand (make), and model in one message.",
+        known,
+        ask: ["year", "make", "model"],
+        options: { year: yearOptions }
+      };
+    }
+
+    known.make = resolvedMake;
+
+    // Brand + model known, only year missing
+    if (model) {
+      return {
+        status: "need_year",
+        message: `Ask which year their ${resolvedMake} ${model} is.`,
+        known: { ...known, model },
+        ask: ["year"],
+        options: (yearsForMake.length ? yearsForMake : allYears)
+          .slice(0, 25)
+          .map((row) => String(row.year))
+      };
+    }
+
+    return {
+      status: "need_filters",
+      message: `Ask for the year and model of their ${resolvedMake} in one message (brand is already known).`,
+      known,
+      ask: ["year", "model"],
+      options: {
+        year: (yearsForMake.length ? yearsForMake : allYears)
+          .slice(0, 25)
+          .map((row) => String(row.year))
+      }
+    };
+  }
+
+  // Year known — resolve it
   const matchedYear = year ? (matchYear(year, allYears) || String(year).trim()) : null;
 
   if (!matchedYear) {
@@ -199,19 +233,34 @@ export async function getFitmentNextStep({
       status: "need_year",
       message: "Ask for a valid vehicle year.",
       known,
-      options: allYears.slice(0, 25).map((row) => String(row.year))
+      ask: ["year"],
+      options: yearOptions
     };
   }
 
   known.year = matchedYear;
 
+  // Year known, make missing — ask brand (+ model if missing) together
   if (!make) {
     const makes = await fetchMakes(matchedYear);
+    if (model) {
+      return {
+        status: "need_make",
+        message: `Ask which brand (make) their ${matchedYear} ${model} is.`,
+        known: { ...known, model },
+        ask: ["make"],
+        options: makes.map((row) => row.make)
+      };
+    }
+
     return {
-      status: "need_make",
-      message: `Ask which make their ${matchedYear} vehicle is.`,
+      status: "need_filters",
+      message: `Ask for the brand (make) and model of their ${matchedYear} vehicle in one message.`,
       known,
-      options: makes.map((row) => row.make)
+      ask: ["make", "model"],
+      options: {
+        make: makes.map((row) => row.make)
+      }
     };
   }
 
@@ -224,20 +273,23 @@ export async function getFitmentNextStep({
 
     return {
       status: "need_make",
-      message: `"${make}" was not found for ${matchedYear}. Ask the customer to pick a make.`,
+      message: `"${make}" was not found for ${matchedYear}. Ask the customer to pick a brand (make)${model ? "" : " and model"}.`,
       known,
+      ask: model ? ["make"] : ["make", "model"],
       options: suggestions.length ? suggestions : makes.map((row) => row.make)
     };
   }
 
   known.make = matchedMake;
 
+  // Year + make known, model missing
   if (!model) {
     const models = await fetchModels(matchedYear, matchedMake);
     return {
       status: "need_model",
       message: `Ask which model their ${matchedYear} ${matchedMake} is.`,
       known,
+      ask: ["model"],
       options: models.map((row) => row.model)
     };
   }
@@ -253,11 +305,13 @@ export async function getFitmentNextStep({
       status: "need_model",
       message: `"${model}" was not found for ${matchedYear} ${matchedMake}. Ask the customer to pick a model.`,
       known,
+      ask: ["model"],
       options: suggestions.length ? suggestions : models.map((row) => row.model)
     };
   }
 
   known.model = matchedModel;
+  console.log("[fitment:next_step] Y/M/M resolved, loading products", known);
 
   const result = await resolveProductsFlow({
     year: matchedYear,
@@ -268,6 +322,10 @@ export async function getFitmentNextStep({
     shop
   });
 
+  console.log("[fitment:next_step] products flow done", {
+    status: result.status,
+    productCount: result.products?.length
+  });
   return { ...result, known: { ...known, ...result.vehicle } };
 }
 
@@ -357,7 +415,11 @@ export async function getFitmentQualifier({ year, make, model, engine, qualifier
 
 export async function findFitmentProducts(args, shop = null) {
   const result = await getFitmentNextStep({ ...args, shop });
-  if (["need_year", "need_make", "need_model", "need_engine", "need_qualifier"].includes(result.status)) {
+  if (
+    ["need_year", "need_make", "need_model", "need_engine", "need_qualifier", "need_filters"].includes(
+      result.status
+    )
+  ) {
     return toolResult(result);
   }
   return toolResult(result);
@@ -377,7 +439,7 @@ export function getFitmentTools() {
   return [
     {
       name: "get_fitment_next_step",
-      description: "PRIMARY fitment tool. Call whenever the customer mentions a vehicle, year, make, model, or asks for a part that fits their car. Pass whatever is known (year, make, model, engine, qualifiers) even if incomplete. Returns the next question to ask with DB-backed options, or products with variantId when ready. Use this before search_catalog for vehicle-related requests.",
+      description: "PRIMARY fitment tool. Call whenever the customer mentions a vehicle, year, brand/make, model, or asks for a part that fits their car. Pass whatever is known (year, make, model, engine, qualifiers) even if incomplete. When filters are missing, returns status need_filters with an ask[] list — ask ALL of those fields in ONE customer message (e.g. make-only → ask year and model together; year-only → ask brand and model together). Use make as the vehicle brand. Returns products with variantId when ready. Use this before search_catalog for vehicle-related requests.",
       input_schema: {
         type: "object",
         properties: {
@@ -467,23 +529,59 @@ export function getFitmentTools() {
 }
 
 export async function callFitmentTool(toolName, toolArgs = {}, { shop = null } = {}) {
-  switch (toolName) {
-    case "get_fitment_next_step":
-      return toolResult(await getFitmentNextStep({ ...toolArgs, shop }));
-    case "lookup_fitment_years":
-      return lookupFitmentYears();
-    case "lookup_fitment_makes":
-      return lookupFitmentMakes(toolArgs);
-    case "lookup_fitment_models":
-      return lookupFitmentModels(toolArgs);
-    case "lookup_fitment_engines":
-      return lookupFitmentEngines(toolArgs);
-    case "get_fitment_qualifier":
-      return getFitmentQualifier(toolArgs);
-    case "find_fitment_products":
-      return findFitmentProducts(toolArgs, shop);
-    default:
-      throw new Error(`Unknown fitment tool: ${toolName}`);
+  const started = Date.now();
+  console.log("[fitment:tool] call start", { toolName, toolArgs, shop });
+  try {
+    let result;
+    switch (toolName) {
+      case "get_fitment_next_step":
+        result = toolResult(await getFitmentNextStep({ ...toolArgs, shop }));
+        break;
+      case "lookup_fitment_years":
+        result = await lookupFitmentYears();
+        break;
+      case "lookup_fitment_makes":
+        result = await lookupFitmentMakes(toolArgs);
+        break;
+      case "lookup_fitment_models":
+        result = await lookupFitmentModels(toolArgs);
+        break;
+      case "lookup_fitment_engines":
+        result = await lookupFitmentEngines(toolArgs);
+        break;
+      case "get_fitment_qualifier":
+        result = await getFitmentQualifier(toolArgs);
+        break;
+      case "find_fitment_products":
+        result = await findFitmentProducts(toolArgs, shop);
+        break;
+      default:
+        throw new Error(`Unknown fitment tool: ${toolName}`);
+    }
+    console.log("[fitment:tool] call ok", {
+      toolName,
+      ms: Date.now() - started,
+      preview: typeof result?.content?.[0]?.text === "string"
+        ? result.content[0].text.slice(0, 200)
+        : result
+    });
+    return result;
+  } catch (error) {
+    console.error("[fitment:tool] call FAIL", {
+      toolName,
+      toolArgs,
+      shop,
+      ms: Date.now() - started,
+      name: error.name,
+      code: error.code,
+      errno: error.errno,
+      message: error.message,
+      address: error.address,
+      port: error.port,
+      syscall: error.syscall,
+      stack: error.stack
+    });
+    throw error;
   }
 }
 
