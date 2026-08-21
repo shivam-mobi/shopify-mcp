@@ -159,7 +159,11 @@ export async function fetchProductList(
       price: live.price || "",
       handle: live.handle ?? "",
       variantId: live.variantId || gid,
-      url: live.url || ""
+      url: live.url || "",
+      availableForSale: live.availableForSale === true,
+      inStock: live.inStock === true,
+      inventoryQuantity:
+        typeof live.inventoryQuantity === "number" ? live.inventoryQuantity : null
     });
   }
 

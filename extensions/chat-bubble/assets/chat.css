@@ -500,10 +500,33 @@
   }
   
   .shop-ai-product-price {
-    margin: 0 0 10px 0;
+    margin: 0 0 6px 0;
     font-size: 14px;
     font-weight: 600;
     color: #5046e4;
+  }
+
+  .shop-ai-product-stock {
+    margin: 0 0 10px 0;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .shop-ai-product-stock.in-stock {
+    color: #0f7b3a;
+  }
+
+  .shop-ai-product-stock.out-of-stock {
+    color: #b42318;
+  }
+
+  .shop-ai-product-card--out-of-stock {
+    opacity: 0.85;
+  }
+
+  .shop-ai-product-card--out-of-stock .shop-ai-product-image img {
+    filter: grayscale(0.35);
   }
   
   /* Add to Cart Button Styling */
@@ -522,6 +545,17 @@
   
   .shop-ai-add-to-cart:hover {
     background-color: #3f36c0;
+  }
+
+  .shop-ai-add-to-cart--disabled,
+  .shop-ai-add-to-cart:disabled {
+    background-color: #9ca3af;
+    cursor: not-allowed;
+  }
+
+  .shop-ai-add-to-cart--disabled:hover,
+  .shop-ai-add-to-cart:disabled:hover {
+    background-color: #9ca3af;
   }
   
   /* Responsive adjustments for small screens */

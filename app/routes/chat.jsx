@@ -332,6 +332,15 @@ async function handleChatSession({
 
     // Send product results if available
     if (productsToDisplay.length > 0) {
+      console.log(
+        "[chat] product_results to client:",
+        productsToDisplay.map((p) => ({
+          title: p.title,
+          inStock: p.inStock,
+          availableForSale: p.availableForSale,
+          inventoryQuantity: p.inventoryQuantity
+        }))
+      );
       stream.sendMessage({
         type: 'product_results',
         products: productsToDisplay

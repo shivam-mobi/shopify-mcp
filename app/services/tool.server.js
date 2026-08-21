@@ -100,6 +100,7 @@ export function createToolService() {
     }
 
     const variantId = product.variantId || variant?.id;
+    const availability = resolveProductAvailability(product, variant);
 
     return {
       id: variantId || product.product_id || product.id || product.partNumber || `product-${Math.random().toString(36).substring(7)}`,
@@ -107,7 +108,78 @@ export function createToolService() {
       price,
       image_url: resolveProductImageUrl(product),
       description: product.description || product.note || "",
-      url: product.url || (product.handle ? `/products/${product.handle}` : product.online_store_url || "")
+      url: product.url || (product.handle ? `/products/${product.handle}` : product.online_store_url || ""),
+      availableForSale: availability.availableForSale,
+      inStock: availability.inStock,
+      inventoryQuantity: availability.inventoryQuantity
+    };
+  };
+
+  const resolveProductAvailability = (product, variant) => {
+    const qty =
+      typeof product.inventoryQuantity === "number"
+        ? product.inventoryQuantity
+        : typeof variant?.inventoryQuantity === "number"
+          ? variant.inventoryQuantity
+          : null;
+
+    let availableForSale = null;
+
+    if (typeof product.availableForSale === "boolean") {
+      availableForSale = product.availableForSale;
+    } else if (typeof product.inStock === "boolean") {
+      availableForSale = product.inStock;
+    } else if (variant?.availability && typeof variant.availability.available === "boolean") {
+      availableForSale = variant.availability.available;
+      if (typeof variant.availability.quantity === "number" && qty == null) {
+        return finalizeAvailability(availableForSale, variant.availability.quantity);
+      }
+    } else if (typeof variant?.availableForSale === "boolean") {
+      availableForSale = variant.availableForSale;
+    }
+
+    return finalizeAvailability(availableForSale, qty);
+  };
+
+  const finalizeAvailability = (availableForSale, qty) => {
+    // Explicit: inventory 0 => out of stock for UI/cart
+    if (qty === 0) {
+      return {
+        availableForSale: false,
+        inStock: false,
+        inventoryQuantity: 0
+      };
+    }
+
+    if (availableForSale === false) {
+      return {
+        availableForSale: false,
+        inStock: false,
+        inventoryQuantity: qty
+      };
+    }
+
+    if (availableForSale === true) {
+      return {
+        availableForSale: true,
+        inStock: qty == null || qty > 0,
+        inventoryQuantity: qty
+      };
+    }
+
+    // Unknown — only treat as in stock if qty is positive; qty null stays unknown/in-stock for catalog
+    if (qty != null) {
+      return {
+        availableForSale: qty > 0,
+        inStock: qty > 0,
+        inventoryQuantity: qty
+      };
+    }
+
+    return {
+      availableForSale: true,
+      inStock: true,
+      inventoryQuantity: null
     };
   };
 

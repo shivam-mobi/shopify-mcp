@@ -7,6 +7,7 @@ import {
 } from "./repositories/makeRepository.js";
 import {
   fetchModels,
+  fetchMakesForYearAndModel,
   matchModelName
 } from "./repositories/modelRepository.js";
 import { fetchProductList } from "./repositories/productRepository.js";
@@ -45,7 +46,11 @@ function formatProducts(products, vehicle, qualifiers) {
       url: product.url,
       variantId: product.variantId,
       partNumber: product.partNumber,
-      handle: product.handle
+      handle: product.handle,
+      availableForSale: product.availableForSale === true,
+      inStock: product.inStock === true,
+      inventoryQuantity:
+        typeof product.inventoryQuantity === "number" ? product.inventoryQuantity : null
     }))
   };
 }
@@ -242,17 +247,33 @@ export async function getFitmentNextStep({
 
   // Year known, make missing — ask brand (+ model if missing) together
   if (!make) {
-    const makes = await fetchMakes(matchedYear);
     if (model) {
+      const makesForModel = await fetchMakesForYearAndModel(matchedYear, model);
+      const brandOptions = makesForModel.length
+        ? makesForModel.map((row) => row.make)
+        : (await fetchMakes(matchedYear)).map((row) => row.make);
+
+      if (brandOptions.length === 1) {
+        return {
+          status: "need_make",
+          message: `Customer already gave year and model (${matchedYear} ${model}). Do NOT ask for model again. Confirm the brand: ask if their ${matchedYear} ${model} is a ${brandOptions[0]}.`,
+          known: { ...known, model },
+          ask: ["make"],
+          suggestedMake: brandOptions[0],
+          options: brandOptions
+        };
+      }
+
       return {
         status: "need_make",
-        message: `Ask which brand (make) their ${matchedYear} ${model} is.`,
+        message: `Customer already gave year and model (${matchedYear} ${model}). Do NOT ask for model again. Ask them to confirm/choose the brand (make) for their ${matchedYear} ${model}.`,
         known: { ...known, model },
         ask: ["make"],
-        options: makes.map((row) => row.make)
+        options: brandOptions
       };
     }
 
+    const makes = await fetchMakes(matchedYear);
     return {
       status: "need_filters",
       message: `Ask for the brand (make) and model of their ${matchedYear} vehicle in one message.`,

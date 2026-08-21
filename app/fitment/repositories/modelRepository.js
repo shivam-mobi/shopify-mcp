@@ -82,3 +82,28 @@ export async function resolveBaseVehicleIds(year, makeName, modelName) {
 
   return rows.map((row) => Number(row.baseVehicleId));
 }
+
+/**
+ * Brands that have this model name for the given year (for brand confirmation).
+ */
+export async function fetchMakesForYearAndModel(year, modelName) {
+  const needle = String(modelName ?? "").trim();
+  if (!needle) return [];
+
+  return queryPool(
+    getVcdbPool(),
+    `SELECT DISTINCT make.MakeName AS make
+     FROM basevehicle
+     JOIN make ON basevehicle.MakeID = make.MakeID
+     JOIN model ON basevehicle.ModelID = model.ModelID
+     JOIN vehicletype ON model.VehicleTypeID = vehicletype.VehicleTypeID
+     WHERE vehicletype.VehicleTypeGroupID = ?
+       AND basevehicle.YearID = ?
+       AND (
+         LOWER(model.ModelName) = LOWER(?)
+         OR LOWER(model.ModelName) LIKE LOWER(?)
+       )
+     ORDER BY make.MakeName ASC`,
+    [VEHICLE_TYPE_GROUP_ID, Number(year), needle, `%${needle}%`]
+  );
+}

@@ -8,7 +8,6 @@ embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-10"
@@ -19,8 +18,8 @@ scopes = "read_products,unauthenticated_read_product_listings"
 
 [auth]
 redirect_urls = [
-  "https://anti-terms-yearly-outdoors.trycloudflare.com/auth/callback",
-  "https://anti-terms-yearly-outdoors.trycloudflare.com/api/auth"
+  "https://struggle-throwing-recycled.ngrok-free.dev/auth/callback",
+  "https://struggle-throwing-recycled.ngrok-free.dev/api/auth"
 ]
 
 [pos]

@@ -6,12 +6,19 @@ const VARIANTS_BY_IDS_QUERY = `#graphql
         title
         price
         sku
+        availableForSale
+        inventoryQuantity
+        inventoryPolicy
         image {
           url
+        }
+        inventoryItem {
+          tracked
         }
         product {
           title
           handle
+          status
           featuredImage {
             url
           }
@@ -60,9 +67,36 @@ function normalizeVariantNode(node) {
   if (!node?.id) return null;
 
   const product = node.product ?? {};
+
+  // Only ACTIVE products (skip DRAFT / ARCHIVED)
+  const status = String(product.status || "").toUpperCase();
+  if (status && status !== "ACTIVE") {
+    console.log("[shopify] Skipping non-active product", {
+      variantId: node.id,
+      sku: node.sku,
+      title: product.title || node.title,
+      status: product.status
+    });
+    return null;
+  }
+
   const handle = product.handle ?? "";
   const title = product.title || node.title || node.sku || "";
   const imageUrl = node.image?.url || product.featuredImage?.url || "";
+  const inventoryQuantity =
+    typeof node.inventoryQuantity === "number" ? node.inventoryQuantity : null;
+  const tracked = Boolean(node.inventoryItem?.tracked);
+  // Prefer Shopify's availableForSale; fall back to quantity when tracked
+  const availableForSale =
+    typeof node.availableForSale === "boolean"
+      ? node.availableForSale
+      : tracked
+        ? (inventoryQuantity ?? 0) > 0
+        : true;
+  // Qty 0 always means out of stock for display/cart (even if policy allows overselling)
+  const inStock =
+    availableForSale === true &&
+    (inventoryQuantity == null || inventoryQuantity > 0);
 
   return {
     variantId: String(node.id),
@@ -71,7 +105,11 @@ function normalizeVariantNode(node) {
     price: formatPrice(node.price),
     image_url: imageUrl,
     handle,
-    url: handle ? `/products/${handle}` : ""
+    url: handle ? `/products/${handle}` : "",
+    availableForSale,
+    inStock,
+    inventoryQuantity,
+    inventoryPolicy: node.inventoryPolicy || null
   };
 }
 
@@ -211,7 +249,10 @@ export async function fetchShopifyVariantsByIds(shop, variantIds = []) {
                 id: node.id,
                 sku: node.sku,
                 title: node.product?.title || node.title,
-                price: node.price
+                price: node.price,
+                status: node.product?.status,
+                availableForSale: node.availableForSale,
+                inventoryQuantity: node.inventoryQuantity
               }))
           },
           null,
@@ -224,16 +265,24 @@ export async function fetchShopifyVariantsByIds(shop, variantIds = []) {
         continue;
       }
 
+      let skippedInactive = 0;
       for (const node of payload.data?.nodes ?? []) {
         const normalized = normalizeVariantNode(node);
-        if (normalized?.variantId) {
-          byGid.set(normalized.variantId, normalized);
-          const numeric = normalized.variantId.match(/\/(\d+)$/)?.[1];
-          if (numeric) {
-            byGid.set(numeric, normalized);
-            byGid.set(`gid://shopify/ProductVariant/${numeric}`, normalized);
+        if (!normalized?.variantId) {
+          if (node?.product?.status && String(node.product.status).toUpperCase() !== "ACTIVE") {
+            skippedInactive += 1;
           }
+          continue;
         }
+        byGid.set(normalized.variantId, normalized);
+        const numeric = normalized.variantId.match(/\/(\d+)$/)?.[1];
+        if (numeric) {
+          byGid.set(numeric, normalized);
+          byGid.set(`gid://shopify/ProductVariant/${numeric}`, normalized);
+        }
+      }
+      if (skippedInactive) {
+        console.log(`[shopify] Skipped ${skippedInactive} non-ACTIVE variant(s) in this batch`);
       }
     }
   } catch (error) {

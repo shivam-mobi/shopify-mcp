@@ -901,27 +901,43 @@
         price.textContent = product.price;
         info.appendChild(price);
 
-        // Add add-to-cart button
-        const button = document.createElement('button');
-        button.classList.add('shop-ai-add-to-cart');
-        button.textContent = 'Add to Cart';
-        button.dataset.productId = product.id;
+        const qty = typeof product.inventoryQuantity === 'number' ? product.inventoryQuantity : null;
+        const inStock =
+          product.inStock === true &&
+          product.availableForSale !== false &&
+          qty !== 0;
 
-        // Add click handler for the button
-        button.addEventListener('click', function() {
-          // Send message to add this product to cart
-          const input = document.querySelector('.shop-ai-chat-input input');
-          if (input) {
-            input.value = `Add ${product.title} to my cart`;
-            // Trigger a click on the send button
-            const sendButton = document.querySelector('.shop-ai-chat-send');
-            if (sendButton) {
-              sendButton.click();
+        const stock = document.createElement('p');
+        stock.classList.add('shop-ai-product-stock');
+        if (inStock) {
+          stock.classList.add('in-stock');
+          stock.textContent = qty != null && qty > 0 ? `In stock (${qty})` : 'In stock';
+        } else {
+          stock.classList.add('out-of-stock');
+          stock.textContent = 'Out of stock';
+          card.classList.add('shop-ai-product-card--out-of-stock');
+        }
+        info.appendChild(stock);
+
+        // Only show Add to Cart when in stock
+        if (inStock) {
+          const button = document.createElement('button');
+          button.classList.add('shop-ai-add-to-cart');
+          button.textContent = 'Add to Cart';
+          button.dataset.productId = product.id;
+          button.addEventListener('click', function() {
+            const input = document.querySelector('.shop-ai-chat-input input');
+            if (input) {
+              input.value = `Add ${product.title} to my cart`;
+              const sendButton = document.querySelector('.shop-ai-chat-send');
+              if (sendButton) {
+                sendButton.click();
+              }
             }
-          }
-        });
+          });
+          info.appendChild(button);
+        }
 
-        info.appendChild(button);
         card.appendChild(info);
 
         return card;
