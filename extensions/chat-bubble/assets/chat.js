@@ -389,23 +389,44 @@
         // Process the text with various Markdown features
         let processedText = rawText;
 
+        // Remove markdown images entirely (LLM often emits ![alt](image_url)).
+        // The link regex below would otherwise turn them into clickable "!alt" image links.
+        processedText = processedText.replace(/!\[[^\]]*\]\([^)]+\)/g, '');
+        // Remove stock quantity lines from assistant text (cards show stock status)
+        processedText = processedText.replace(/^\s*Stock:\s*.*$/gim, '');
+        processedText = processedText.replace(/\n{3,}/g, '\n\n').trim();
+
+        // Fix placeholder storefront hosts the model sometimes invents
+        const storefrontOrigin = (window.shopChatConfig && window.shopChatConfig.storefrontUrl)
+          ? String(window.shopChatConfig.storefrontUrl).replace(/\/+$/, '')
+          : window.location.origin;
+        processedText = processedText.replace(
+          /https?:\/\/(?:www\.)?yourstore\.com/gi,
+          storefrontOrigin
+        );
+
         // Process Markdown links
         const markdownLinkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
         processedText = processedText.replace(markdownLinkRegex, (match, text, url) => {
+          const href = this.toAbsoluteUrl(String(url || '').trim());
+          if (!href) {
+            return text;
+          }
+
           // Check if it's an auth URL
-          if (url.includes('shopify.com/authentication') &&
-             (url.includes('oauth/authorize') || url.includes('authentication'))) {
+          if (href.includes('shopify.com/authentication') &&
+             (href.includes('oauth/authorize') || href.includes('authentication'))) {
             // Store the auth URL in a global variable for later use - this avoids issues with onclick handlers
-            window.shopAuthUrl = url;
+            window.shopAuthUrl = href;
             // Just return normal link that will be handled by the document click handler
             return '<a href="#auth" class="shop-auth-trigger">' + text + '</a>';
           }
           // If it's a checkout link, replace the text
-          else if (url.includes('/cart') || url.includes('checkout')) {
-            return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">click here to proceed to checkout</a>';
+          else if (href.includes('/cart') || href.includes('checkout')) {
+            return '<a href="' + href + '" target="_blank" rel="noopener noreferrer">click here to proceed to checkout</a>';
           } else {
             // For normal links, preserve the original text
-            return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + text + '</a>';
+            return '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + text + '</a>';
           }
         });
 
@@ -414,6 +435,18 @@
 
         // Apply the formatted HTML
         element.innerHTML = processedText;
+      },
+
+      /**
+       * Turn relative storefront paths into absolute URLs so target=_blank works.
+       */
+      toAbsoluteUrl: function(url) {
+        if (!url || url === '#' || url === '#auth') return url;
+        if (/^https?:\/\//i.test(url)) return url;
+        if (url.startsWith('//')) return window.location.protocol + url;
+        if (url.startsWith('/')) return window.location.origin + url;
+        if (url.startsWith('mailto:') || url.startsWith('tel:')) return url;
+        return url;
       },
 
       /**
@@ -886,8 +919,21 @@
         // If product has a URL, make the title a link
         if (product.url) {
           const titleLink = document.createElement('a');
-          titleLink.href = product.url;
+          let href = product.url;
+          if (href.includes('yourstore.com')) {
+            const storefrontOrigin = (window.shopChatConfig && window.shopChatConfig.storefrontUrl)
+              ? String(window.shopChatConfig.storefrontUrl).replace(/\/+$/, '')
+              : window.location.origin;
+            href = href.replace(/https?:\/\/(?:www\.)?yourstore\.com/gi, storefrontOrigin);
+          } else if (href.startsWith('/')) {
+            const storefrontOrigin = (window.shopChatConfig && window.shopChatConfig.storefrontUrl)
+              ? String(window.shopChatConfig.storefrontUrl).replace(/\/+$/, '')
+              : window.location.origin;
+            href = storefrontOrigin + href;
+          }
+          titleLink.href = href;
           titleLink.target = '_blank';
+          titleLink.rel = 'noopener noreferrer';
           titleLink.textContent = product.title;
           title.textContent = '';
           title.appendChild(titleLink);
@@ -911,7 +957,7 @@
         stock.classList.add('shop-ai-product-stock');
         if (inStock) {
           stock.classList.add('in-stock');
-          stock.textContent = qty != null && qty > 0 ? `In stock (${qty})` : 'In stock';
+          stock.textContent = 'In stock';
         } else {
           stock.classList.add('out-of-stock');
           stock.textContent = 'Out of stock';

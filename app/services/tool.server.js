@@ -101,6 +101,25 @@ export function createToolService() {
 
     const variantId = product.variantId || variant?.id;
     const availability = resolveProductAvailability(product, variant);
+    const storefrontBase = (
+      process.env.STOREFRONT_URL ||
+      process.env.SHOPIFY_STOREFRONT_URL ||
+      ""
+    ).trim().replace(/\/+$/, "");
+
+    let productUrl =
+      product.url ||
+      product.online_store_url ||
+      product.onlineStoreUrl ||
+      "";
+    if (!productUrl && product.handle) {
+      productUrl = `/products/${product.handle}`;
+    }
+    if (productUrl.includes("yourstore.com") && storefrontBase) {
+      productUrl = productUrl.replace(/https?:\/\/(?:www\.)?yourstore\.com/gi, storefrontBase);
+    } else if (productUrl.startsWith("/") && storefrontBase) {
+      productUrl = `${storefrontBase}${productUrl}`;
+    }
 
     return {
       id: variantId || product.product_id || product.id || product.partNumber || `product-${Math.random().toString(36).substring(7)}`,
@@ -108,7 +127,7 @@ export function createToolService() {
       price,
       image_url: resolveProductImageUrl(product),
       description: product.description || product.note || "",
-      url: product.url || (product.handle ? `/products/${product.handle}` : product.online_store_url || ""),
+      url: productUrl,
       availableForSale: availability.availableForSale,
       inStock: availability.inStock,
       inventoryQuantity: availability.inventoryQuantity

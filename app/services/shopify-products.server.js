@@ -19,6 +19,7 @@ const VARIANTS_BY_IDS_QUERY = `#graphql
           title
           handle
           status
+          onlineStoreUrl
           featuredImage {
             url
           }
@@ -54,6 +55,27 @@ export function toVariantGid(variantId) {
   }
 
   return null;
+}
+
+function getStorefrontBaseUrl() {
+  const raw = (
+    process.env.STOREFRONT_URL ||
+    process.env.SHOPIFY_STOREFRONT_URL ||
+    ""
+  ).trim().replace(/\/+$/, "");
+  return raw || null;
+}
+
+function buildProductUrl(handle, onlineStoreUrl) {
+  if (onlineStoreUrl && /^https?:\/\//i.test(String(onlineStoreUrl))) {
+    return String(onlineStoreUrl).trim();
+  }
+
+  const path = handle ? `/products/${String(handle).replace(/^\//, "")}` : "";
+  if (!path) return "";
+
+  const base = getStorefrontBaseUrl();
+  return base ? `${base}${path}` : path;
 }
 
 function formatPrice(price) {
@@ -105,7 +127,7 @@ function normalizeVariantNode(node) {
     price: formatPrice(node.price),
     image_url: imageUrl,
     handle,
-    url: handle ? `/products/${handle}` : "",
+    url: buildProductUrl(handle, product.onlineStoreUrl),
     availableForSale,
     inStock,
     inventoryQuantity,
