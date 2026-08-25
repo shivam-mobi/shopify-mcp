@@ -11,7 +11,8 @@ const prisma = global.prismaGlobal ?? new PrismaClient();
 export default prisma;
 
 /**
- * Store a code verifier for PKCE authentication
+ * Store a code verifier for PKCE authentication.
+ * Upserts by state so retries replace the verifier that matches the latest auth URL.
  * @param {string} state - The state parameter used in OAuth flow
  * @param {string} verifier - The code verifier to store
  * @returns {Promise<Object>} - The saved code verifier object
@@ -22,10 +23,15 @@ export async function storeCodeVerifier(state, verifier) {
   expiresAt.setMinutes(expiresAt.getMinutes() + 10);
 
   try {
-    return await prisma.codeVerifier.create({
-      data: {
+    return await prisma.codeVerifier.upsert({
+      where: { state },
+      create: {
         id: `cv_${Date.now()}`,
         state,
+        verifier,
+        expiresAt
+      },
+      update: {
         verifier,
         expiresAt
       }

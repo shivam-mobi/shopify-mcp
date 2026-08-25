@@ -114,24 +114,24 @@ async function exchangeCodeForToken(code, state) {
       codeVerifier = verifierRecord.verifier;
     } else {
       console.warn("Code verifier not found for state:", state);
-      // Proceed anyway, since we might be using an older flow without PKCE
     }
   } catch (error) {
     console.error("Error retrieving code verifier:", error);
-    // Proceed anyway and attempt the token exchange
+  }
+
+  if (!codeVerifier) {
+    throw new Error(
+      "PKCE code_verifier missing for this login. Please click the authorize link again and complete login in one try."
+    );
   }
 
   const requestBody = {
     grant_type: "authorization_code",
     client_id: clientId,
     code: code,
-    redirect_uri: redirectUri
+    redirect_uri: redirectUri,
+    code_verifier: codeVerifier
   };
-
-  // Add code_verifier if we have it
-  if (codeVerifier) {
-    requestBody.code_verifier = codeVerifier;
-  }
 
   // Format the request as x-www-form-urlencoded instead of JSON
   const formData = new URLSearchParams();
