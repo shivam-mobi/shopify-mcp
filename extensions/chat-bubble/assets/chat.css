@@ -494,9 +494,21 @@
     line-height: 1.3;
     font-weight: 500;
     color: #333;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .shop-ai-product-title a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .shop-ai-product-title.shop-ai-product-title--link {
+    cursor: pointer;
+  }
+
+  .shop-ai-product-title.shop-ai-product-title--link:hover {
+    text-decoration: underline;
   }
   
   .shop-ai-product-price {

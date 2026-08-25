@@ -16,6 +16,8 @@ import {
   buildPreservedCartUpdate,
   extractCartPayload,
   extractCheckoutPayload,
+  extractCheckoutValidationErrors,
+  humanizeCheckoutValidationError,
   extractContinueUrl,
   fetchLiveCart,
   formatCartSummary,
@@ -71,17 +73,30 @@ export function getCartWrapperTools() {
     {
       name: "remove_from_cart",
       description:
-        "Remove one product from the cart. Keeps all other items. Use variant_id if known, otherwise product_title (e.g. '2014 Land Rover' or 'Honda Accord').",
+        "Reduce quantity or fully remove a cart product. DEFAULT reduces quantity by 1 (does NOT remove the whole line). " +
+        "For 'reduce 1 qty' / 'remove one' / 'decrease quantity': pass quantity:1 (or omit quantity — default is 1). " +
+        "ONLY to delete the product entirely (customer says remove this product / delete from cart), pass remove_all:true. " +
+        "Use variant_id if known, otherwise product_title.",
       input_schema: {
         type: "object",
         properties: {
           variant_id: {
             type: "string",
-            description: "ProductVariant GID to remove"
+            description: "ProductVariant GID to remove or reduce"
           },
           product_title: {
             type: "string",
             description: "Product title or distinctive words (year/make/model) if variant_id unknown"
+          },
+          quantity: {
+            type: "integer",
+            description:
+              "How many units to subtract. Default 1. Example: cart qty 2 + quantity:1 → leaves qty 1."
+          },
+          remove_all: {
+            type: "boolean",
+            description:
+              "Set true ONLY to remove the entire product line from the cart. Do not set this for quantity reduce requests."
           }
         }
       }
@@ -100,7 +115,8 @@ export function getCartWrapperTools() {
         "Set or update shipping address on checkout (replaces any previous address). Keeps all cart products. " +
         "YOU must convert the customer's free-text address into Shopify fields before calling: " +
         "split first/last name; use 2-letter state (New York/new yark → NY); use ISO country (USA → US). " +
-        "Prefer structured fields over address_text. Do NOT ask the customer to reformat — convert yourself.",
+        "Prefer structured fields over address_text. Do NOT ask the customer to reformat — convert yourself. " +
+        "If the tool returns success:false / shipping_saved:false, the address was NOT saved — explain customer_message clearly and ask for corrected details. Never claim it was saved.",
       input_schema: {
         type: "object",
         properties: {
@@ -158,7 +174,7 @@ export async function callCartWrapperTool(
     case "add_to_cart":
       return addToCart(mcpClient, conversationId, toolArgs);
     case "remove_from_cart":
-      return removeFromCart(mcpClient, conversationId, toolArgs);
+      return removeFromCart(mcpClient, conversationId, toolArgs, context);
     case "get_my_cart":
       return getMyCart(mcpClient, conversationId);
     case "set_cart_shipping":
@@ -197,8 +213,9 @@ export function buildActiveCartWrapperContextMessage(cartId) {
   return {
     role: "system",
     content:
-      "This conversation has an active cart. Use add_to_cart to add products (keeps existing items), " +
-      "remove_from_cart to remove one product, get_my_cart to show contents, set_cart_shipping for address, " +
+      "This conversation has an active cart. Use add_to_cart to add products or increase qty, " +
+      "remove_from_cart to reduce qty by 1 by default (pass remove_all:true only to delete the product), " +
+      "get_my_cart to show contents, set_cart_shipping for address, " +
       "clear_my_cart to start over. Do NOT call create_cart, update_cart, or get_cart directly."
   };
 }
@@ -254,7 +271,12 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
   );
 }
 
-async function removeFromCart(mcpClient, conversationId, { variant_id, product_title }) {
+async function removeFromCart(
+  mcpClient,
+  conversationId,
+  { variant_id, product_title, quantity, remove_all },
+  context = {}
+) {
   const live = await fetchLiveCart(mcpClient, conversationId);
   if (!live?.cart?.line_items?.length) {
     return toolError("Cart is empty.");
@@ -271,13 +293,42 @@ async function removeFromCart(mcpClient, conversationId, { variant_id, product_t
     );
   }
 
-  const remaining = live.cart.line_items.filter(
-    (line) => line?.item?.id !== removeVariantId
+  const targetLine = live.cart.line_items.find(
+    (line) => line?.item?.id === removeVariantId
   );
-  const lineItems = toWritableLineItems(remaining);
+  const currentQty = Math.max(1, Number(targetLine?.quantity) || 1);
+  const userMessage = String(context.userMessage || "");
 
-  if (lineItems.length === live.cart.line_items.length) {
-    return toolError("Product not found in cart.");
+  // Default: reduce by 1. Full delete only with remove_all:true (or clear intent in user text).
+  const wantsFullRemove =
+    remove_all === true ||
+    (
+      quantity == null &&
+      /\b(remove|delete|take)\b/i.test(userMessage) &&
+      !/\b(reduce|decrease|qty|quantity|one less|minus)\b/i.test(userMessage) &&
+      /\b(product|item|from\s+(the\s+)?cart|entirely|completely|all)\b/i.test(userMessage)
+    );
+
+  const reduceBy = wantsFullRemove
+    ? currentQty
+    : Math.max(1, Number(quantity) || 1);
+  const nextQty = currentQty - reduceBy;
+
+  let lineItems;
+  if (nextQty <= 0) {
+    lineItems = toWritableLineItems(
+      live.cart.line_items.filter((line) => line?.item?.id !== removeVariantId)
+    );
+  } else {
+    lineItems = toWritableLineItems(
+      live.cart.line_items.map((line) => {
+        if (line?.item?.id !== removeVariantId) return line;
+        return {
+          ...line,
+          quantity: nextQty
+        };
+      })
+    );
   }
 
   const response = await updateCartLineItems(
@@ -290,18 +341,34 @@ async function removeFromCart(mcpClient, conversationId, { variant_id, product_t
 
   console.log("[cart-wrapper] remove_from_cart", {
     conversationId,
-    removed: removeVariantId,
-    remaining: lineItems.length
+    variantId: removeVariantId,
+    currentQty,
+    reduceBy,
+    nextQty: Math.max(0, nextQty),
+    wantsFullRemove,
+    remainingLines: lineItems.length,
+    userMessagePreview: userMessage.slice(0, 80)
   });
 
-  return toolResult(
-    await summarizeCartWithShipping(
-      mcpClient,
-      conversationId,
-      extractCartPayload(response),
-      response
-    )
+  const summary = await summarizeCartWithShipping(
+    mcpClient,
+    conversationId,
+    extractCartPayload(response),
+    response
   );
+
+  return toolResult({
+    ...summary,
+    action: nextQty <= 0 ? "removed_product" : "reduced_quantity",
+    variant_id: removeVariantId,
+    previous_quantity: currentQty,
+    removed_quantity: Math.min(reduceBy, currentQty),
+    new_quantity: Math.max(0, nextQty),
+    instruction:
+      nextQty <= 0
+        ? "Product was fully removed from the cart. Base your reply ONLY on the items list."
+        : `Quantity was reduced from ${currentQty} to ${nextQty}. Do NOT say the product was removed. Base your reply ONLY on the items list.`
+  });
 }
 
 async function getMyCart(mcpClient, conversationId) {
@@ -331,20 +398,48 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
   });
 
   if (normalized.missing.length > 0) {
-    return toolError(
-      `Missing shipping fields: ${normalized.missing.join(", ")}. ` +
-        "Ask only for those fields, or pass address_text with the customer's full message."
-    );
+    const fieldLabels = {
+      first_name: "First Name",
+      last_name: "Last Name",
+      phone_number: "Phone Number",
+      street_address: "Street Address",
+      address_locality: "City",
+      address_region: "State/Region",
+      postal_code: "Postal Code",
+      address_country: "Country"
+    };
+    const missingLabels = normalized.missing.map((field) => fieldLabels[field] || field);
+    return toolResult({
+      success: false,
+      shipping_saved: false,
+      issues: missingLabels.map((label) => `${label} is required.`),
+      customer_message:
+        `I couldn't save your shipping address yet because some required details are missing: ${missingLabels.join(", ")}. ` +
+        "Please send those details and I'll update the address.",
+      instruction:
+        "The shipping address was NOT saved. Ask only for the missing fields listed in issues/customer_message. Never say the address was saved."
+    });
   }
 
   const resolved = normalized.address;
 
   if (isUsLikeCountry(resolved.address_country) && !resolved.address_region) {
-    return toolError(
-      "Missing address_region. Convert city to a 2-letter US state yourself (e.g. New York / new yark → NY) " +
-        "and call set_cart_shipping again with structured fields. Do NOT ask the customer for state if the city implies it."
-    );
+    return toolResult({
+      success: false,
+      shipping_saved: false,
+      issues: ["State/Region is required."],
+      customer_message:
+        "I couldn't save your shipping address yet because the state is missing. " +
+        "Please tell me the state (for example FL or Florida) and I'll update it.",
+      instruction:
+        "The shipping address was NOT saved. Ask for state only. Never say the address was saved."
+    });
   }
+
+  resolved.phone_number = normalizePhoneNumber(
+    resolved.phone_number,
+    resolved.address_country
+  );
 
   const destination = buildShippingDestination(resolved);
   const cartLineItems = toWritableLineItems(live.cart.line_items);
@@ -364,19 +459,56 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
     lineItems: cartLineItems
   }));
 
-  await setConversationShippingAddress(conversationId, writableShippingAddress(destination));
-
   const synced = await syncCheckoutWithCart(mcpClient, conversationId, live.cart, {
     shipping: destination,
     force: true
   });
 
-  if (!synced?.shippingAddress?.street_address) {
-    return toolError(
-      "Shopify did not save the shipping address on checkout. " +
-        (synced?.error || "Please try again.")
-    );
+  const validationErrors = [
+    ...(synced?.validationErrors || []),
+    ...extractCheckoutValidationErrors(synced?.checkout)
+  ].filter(Boolean);
+
+  if (validationErrors.length > 0) {
+    const readableIssues = [
+      ...new Set(
+        validationErrors.map((item) =>
+          typeof item === "string"
+            ? humanizeCheckoutValidationError("", item)
+            : item.readable || humanizeCheckoutValidationError(item.code, item.content)
+        )
+      )
+    ];
+
+    console.warn("[cart-wrapper] set_cart_shipping validation failed", {
+      conversationId,
+      errors: readableIssues
+    });
+
+    return toolResult({
+      success: false,
+      shipping_saved: false,
+      issues: readableIssues,
+      customer_message: buildReadableShippingFailureMessage(readableIssues),
+      instruction:
+        "The shipping address was NOT saved. Explain customer_message to the customer in plain, friendly language. " +
+        "Ask them to fix the listed issues. NEVER say the address was saved. Do NOT share checkout_url as if shipping succeeded."
+    });
   }
+
+  if (!synced?.shippingAddress?.street_address) {
+    return toolResult({
+      success: false,
+      shipping_saved: false,
+      issues: [synced?.error || "Shopify did not accept the shipping address."],
+      customer_message:
+        "I couldn't save your shipping address yet. Please double-check the address details and try again.",
+      instruction:
+        "The shipping address was NOT saved. Tell the customer clearly and ask them to retry. Never say it was saved."
+    });
+  }
+
+  await setConversationShippingAddress(conversationId, writableShippingAddress(synced.shippingAddress));
 
   console.log("[cart-wrapper] set_cart_shipping", {
     conversationId,
@@ -390,6 +522,23 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
       checkoutUrl: synced.checkoutUrl,
       shippingAddress: synced.shippingAddress
     })
+  );
+}
+
+function buildReadableShippingFailureMessage(issues = []) {
+  const unique = [...new Set(issues.filter(Boolean))];
+  if (unique.length === 0) {
+    return "I couldn't save your shipping address yet because some details look invalid. Please check and send the corrected info.";
+  }
+
+  if (unique.length === 1) {
+    return `I couldn't save your shipping address yet. ${unique[0]} Please send the corrected detail and I'll update it.`;
+  }
+
+  return (
+    "I couldn't save your shipping address yet. Please fix these issues:\n" +
+    unique.map((issue, index) => `${index + 1}. ${issue}`).join("\n") +
+    "\nOnce you send the corrected details, I'll try again."
   );
 }
 
@@ -444,10 +593,11 @@ function extractToolErrorText(toolResponse) {
 }
 
 function buildShippingDestination(resolved) {
+  const phone = normalizePhoneNumber(resolved.phone_number, resolved.address_country);
   return {
     first_name: resolved.first_name,
     last_name: resolved.last_name,
-    phone_number: resolved.phone_number,
+    phone_number: phone,
     street_address: resolved.street_address,
     extended_address: resolved.extended_address || undefined,
     address_locality: resolved.address_locality,
@@ -455,6 +605,22 @@ function buildShippingDestination(resolved) {
     postal_code: resolved.postal_code,
     address_country: resolved.address_country
   };
+}
+
+function normalizePhoneNumber(phone, country) {
+  const raw = String(phone || "").trim();
+  if (!raw) return raw;
+
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return raw;
+
+  if (isUsLikeCountry(country)) {
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  }
+
+  if (raw.startsWith("+")) return `+${digits}`;
+  return digits.length >= 10 ? `+${digits}` : raw;
 }
 
 function buildCheckoutLineItems(lineItems = []) {
@@ -543,7 +709,8 @@ async function syncCheckoutWithCart(
 
     if (updated?.checkout?.id) {
       await setConversationCheckoutId(conversationId, updated.checkout.id);
-      if (updated.shippingAddress) {
+      const validationErrors = extractCheckoutValidationErrors(updated.checkout);
+      if (validationErrors.length === 0 && updated.shippingAddress) {
         await setConversationShippingAddress(
           conversationId,
           writableShippingAddress(updated.shippingAddress)
@@ -553,14 +720,16 @@ async function syncCheckoutWithCart(
       console.log("[cart-wrapper] updated existing checkout", {
         conversationId,
         checkoutId: updated.checkout.id,
-        hasShipping: Boolean(updated.shippingAddress?.street_address)
+        hasShipping: Boolean(updated.shippingAddress?.street_address),
+        validationErrors
       });
 
       return {
         checkoutId: updated.checkout.id,
         checkoutUrl: updated.checkoutUrl,
         shippingAddress: updated.shippingAddress || destination,
-        checkout: updated.checkout
+        checkout: updated.checkout,
+        validationErrors
       };
     }
 
@@ -580,7 +749,12 @@ async function syncCheckoutWithCart(
   }
 
   await setConversationCheckoutId(conversationId, created.checkout.id);
-  if (created.shippingAddress) {
+  const validationErrors = [
+    ...(created.validationErrors || []),
+    ...extractCheckoutValidationErrors(created.checkout)
+  ];
+
+  if (validationErrors.length === 0 && created.shippingAddress) {
     await setConversationShippingAddress(
       conversationId,
       writableShippingAddress(created.shippingAddress)
@@ -590,14 +764,16 @@ async function syncCheckoutWithCart(
   console.log("[cart-wrapper] created checkout", {
     conversationId,
     checkoutId: created.checkout.id,
-    hasShipping: Boolean(created.shippingAddress?.street_address)
+    hasShipping: Boolean(created.shippingAddress?.street_address),
+    validationErrors
   });
 
   return {
     checkoutId: created.checkout.id,
     checkoutUrl: created.checkoutUrl,
     shippingAddress: created.shippingAddress || destination,
-    checkout: created.checkout
+    checkout: created.checkout,
+    validationErrors
   };
 }
 
@@ -671,14 +847,16 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
       return {
         checkout: retried,
         checkoutUrl: extractContinueUrl(retryResponse) || retried.continue_url,
-        shippingAddress
+        shippingAddress,
+        validationErrors: extractCheckoutValidationErrors(retried)
       };
     }
 
     return {
       checkout,
       checkoutUrl: extractContinueUrl(updateResponse) || checkout.continue_url,
-      shippingAddress: shippingAddress || destination || extractShippingDestination(existing)
+      shippingAddress: shippingAddress || destination || extractShippingDestination(existing),
+      validationErrors: extractCheckoutValidationErrors(checkout)
     };
   } catch (error) {
     return { error: error.message };
@@ -738,14 +916,16 @@ async function createCheckoutFromCart(mcpClient, cart, destination) {
       return {
         checkout,
         checkoutUrl: extractContinueUrl(updateResponse) || checkout.continue_url,
-        shippingAddress
+        shippingAddress,
+        validationErrors: extractCheckoutValidationErrors(checkout)
       };
     }
 
     return {
       checkout,
       checkoutUrl: extractContinueUrl(response) || checkout.continue_url,
-      shippingAddress: shippingAddress || destination
+      shippingAddress: shippingAddress || destination,
+      validationErrors: extractCheckoutValidationErrors(checkout)
     };
   } catch (error) {
     return { error: error.message };

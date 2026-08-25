@@ -788,13 +788,15 @@
             return;
           }
 
-          // Add messages to the UI - filter out tool results
+          // Add messages to the UI - filter out tool results; restore product cards
           data.messages.forEach(message => {
             try {
               const messageContents = JSON.parse(message.content);
               for (const contentBlock of messageContents) {
                 if (contentBlock.type === 'text') {
                   ShopAIChat.Message.add(contentBlock.text, message.role, messagesContainer);
+                } else if (contentBlock.type === 'product_results' && Array.isArray(contentBlock.products)) {
+                  ShopAIChat.UI.displayProductResults(contentBlock.products);
                 }
               }
             } catch (e) {
@@ -982,32 +984,35 @@
         const info = document.createElement('div');
         info.classList.add('shop-ai-product-info');
 
-        // Add product title
+        // Add product title (full text always visible)
         const title = document.createElement('h3');
         title.classList.add('shop-ai-product-title');
-        title.textContent = product.title;
+        title.setAttribute('aria-label', product.title || 'Product title');
+        title.textContent = product.title || '';
 
-        // If product has a URL, make the title a link
+        let productHref = '';
         if (product.url) {
-          const titleLink = document.createElement('a');
-          let href = product.url;
-          if (href.includes('yourstore.com')) {
+          productHref = product.url;
+          if (productHref.includes('yourstore.com')) {
             const storefrontOrigin = (window.shopChatConfig && window.shopChatConfig.storefrontUrl)
               ? String(window.shopChatConfig.storefrontUrl).replace(/\/+$/, '')
               : window.location.origin;
-            href = href.replace(/https?:\/\/(?:www\.)?yourstore\.com/gi, storefrontOrigin);
-          } else if (href.startsWith('/')) {
+            productHref = productHref.replace(/https?:\/\/(?:www\.)?yourstore\.com/gi, storefrontOrigin);
+          } else if (productHref.startsWith('/')) {
             const storefrontOrigin = (window.shopChatConfig && window.shopChatConfig.storefrontUrl)
               ? String(window.shopChatConfig.storefrontUrl).replace(/\/+$/, '')
               : window.location.origin;
-            href = storefrontOrigin + href;
+            productHref = storefrontOrigin + productHref;
           }
-          titleLink.href = href;
-          titleLink.target = '_blank';
-          titleLink.rel = 'noopener noreferrer';
-          titleLink.textContent = product.title;
-          title.textContent = '';
-          title.appendChild(titleLink);
+        }
+
+        if (productHref) {
+          title.classList.add('shop-ai-product-title--link');
+          title.addEventListener('click', function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            window.open(productHref, '_blank', 'noopener,noreferrer');
+          });
         }
 
         info.appendChild(title);

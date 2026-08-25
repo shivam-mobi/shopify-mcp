@@ -35,7 +35,10 @@ export function createToolService() {
       const responseData = extractToolResponseData(toolUseResponse);
       const products = extractProductsFromResponse(responseData);
 
-      return products.map(formatProductData);
+      const formatted = products.map(formatProductData);
+      // In-stock first; out-of-stock at the end
+      formatted.sort((a, b) => Number(b.inStock === true) - Number(a.inStock === true));
+      return formatted;
     } catch (error) {
       console.error("Error processing product search results:", error);
       return [];

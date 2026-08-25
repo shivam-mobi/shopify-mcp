@@ -34,25 +34,30 @@ function normalizeQualifiers(qualifiers) {
 }
 
 function formatProducts(products, vehicle, qualifiers) {
+  const formatted = products.map((product) => ({
+    id: product.variantId || product.partNumber,
+    title: product.title,
+    price: product.price,
+    image_url: product.image_url,
+    description: product.note,
+    url: product.url,
+    variantId: product.variantId,
+    partNumber: product.partNumber,
+    handle: product.handle,
+    availableForSale: product.availableForSale === true,
+    inStock: product.inStock === true,
+    inventoryQuantity:
+      typeof product.inventoryQuantity === "number" ? product.inventoryQuantity : null
+  }));
+
+  // In-stock first; out-of-stock at the end
+  formatted.sort((a, b) => Number(b.inStock === true) - Number(a.inStock === true));
+
   return {
     status: products.length ? "success" : "not_found",
     vehicle,
     qualifiers,
-    products: products.map((product) => ({
-      id: product.variantId || product.partNumber,
-      title: product.title,
-      price: product.price,
-      image_url: product.image_url,
-      description: product.note,
-      url: product.url,
-      variantId: product.variantId,
-      partNumber: product.partNumber,
-      handle: product.handle,
-      availableForSale: product.availableForSale === true,
-      inStock: product.inStock === true,
-      inventoryQuantity:
-        typeof product.inventoryQuantity === "number" ? product.inventoryQuantity : null
-    }))
+    products: formatted
   };
 }
 

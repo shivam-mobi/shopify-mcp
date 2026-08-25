@@ -75,8 +75,10 @@ export async function action({ request }) {
  */
 async function handleHistoryRequest(request, conversationId) {
   const messages = await getConversationHistory(conversationId);
+  const toolService = createToolService();
+  const enrichedMessages = enrichHistoryWithProductResults(messages, toolService);
 
-  return new Response(JSON.stringify({ messages }), { headers: getCorsHeaders(request) });
+  return new Response(JSON.stringify({ messages: enrichedMessages }), { headers: getCorsHeaders(request) });
 }
 
 /**
@@ -223,11 +225,21 @@ async function handleChatSession({
     // Fetch all messages from the database for this conversation
     const dbMessages = await getConversationHistory(conversationId);
 
-    // Format messages for the LLM provider
-    conversationHistory = dbMessages.map(dbMessage => ({
-      role: dbMessage.role,
-      content: parseStoredMessageContent(dbMessage.content)
-    }));
+    // Format messages for the LLM provider (skip UI-only product carousels)
+    conversationHistory = dbMessages
+      .map((dbMessage) => ({
+        role: dbMessage.role,
+        content: parseStoredMessageContent(dbMessage.content)
+      }))
+      .filter((msg) => !isProductResultsOnlyMessage(msg.content))
+      .map((msg) => ({
+        ...msg,
+        content: stripProductResultsBlocks(msg.content)
+      }))
+      .filter((msg) => {
+        if (Array.isArray(msg.content) && msg.content.length === 0) return false;
+        return true;
+      });
 
     const activeCartId = await getConversationCartId(conversationId);
     const activeCartContext = buildActiveCartContextMessage(activeCartId);
@@ -391,6 +403,10 @@ async function handleChatSession({
 
     // Send product results if available
     if (productsToDisplay.length > 0) {
+      // In-stock first; out-of-stock at the end
+      productsToDisplay.sort(
+        (a, b) => Number(b.inStock === true) - Number(a.inStock === true)
+      );
       console.log(
         "[chat] product_results to client:",
         productsToDisplay.map((p) => ({
@@ -404,6 +420,17 @@ async function handleChatSession({
         type: 'product_results',
         products: productsToDisplay
       });
+
+      // Persist so product cards restore after page refresh
+      try {
+        await saveMessage(
+          conversationId,
+          "assistant",
+          JSON.stringify([{ type: "product_results", products: productsToDisplay }])
+        );
+      } catch (persistError) {
+        console.error("[chat] failed to persist product_results", persistError);
+      }
     }
   } catch (error) {
     // The streaming handler takes care of error handling
@@ -528,6 +555,99 @@ function parseStoredMessageContent(raw) {
   } catch {
     return raw;
   }
+}
+
+function isProductResultsOnlyMessage(content) {
+  if (!Array.isArray(content) || content.length === 0) return false;
+  return content.every((block) => block?.type === "product_results");
+}
+
+function stripProductResultsBlocks(content) {
+  if (!Array.isArray(content)) return content;
+  return content.filter((block) => block?.type !== "product_results");
+}
+
+/**
+ * Restore product carousels in history.
+ * Prefers saved product_results messages; for older chats, rebuilds from tool_result payloads.
+ */
+function enrichHistoryWithProductResults(messages, toolService) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+
+  const hasSavedProductResults = messages.some((message) => {
+    const content = parseStoredMessageContent(message.content);
+    return Array.isArray(content) && content.some((block) => block?.type === "product_results");
+  });
+
+  if (hasSavedProductResults) {
+    return messages;
+  }
+
+  const out = [];
+  let pendingProducts = [];
+
+  const flushPendingProducts = (afterMessage) => {
+    if (pendingProducts.length === 0) return;
+
+    const seen = new Set();
+    const unique = pendingProducts.filter((product) => {
+      const key = String(product.id || product.title || "");
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    unique.sort((a, b) => Number(b.inStock === true) - Number(a.inStock === true));
+    pendingProducts = [];
+
+    if (unique.length === 0) return;
+
+    out.push({
+      id: `ui-products-${afterMessage?.id || out.length}`,
+      conversationId: afterMessage?.conversationId,
+      role: "assistant",
+      content: JSON.stringify([{ type: "product_results", products: unique }]),
+      createdAt: afterMessage?.createdAt || new Date().toISOString()
+    });
+  };
+
+  for (const message of messages) {
+    const content = parseStoredMessageContent(message.content);
+
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block?.type !== "tool_result") continue;
+
+        const toolContent = block.content;
+        const normalizedContent = Array.isArray(toolContent)
+          ? toolContent
+          : typeof toolContent === "string"
+            ? [{ type: "text", text: toolContent }]
+            : toolContent;
+
+        const products = toolService.processProductSearchResult({
+          content: normalizedContent
+        });
+        if (products.length > 0) {
+          pendingProducts.push(...products);
+        }
+      }
+    }
+
+    out.push(message);
+
+    const hasAssistantText = message.role === "assistant" && (
+      (Array.isArray(content) && content.some((block) => block?.type === "text" && block.text)) ||
+      (typeof content === "string" && content.trim().length > 0)
+    );
+
+    if (hasAssistantText) {
+      flushPendingProducts(message);
+    }
+  }
+
+  flushPendingProducts(messages[messages.length - 1]);
+  return out;
 }
 
 /**

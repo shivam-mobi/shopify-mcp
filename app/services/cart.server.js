@@ -646,6 +646,120 @@ export function extractCheckoutPayload(toolResponse) {
   return null;
 }
 
+/**
+ * Buyer-fixable checkout validation errors (phone/address/etc).
+ * Ignores expected escalation noise like payment extension prompts.
+ * Returns { code, content, readable } objects for LLM/customer messaging.
+ */
+export function extractCheckoutValidationErrors(checkoutOrResponse) {
+  const checkout = checkoutOrResponse?.id
+    ? checkoutOrResponse
+    : extractCheckoutPayload(checkoutOrResponse) || checkoutOrResponse?.structuredContent;
+
+  const messages = Array.isArray(checkout?.messages) ? checkout.messages : [];
+  if (!messages.length) {
+    return [];
+  }
+
+  const ignoredCodes = new Set([
+    "extension_interaction_required"
+  ]);
+
+  // Any address/buyer field Shopify may reject when adding/updating shipping
+  const fieldHints =
+    /phone|address|postal|zip|delivery|shipping|fulfillment|buyer|destination|region|state|locality|city|country|name|street|email|province|first_name|last_name/i;
+
+  return messages
+    .filter((message) => message && message.type === "error")
+    .filter((message) => !ignoredCodes.has(String(message.code || "")))
+    .filter((message) => {
+      // During address add/update, surface all recoverable errors to the customer
+      if (message.severity === "recoverable") return true;
+      if (message.severity === "requires_buyer_input" && fieldHints.test(String(message.code || "") + String(message.content || ""))) {
+        return true;
+      }
+      return fieldHints.test(String(message.code || "")) || fieldHints.test(String(message.content || ""));
+    })
+    .map((message) => {
+      const content = String(message.content || message.message || "").trim();
+      const code = String(message.code || "").trim();
+      return {
+        code,
+        content,
+        readable: humanizeCheckoutValidationError(code, content)
+      };
+    })
+    .filter((item) => item.readable);
+}
+
+export function humanizeCheckoutValidationError(code, content = "") {
+  const normalizedCode = String(code || "").toLowerCase();
+  const raw = String(content || "").trim().replace(/\s+/g, " ");
+  const blob = `${normalizedCode} ${raw.toLowerCase()}`;
+
+  if (blob.includes("phone")) {
+    return (
+      "The phone number is invalid. Please provide a real mobile/phone number " +
+      "(for example 305-555-1234), not a placeholder like 9999999999."
+    );
+  }
+
+  if (blob.includes("postal") || blob.includes("zip")) {
+    return raw && !/^enter a valid/i.test(raw)
+      ? `The postal/ZIP code looks invalid (${raw}). Please provide a valid ZIP for that city and state.`
+      : "The postal/ZIP code is invalid. Please provide a valid ZIP code for that city and state.";
+  }
+
+  if (blob.includes("first_name") || (blob.includes("first") && blob.includes("name"))) {
+    return "The first name looks invalid. Please provide a valid first name.";
+  }
+
+  if (blob.includes("last_name") || (blob.includes("last") && blob.includes("name"))) {
+    return "The last name looks invalid. Please provide a valid last name.";
+  }
+
+  if (blob.includes("street") || blob.includes("address_line") || normalizedCode.includes("street_address")) {
+    return raw && !/^enter a valid/i.test(raw)
+      ? `The street address looks invalid (${raw}). Please provide a full street address.`
+      : "The street address looks invalid. Please provide a full street address.";
+  }
+
+  if (blob.includes("locality") || blob.includes("city")) {
+    return "The city looks invalid. Please provide a valid city name.";
+  }
+
+  if (blob.includes("region") || blob.includes("province") || blob.includes("state")) {
+    return "The state/region looks invalid. For US addresses use a 2-letter code (for example FL, NY, CA).";
+  }
+
+  if (blob.includes("country")) {
+    return "The country looks invalid. For US addresses use US.";
+  }
+
+  if (blob.includes("email")) {
+    return "The email address looks invalid. Please provide a valid email.";
+  }
+
+  if (
+    blob.includes("address") ||
+    blob.includes("delivery") ||
+    blob.includes("shipping") ||
+    blob.includes("destination") ||
+    blob.includes("fulfillment") ||
+    blob.includes("buyer")
+  ) {
+    return raw
+      ? `This shipping detail could not be accepted: ${raw}`
+      : "One or more shipping address fields look invalid. Please check name, phone, street, city, state, ZIP, and country.";
+  }
+
+  if (raw) {
+    return raw.endsWith(".") ? raw : `${raw}.`;
+  }
+
+  return "Some shipping details look invalid. Please double-check every address field and try again.";
+}
+
 function hasFulfillmentMethods(fulfillment) {
   return Boolean(
     fulfillment &&
@@ -890,9 +1004,10 @@ export function formatCartSummary(
   };
 
   if (shippingAddress) {
+    summary.shipping_saved = true;
     summary.shipping_address = shippingAddress;
     summary.instruction =
-      "Shipping was saved successfully. Confirm shipping_address and share checkout_url. Do not say there was an error.";
+      "Shipping was saved successfully ONLY because shipping_saved is true. Confirm shipping_address and share checkout_url. Do not say there was an error.";
   }
 
   return summary;
@@ -923,7 +1038,6 @@ function formatMoney(amountMinor, currency = "USD") {
 export {
   buildPreservedCartUpdate,
   extractCartPayload,
-  extractCheckoutPayload,
   extractContinueUrl,
   mergeLineItems,
   toWritableLineItems,
