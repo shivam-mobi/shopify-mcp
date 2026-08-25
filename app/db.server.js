@@ -217,6 +217,190 @@ export async function getConversationHistory(conversationId) {
 }
 
 /**
+ * Get the active Shopify cart id for a conversation, if any.
+ */
+export async function getConversationCartId(conversationId) {
+  if (!conversationId) {
+    return null;
+  }
+
+  try {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { activeCartId: true }
+    });
+
+    return conversation?.activeCartId || null;
+  } catch (error) {
+    console.error("Error retrieving conversation cart id:", error);
+    return null;
+  }
+}
+
+/**
+ * Persist the active Shopify cart id for a conversation.
+ */
+export async function setConversationCartId(conversationId, cartId) {
+  if (!conversationId || !cartId) {
+    return null;
+  }
+
+  try {
+    await createOrUpdateConversation(conversationId);
+    return await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { activeCartId: String(cartId) }
+    });
+  } catch (error) {
+    console.error("Error storing conversation cart id:", error);
+    return null;
+  }
+}
+
+/**
+ * Clear the active cart id when a cart is cancelled or expired.
+ */
+export async function clearConversationCartId(conversationId) {
+  if (!conversationId) {
+    return null;
+  }
+
+  try {
+    return await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { activeCartId: null }
+    });
+  } catch (error) {
+    console.error("Error clearing conversation cart id:", error);
+    return null;
+  }
+}
+
+/**
+ * Get last saved shipping destination for this conversation (JSON object or null).
+ */
+export async function getConversationShippingAddress(conversationId) {
+  if (!conversationId) {
+    return null;
+  }
+
+  try {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { shippingAddress: true }
+    });
+
+    if (!conversation?.shippingAddress) {
+      return null;
+    }
+
+    return JSON.parse(conversation.shippingAddress);
+  } catch (error) {
+    console.error("Error retrieving conversation shipping address:", error);
+    return null;
+  }
+}
+
+/**
+ * Persist shipping destination so cart changes can re-apply it on a new checkout.
+ */
+export async function setConversationShippingAddress(conversationId, address) {
+  if (!conversationId || !address) {
+    return null;
+  }
+
+  try {
+    await createOrUpdateConversation(conversationId);
+    return await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { shippingAddress: JSON.stringify(address) }
+    });
+  } catch (error) {
+    console.error("Error storing conversation shipping address:", error);
+    return null;
+  }
+}
+
+/**
+ * Clear saved shipping when cart is cleared.
+ */
+export async function clearConversationShippingAddress(conversationId) {
+  if (!conversationId) {
+    return null;
+  }
+
+  try {
+    return await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { shippingAddress: null }
+    });
+  } catch (error) {
+    console.error("Error clearing conversation shipping address:", error);
+    return null;
+  }
+}
+
+/**
+ * Get the active Shopify checkout id for a conversation, if any.
+ */
+export async function getConversationCheckoutId(conversationId) {
+  if (!conversationId) {
+    return null;
+  }
+
+  try {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { activeCheckoutId: true }
+    });
+
+    return conversation?.activeCheckoutId || null;
+  } catch (error) {
+    console.error("Error retrieving conversation checkout id:", error);
+    return null;
+  }
+}
+
+/**
+ * Persist the active Shopify checkout id for a conversation.
+ */
+export async function setConversationCheckoutId(conversationId, checkoutId) {
+  if (!conversationId || !checkoutId) {
+    return null;
+  }
+
+  try {
+    await createOrUpdateConversation(conversationId);
+    return await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { activeCheckoutId: String(checkoutId) }
+    });
+  } catch (error) {
+    console.error("Error storing conversation checkout id:", error);
+    return null;
+  }
+}
+
+/**
+ * Clear the active checkout id (cancel / expired / cart cleared).
+ */
+export async function clearConversationCheckoutId(conversationId) {
+  if (!conversationId) {
+    return null;
+  }
+
+  try {
+    return await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { activeCheckoutId: null }
+    });
+  } catch (error) {
+    console.error("Error clearing conversation checkout id:", error);
+    return null;
+  }
+}
+
+/**
  * Store customer account URLs for a conversation
  * @param {string} conversationId - The conversation ID
  * @param {string} mcpApiUrl - The customer account MCP URL
@@ -281,6 +465,96 @@ export async function storeLlmRequestLog({ request, response, statusCode, provid
   } catch (error) {
     console.error("Error storing LLM request log:", error);
     return null;
+  }
+}
+
+/**
+ * Persist Shopify MCP JSON-RPC calls (storefront, UCP, customer).
+ * Sensitive fields (tokens, auth headers) are redacted before storage.
+ */
+export async function storeMcpCallLog({
+  conversationId,
+  server,
+  method,
+  toolName,
+  endpoint,
+  request,
+  response,
+  statusCode,
+  durationMs
+}) {
+  try {
+    return await prisma.mcpCallLog.create({
+      data: {
+        conversationId: conversationId || null,
+        server: String(server || "unknown"),
+        method: String(method || "unknown"),
+        toolName: toolName ? String(toolName) : null,
+        endpoint: String(endpoint || ""),
+        request: stringifyMcpPayload(sanitizeMcpPayload(request)),
+        response: stringifyMcpPayload(sanitizeMcpPayload(response)),
+        statusCode: Number.isInteger(statusCode) ? statusCode : 0,
+        durationMs: Number.isInteger(durationMs) ? durationMs : null
+      }
+    });
+  } catch (error) {
+    console.error("Error storing MCP call log:", error);
+    return null;
+  }
+}
+
+const MCP_REDACTED_KEYS = new Set([
+  "authorization",
+  "accesstoken",
+  "access_token",
+  "refreshtoken",
+  "refresh_token",
+  "token",
+  "password",
+  "secret",
+  "api_key",
+  "apikey"
+]);
+
+function sanitizeMcpPayload(value, key = "") {
+  if (value == null) {
+    return value;
+  }
+
+  if (typeof key === "string" && MCP_REDACTED_KEYS.has(key.toLowerCase())) {
+    return "[REDACTED]";
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeMcpPayload(item));
+  }
+
+  if (typeof value === "object") {
+    const sanitized = {};
+
+    for (const [entryKey, entryValue] of Object.entries(value)) {
+      sanitized[entryKey] = sanitizeMcpPayload(entryValue, entryKey);
+    }
+
+    return sanitized;
+  }
+
+  return value;
+}
+
+function stringifyMcpPayload(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value, llmJsonReplacer);
+  } catch (error) {
+    return JSON.stringify({
+      unserializable: true,
+      error: error.message,
+      fallback: String(value)
+    });
   }
 }
 

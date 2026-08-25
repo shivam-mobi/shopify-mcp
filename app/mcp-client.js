@@ -1,5 +1,5 @@
 import { generateAuthUrl } from "./auth.server";
-import { getCustomerToken } from "./db.server";
+import { getCustomerToken, storeMcpCallLog } from "./db.server";
 import AppConfig from "./services/config.server";
 
 /**
@@ -276,25 +276,88 @@ class MCPClient {
   }
 
   async _makeJsonRpcRequest(endpoint, method, params, headers) {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        method,
-        id: 1,
-        params
-      })
-    });
+    const startedAt = Date.now();
+    const server = this._resolveMcpServer(endpoint);
+    const toolName = method === "tools/call" ? params?.name : null;
+    const sanitizedHeaders = this._sanitizeHeaders(headers);
+    const requestPayload = {
+      jsonrpc: "2.0",
+      method,
+      id: 1,
+      params
+    };
 
-    if (!response.ok) {
-      const error = await response.text();
-      const errorObj = new Error(`Request failed: ${response.status} ${error}`);
-      errorObj.status = response.status;
-      throw errorObj;
+    let statusCode = 0;
+    let responseBody = null;
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestPayload)
+      });
+
+      statusCode = response.status;
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        responseBody = { error: errorText };
+        const errorObj = new Error(`Request failed: ${response.status} ${errorText}`);
+        errorObj.status = response.status;
+        throw errorObj;
+      }
+
+      responseBody = await response.json();
+      return responseBody;
+    } catch (error) {
+      if (responseBody == null) {
+        statusCode = Number.isInteger(error.status) ? error.status : 0;
+        responseBody = { error: error.message };
+      }
+
+      throw error;
+    } finally {
+      if (AppConfig.mcp.logCalls) {
+        const durationMs = Date.now() - startedAt;
+
+        void storeMcpCallLog({
+          conversationId: this.conversationId,
+          server,
+          method,
+          toolName,
+          endpoint,
+          request: {
+            headers: sanitizedHeaders,
+            body: requestPayload
+          },
+          response: responseBody,
+          statusCode,
+          durationMs
+        });
+      }
+    }
+  }
+
+  _resolveMcpServer(endpoint) {
+    if (endpoint.includes("/ucp/mcp")) {
+      return "ucp";
     }
 
-    return await response.json();
+    if (endpoint.includes("/customer/")) {
+      return "customer";
+    }
+
+    return "storefront";
+  }
+
+  _sanitizeHeaders(headers = {}) {
+    const sanitized = {};
+
+    for (const [key, value] of Object.entries(headers)) {
+      sanitized[key] = key.toLowerCase() === "authorization" ? "[REDACTED]" : value;
+    }
+
+    return sanitized;
   }
 
   _formatToolsData(toolsData, { stripUcpMeta = false } = {}) {

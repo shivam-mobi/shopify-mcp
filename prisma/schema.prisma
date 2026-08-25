@@ -54,10 +54,13 @@ model CodeVerifier {
 }
 
 model Conversation {
-  id        String    @id
-  messages  Message[]
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id              String    @id
+  activeCartId    String?
+  activeCheckoutId String?
+  shippingAddress String?   // JSON string of last saved Shopify shipping destination
+  messages        Message[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 }
 
 model Message {
@@ -88,4 +91,22 @@ model LlmRequestLog {
   statusCode Int
   provider   String
   createdAt  DateTime @default(now())
+}
+
+model McpCallLog {
+  id             String   @id @default(cuid())
+  conversationId String?
+  server         String
+  method         String
+  toolName       String?
+  endpoint       String
+  request        String
+  response       String
+  statusCode     Int
+  durationMs     Int?
+  createdAt      DateTime @default(now())
+
+  @@index([conversationId])
+  @@index([toolName])
+  @@index([createdAt])
 }

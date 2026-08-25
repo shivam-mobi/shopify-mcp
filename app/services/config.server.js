@@ -44,7 +44,9 @@ export const AppConfig = {
 
   mcp: {
     ucpAgentProfile: process.env.UCP_AGENT_PROFILE ||
-      "https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json"
+      "https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json",
+    /** Persist Shopify MCP tool calls to SQLite (set MCP_LOG_ENABLED=false to disable). */
+    logCalls: process.env.MCP_LOG_ENABLED !== "false"
   },
 
   fitment: {

@@ -3,11 +3,19 @@
  * Handles chat interactions with the configured LLM provider and tools
  */
 import MCPClient from "../mcp-client";
-import { saveMessage, getConversationHistory, storeCustomerAccountUrls, getCustomerAccountUrls as getCustomerAccountUrlsFromDb } from "../db.server";
+import { saveMessage, getConversationHistory, storeCustomerAccountUrls, getCustomerAccountUrls as getCustomerAccountUrlsFromDb, getConversationCartId } from "../db.server";
 import AppConfig from "../services/config.server";
 import { createSseStream } from "../services/streaming.server";
 import { createLlmService } from "../services/llm.server";
 import { createToolService } from "../services/tool.server";
+import { handleCartToolCall, isCartTool, buildActiveCartContextMessage } from "../services/cart.server";
+import {
+  getCartWrapperTools,
+  isCartWrapperTool,
+  callCartWrapperTool,
+  filterCartToolsForLlm,
+  buildShippingAddressHintMessage
+} from "../services/cart-tools.server";
 import { isFitmentConfigured } from "../fitment/database.server.js";
 import {
   callFitmentTool,
@@ -190,9 +198,12 @@ async function handleChatSession({
     }
 
     const fitmentTools = isFitmentConfigured() ? getFitmentTools() : [];
-    const allTools = [...mcpClient.tools, ...fitmentTools];
+    const cartWrapperTools = getCartWrapperTools();
+    const mcpToolsForLlm = filterCartToolsForLlm(mcpClient.tools);
+    const allTools = [...mcpToolsForLlm, ...cartWrapperTools, ...fitmentTools];
 
-    console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length}`);
+    console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length} (${mcpToolsForLlm.length} after cart filter)`);
+    console.log(`Cart wrapper tools: ${cartWrapperTools.length}`);
     if (fitmentTools.length) {
       console.log(`Fitment tools enabled: ${fitmentTools.length}`);
     }
@@ -217,6 +228,17 @@ async function handleChatSession({
       role: dbMessage.role,
       content: parseStoredMessageContent(dbMessage.content)
     }));
+
+    const activeCartId = await getConversationCartId(conversationId);
+    const activeCartContext = buildActiveCartContextMessage(activeCartId);
+    if (activeCartContext) {
+      conversationHistory.unshift(activeCartContext);
+    }
+
+    const shippingAddressHint = buildShippingAddressHintMessage(userMessage);
+    if (shippingAddressHint) {
+      conversationHistory.unshift(shippingAddressHint);
+    }
 
     // Execute the conversation stream
     let finalMessage = { role: 'user', content: userMessage };
@@ -275,6 +297,23 @@ async function handleChatSession({
                 console.log("[chat] fitment tool invoke", { toolName, toolArgs, shop });
                 toolUseResponse = await callFitmentTool(toolName, toolArgs, { shop });
                 console.log("[chat] fitment tool success", { toolName });
+              } else if (isCartWrapperTool(toolName)) {
+                console.log("[chat] cart wrapper invoke", { toolName, toolArgs });
+                toolUseResponse = await callCartWrapperTool(
+                  mcpClient,
+                  conversationId,
+                  toolName,
+                  toolArgs,
+                  { userMessage }
+                );
+              } else if (isCartTool(toolName)) {
+                toolUseResponse = await handleCartToolCall(
+                  mcpClient,
+                  conversationId,
+                  toolName,
+                  toolArgs,
+                  { userMessage }
+                );
               } else {
                 toolUseResponse = await mcpClient.callTool(toolName, toolArgs);
               }
