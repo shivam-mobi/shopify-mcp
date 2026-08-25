@@ -31,7 +31,78 @@
     };
   }
 
+  function getApiHeaders(extraHeaders = {}) {
+    return {
+      'ngrok-skip-browser-warning': 'true',
+      ...extraHeaders
+    };
+  }
+
+  const CONVERSATION_ID_KEY = 'shopAiConversationId';
+  let conversationStorageMode = 'localStorage';
+
+  function resolveConversationStorageMode(mode) {
+    return String(mode || '').toLowerCase() === 'sessionstorage'
+      ? 'sessionStorage'
+      : 'localStorage';
+  }
+
+  function getConversationStorage() {
+    return resolveConversationStorageMode(conversationStorageMode) === 'sessionStorage'
+      ? sessionStorage
+      : localStorage;
+  }
+
+  function getConversationId() {
+    const storage = getConversationStorage();
+    let id = storage.getItem(CONVERSATION_ID_KEY);
+
+    // Migrate an existing per-tab session id into localStorage when upgrading
+    if (!id && storage === localStorage) {
+      id = sessionStorage.getItem(CONVERSATION_ID_KEY);
+      if (id) {
+        localStorage.setItem(CONVERSATION_ID_KEY, id);
+        sessionStorage.removeItem(CONVERSATION_ID_KEY);
+      }
+    }
+
+    return id;
+  }
+
+  function setConversationId(id) {
+    getConversationStorage().setItem(CONVERSATION_ID_KEY, id);
+  }
+
+  function clearConversationId() {
+    getConversationStorage().removeItem(CONVERSATION_ID_KEY);
+    sessionStorage.removeItem(CONVERSATION_ID_KEY);
+  }
+
   const ShopAIChat = {
+    Config: {
+      load: async function() {
+        const fromTheme = window.shopChatConfig?.conversationStorage;
+        if (fromTheme) {
+          conversationStorageMode = resolveConversationStorageMode(fromTheme);
+          return;
+        }
+
+        try {
+          const apiBaseUrl = getApiBaseUrl();
+          const response = await fetch(`${apiBaseUrl}/chat?config=true`, {
+            headers: getApiHeaders({ Accept: 'application/json' })
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            conversationStorageMode = resolveConversationStorageMode(data.conversationStorage);
+          }
+        } catch (error) {
+          console.warn('Could not load chat config; using localStorage for conversation id', error);
+        }
+      }
+    },
+
     /**
      * UI-related elements and functionality
      */
@@ -255,7 +326,7 @@
        */
       send: async function(chatInput, messagesContainer) {
         const userMessage = chatInput.value.trim();
-        const conversationId = sessionStorage.getItem('shopAiConversationId');
+        const conversationId = getConversationId();
 
         // Add user message to chat
         this.add(userMessage, 'user', messagesContainer);
@@ -604,7 +675,7 @@
         switch (data.type) {
           case 'id':
             if (data.conversation_id) {
-              sessionStorage.setItem('shopAiConversationId', data.conversation_id);
+              setConversationId(data.conversation_id);
             }
             break;
 
@@ -748,7 +819,7 @@
           ShopAIChat.Message.add(welcomeMessage, 'assistant', messagesContainer);
 
           // Clear the conversation ID since we couldn't fetch this conversation
-          sessionStorage.removeItem('shopAiConversationId');
+          clearConversationId();
         }
       }
     },
@@ -796,7 +867,7 @@
         }
 
         // Start polling for token availability
-        const conversationId = sessionStorage.getItem('shopAiConversationId');
+        const conversationId = getConversationId();
         if (conversationId) {
           const messagesContainer = document.querySelector('.shop-ai-chat-messages');
 
@@ -993,15 +1064,16 @@
     /**
      * Initialize the chat application
      */
-    init: function() {
+    init: async function() {
       // Initialize UI
       const container = document.querySelector('.shop-ai-chat-container');
       if (!container) return;
 
       this.UI.init(container);
+      await this.Config.load();
 
       // Check for existing conversation
-      const conversationId = sessionStorage.getItem('shopAiConversationId');
+      const conversationId = getConversationId();
 
       if (conversationId) {
         // Fetch conversation history
@@ -1016,6 +1088,8 @@
 
   // Initialize the application when DOM is ready
   document.addEventListener('DOMContentLoaded', function() {
-    ShopAIChat.init();
+    ShopAIChat.init().catch(function(error) {
+      console.error('Failed to initialize chat:', error);
+    });
   });
 })();

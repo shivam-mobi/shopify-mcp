@@ -17,7 +17,9 @@ export function createOpenAIService(apiKey = process.env.OPENAI_API_KEY) {
     tools
   }, streamHandlers) => {
     const systemInstruction = getSystemPrompt(promptType);
-    const openAiMessages = convertMessagesToOpenAI(messages, systemInstruction);
+    const openAiMessages = repairOpenAIToolCallSequence(
+      convertMessagesToOpenAI(messages, systemInstruction)
+    );
     const openAiTools = convertToolsToOpenAI(tools);
 
     const request = {
@@ -213,6 +215,52 @@ function convertMessagesToOpenAI(messages = [], systemInstruction) {
   }
 
   return openAiMessages;
+}
+
+/**
+ * OpenAI requires every assistant tool_calls message to be followed by a
+ * tool message for each tool_call_id. Repair history when a previous
+ * request crashed (timeout, abort) after saving the assistant turn only.
+ */
+function repairOpenAIToolCallSequence(messages = []) {
+  const repaired = [];
+
+  for (let i = 0; i < messages.length; i += 1) {
+    const message = messages[i];
+    repaired.push(message);
+
+    if (message.role !== "assistant" || !Array.isArray(message.tool_calls) || !message.tool_calls.length) {
+      continue;
+    }
+
+    const neededIds = message.tool_calls
+      .map((call) => call.id)
+      .filter(Boolean);
+    const foundIds = new Set();
+
+    for (let j = i + 1; j < messages.length; j += 1) {
+      const next = messages[j];
+      if (next.role === "tool") {
+        if (next.tool_call_id) foundIds.add(next.tool_call_id);
+        continue;
+      }
+      break;
+    }
+
+    for (const id of neededIds) {
+      if (!foundIds.has(id)) {
+        repaired.push({
+          role: "tool",
+          tool_call_id: id,
+          content: JSON.stringify({
+            error: "Tool did not complete. Retry if the customer still needs this result."
+          })
+        });
+      }
+    }
+  }
+
+  return repaired;
 }
 
 function convertToolsToOpenAI(tools) {

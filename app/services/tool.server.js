@@ -26,7 +26,7 @@ export function createToolService() {
       productsToDisplay.push(...processProductSearchResult(toolUseResponse));
     }
 
-    addToolResultToHistory(conversationHistory, toolUseId, toolUseResponse.content, conversationId);
+    await addToolResultToHistory(conversationHistory, toolUseId, toolUseResponse.content, conversationId);
   };
 
   const processProductSearchResult = (toolUseResponse) => {
@@ -35,9 +35,7 @@ export function createToolService() {
       const responseData = extractToolResponseData(toolUseResponse);
       const products = extractProductsFromResponse(responseData);
 
-      return products
-        .slice(0, AppConfig.tools.maxProductsToDisplay)
-        .map(formatProductData);
+      return products.map(formatProductData);
     } catch (error) {
       console.error("Error processing product search results:", error);
       return [];

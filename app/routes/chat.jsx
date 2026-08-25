@@ -30,6 +30,14 @@ export async function loader({ request }) {
 
   const url = new URL(request.url);
 
+  // Public storefront config (conversation persistence, etc.)
+  if (url.searchParams.get("config") === "true") {
+    return new Response(
+      JSON.stringify({ conversationStorage: AppConfig.chat.conversationStorage }),
+      { headers: getCorsHeaders(request) }
+    );
+  }
+
   // Handle history fetch requests - matches /chat?history=true&conversation_id=XYZ
   if (url.searchParams.has('history') && url.searchParams.has('conversation_id')) {
     return handleHistoryRequest(request, url.searchParams.get('conversation_id'));
@@ -253,59 +261,71 @@ async function handleChatSession({
 
             const toolUseMessage = `Calling tool: ${toolName} with arguments: ${JSON.stringify(toolArgs)}`;
 
-            stream.sendMessage({
-              type: 'tool_use',
-              tool_use_message: toolUseMessage
-            });
+            if (AppConfig.tools.showToolCallsInChat) {
+              stream.sendMessage({
+                type: 'tool_use',
+                tool_use_message: toolUseMessage
+              });
+            }
 
             // Route fitment tools locally; keep Shopify MCP tools unchanged
             let toolUseResponse;
-            if (isFitmentTool(toolName)) {
-              try {
+            try {
+              if (isFitmentTool(toolName)) {
                 console.log("[chat] fitment tool invoke", { toolName, toolArgs, shop });
                 toolUseResponse = await callFitmentTool(toolName, toolArgs, { shop });
                 console.log("[chat] fitment tool success", { toolName });
-              } catch (error) {
-                console.error("[chat] fitment tool catch", {
-                  toolName,
-                  toolArgs,
-                  shop,
-                  message: error.message,
-                  code: error.code,
-                  errno: error.errno,
-                  address: error.address,
-                  port: error.port,
-                  syscall: error.syscall,
-                  stack: error.stack
-                });
-                toolUseResponse = {
-                  error: {
-                    type: "internal_error",
-                    data: `Fitment tool failed: ${error.message}`
-                  }
-                };
+              } else {
+                toolUseResponse = await mcpClient.callTool(toolName, toolArgs);
               }
-            } else {
-              toolUseResponse = await mcpClient.callTool(toolName, toolArgs);
+            } catch (error) {
+              console.error("[chat] tool catch", {
+                toolName,
+                toolArgs,
+                shop,
+                message: error.message,
+                code: error.code,
+                errno: error.errno,
+                address: error.address,
+                port: error.port,
+                syscall: error.syscall,
+                stack: error.stack
+              });
+              toolUseResponse = {
+                error: {
+                  type: "internal_error",
+                  data: `Tool failed: ${error.message}`
+                }
+              };
             }
 
-            // Handle tool response based on success/error
-            if (toolUseResponse.error) {
-              await toolService.handleToolError(
-                toolUseResponse,
-                toolName,
-                toolUseId,
+            // Always record a tool result so OpenAI history stays valid
+            try {
+              if (toolUseResponse?.error) {
+                await toolService.handleToolError(
+                  toolUseResponse,
+                  toolName,
+                  toolUseId,
+                  conversationHistory,
+                  stream.sendMessage,
+                  conversationId
+                );
+              } else {
+                await toolService.handleToolSuccess(
+                  toolUseResponse,
+                  toolName,
+                  toolUseId,
+                  conversationHistory,
+                  productsToDisplay,
+                  conversationId
+                );
+              }
+            } catch (historyError) {
+              console.error("[chat] failed to record tool result", historyError);
+              await toolService.addToolResultToHistory(
                 conversationHistory,
-                stream.sendMessage,
-                conversationId
-              );
-            } else {
-              await toolService.handleToolSuccess(
-                toolUseResponse,
-                toolName,
                 toolUseId,
-                conversationHistory,
-                productsToDisplay,
+                `Tool failed: ${historyError.message}`,
                 conversationId
               );
             }

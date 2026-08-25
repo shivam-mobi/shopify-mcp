@@ -13,6 +13,7 @@ import {
 import { fetchProductList } from "./repositories/productRepository.js";
 import { fetchQualifierCollection } from "./repositories/qualifierRepository.js";
 import { fetchYears, matchYear } from "./repositories/yearRepository.js";
+import { decodeVin, extractVin } from "./vin.server.js";
 
 function toolResult(content) {
   return {
@@ -55,12 +56,34 @@ function formatProducts(products, vehicle, qualifiers) {
   };
 }
 
-async function resolveProductsFlow({ year, make, model, engine, qualifiers = [], shop = null }) {
-  console.log("[fitment:products] resolveProductsFlow start", { year, make, model, engine, qualifiers, shop });
+async function resolveProductsFlow({
+  year,
+  make,
+  model,
+  engine,
+  qualifiers = [],
+  shop = null,
+  vinFitment = null
+}) {
+  console.log("[fitment:products] resolveProductsFlow start", {
+    year,
+    make,
+    model,
+    engine,
+    qualifiers,
+    shop,
+    vin: vinFitment?.vin || null
+  });
   const selectedQualifiers = normalizeQualifiers(qualifiers);
   let engineSelection = null;
 
-  if (engine) {
+  if (vinFitment?.baseVehicleId && vinFitment?.engineBaseId) {
+    engineSelection = {
+      baseVehicleId: vinFitment.baseVehicleId,
+      engineConfigId: String(vinFitment.engineBaseId),
+      engine: vinFitment.engine || engine || ""
+    };
+  } else if (engine) {
     engineSelection = await resolveEngineSelection(year, make, model, engine);
   } else {
     const engineCheck = await fetchEngineCheck(year, make, model);
@@ -127,7 +150,13 @@ async function resolveProductsFlow({ year, make, model, engine, qualifiers = [],
 
   return formatProducts(
     products,
-    { year, make, model, engine: engineSelection.engine },
+    {
+      year,
+      make,
+      model,
+      engine: engineSelection.engine,
+      ...(vinFitment?.vin ? { vin: vinFitment.vin } : {})
+    },
     activeQualifiers
   );
 }
@@ -141,10 +170,59 @@ export async function getFitmentNextStep({
   make,
   model,
   engine,
+  vin,
   qualifiers = [],
   shop = null
 } = {}) {
-  console.log("[fitment:next_step] start", { year, make, model, engine, qualifiers, shop });
+  const vinCandidate =
+    extractVin(vin) ||
+    extractVin(year) ||
+    extractVin(make) ||
+    extractVin(model);
+
+  console.log("[fitment:next_step] start", { year, make, model, engine, vin: vinCandidate, qualifiers, shop });
+
+  if (vinCandidate) {
+    const decoded = await decodeVin(vinCandidate);
+    if (!decoded) {
+      return {
+        status: "need_filters",
+        message:
+          "That VIN was not found. Ask the customer for their vehicle year, brand (make), and model in one message instead.",
+        known: { vin: vinCandidate },
+        ask: ["year", "make", "model"]
+      };
+    }
+
+    const result = await resolveProductsFlow({
+      year: decoded.year,
+      make: decoded.make,
+      model: decoded.model,
+      engine: decoded.engine,
+      qualifiers,
+      shop,
+      vinFitment: decoded
+    });
+
+    console.log("[fitment:next_step] VIN products flow done", {
+      status: result.status,
+      productCount: result.products?.length,
+      vehicle: decoded
+    });
+
+    return {
+      ...result,
+      known: {
+        vin: decoded.vin,
+        year: decoded.year,
+        make: decoded.make,
+        model: decoded.model,
+        engine: decoded.engine,
+        ...result.vehicle
+      }
+    };
+  }
+
   const known = {};
   console.log("[fitment:next_step] fetching years from VCDB...");
   const allYears = await fetchYears();
@@ -457,13 +535,19 @@ export const FITMENT_TOOL_NAMES = [
 ];
 
 export function getFitmentTools() {
+  // Only expose the orchestrator to the LLM. Extra lookup tools stay
+  // callable internally but must not compete with get_fitment_next_step.
   return [
     {
       name: "get_fitment_next_step",
-      description: "PRIMARY fitment tool. Call whenever the customer mentions a vehicle, year, brand/make, model, or asks for a part that fits their car. Pass whatever is known (year, make, model, engine, qualifiers) even if incomplete. When filters are missing, returns status need_filters with an ask[] list — ask ALL of those fields in ONE customer message (e.g. make-only → ask year and model together; year-only → ask brand and model together). Use make as the vehicle brand. Returns products with variantId when ready. Use this before search_catalog for vehicle-related requests.",
+      description: "PRIMARY fitment tool. Call whenever the customer mentions a VIN, vehicle, year, brand/make, model, or asks for a part that fits their car. If they give a VIN (usually 17 characters), pass vin and skip year/make/model. Otherwise pass whatever year/make/model/engine/qualifiers are known. When filters are missing, returns status need_filters with an ask[] list — ask ALL of those fields in ONE customer message. Use make as the vehicle brand. Returns products with variantId when ready. Use this before search_catalog for vehicle-related requests.",
       input_schema: {
         type: "object",
         properties: {
+          vin: {
+            type: "string",
+            description: "17-character VIN if the customer provided one. Prefer this over year/make/model when present."
+          },
           year: { type: "string", description: "Vehicle year if known, e.g. 2008" },
           make: { type: "string", description: "Vehicle make if known, e.g. Ford" },
           model: { type: "string", description: "Vehicle model if known, e.g. Focus" },
@@ -473,76 +557,6 @@ export function getFitmentTools() {
             items: { type: "string" },
             description: "Selected qualifiers as TypeID:value, e.g. FuelTypeID:5"
           }
-        }
-      }
-    },
-    {
-      name: "lookup_fitment_years",
-      description: "List valid vehicle years from the fitment database.",
-      input_schema: { type: "object", properties: {} }
-    },
-    {
-      name: "lookup_fitment_makes",
-      description: "List valid makes for a given year.",
-      input_schema: {
-        type: "object",
-        properties: {
-          year: { type: "string" }
-        },
-        required: ["year"]
-      }
-    },
-    {
-      name: "lookup_fitment_models",
-      description: "List valid models for a given year and make.",
-      input_schema: {
-        type: "object",
-        properties: {
-          year: { type: "string" },
-          make: { type: "string" }
-        },
-        required: ["year", "make"]
-      }
-    },
-    {
-      name: "lookup_fitment_engines",
-      description: "List engines for year, make, and model.",
-      input_schema: {
-        type: "object",
-        properties: {
-          year: { type: "string" },
-          make: { type: "string" },
-          model: { type: "string" }
-        },
-        required: ["year", "make", "model"]
-      }
-    },
-    {
-      name: "get_fitment_qualifier",
-      description: "Get the next qualifier question (fuel, drive type, etc.) for a vehicle.",
-      input_schema: {
-        type: "object",
-        properties: {
-          year: { type: "string" },
-          make: { type: "string" },
-          model: { type: "string" },
-          engine: { type: "string" },
-          qualifiers: { type: "array", items: { type: "string" } }
-        },
-        required: ["year", "make", "model"]
-      }
-    },
-    {
-      name: "find_fitment_products",
-      description: "Find cabin air filter products for a vehicle. Returns next filter needed or products with variantId for MCP create_cart.",
-      input_schema: {
-        type: "object",
-        properties: {
-          year: { type: "string" },
-          make: { type: "string" },
-          model: { type: "string" },
-          engine: { type: "string" },
-          qualifiers: { type: "array", items: { type: "string" } }
         }
       }
     }

@@ -9,8 +9,9 @@ embedded = true
 [build]
 automatically_update_urls_on_dev = true
 
-[webhooks]
-api_version = "2026-10"
+
+[events]
+api_version = "unstable"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes

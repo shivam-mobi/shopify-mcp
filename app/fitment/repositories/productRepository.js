@@ -54,7 +54,8 @@ async function fetchCatalogPartNumbers(baseVehicleId, engineId, qualifierWhere) 
 }
 
 /**
- * Resolve catalog SKUs → variant_id only from shopify_products_new.
+ * Resolve catalog SKUs → variant_id from shopify_products_new
+ * matched on product_sku + year/make/model.
  * Title, price, and image are loaded from Shopify Admin API.
  */
 async function fetchVariantIdsBySkus(skus, vehicle = {}) {
@@ -72,15 +73,13 @@ async function fetchVariantIdsBySkus(skus, vehicle = {}) {
       variant_id
      FROM ${SHOPIFY_TABLES.shopifyProductsNew}
      WHERE product_sku IN (${placeholders})
-       AND (deleted IS NULL OR deleted = 0)
+       AND make = ?
+       AND model = ?
+       AND year = ?
        AND variant_id IS NOT NULL
        AND variant_id != ''
-       AND variant_id != '0'
-     ORDER BY
-       CASE WHEN ? != '' AND make = ? THEN 0 ELSE 1 END,
-       CASE WHEN ? != '' AND model = ? THEN 0 ELSE 1 END,
-       CASE WHEN ? IS NOT NULL AND year = ? THEN 0 ELSE 1 END`,
-    [...skus, make, make, model, model, year, year]
+       AND variant_id != '0'`,
+    [...skus, make, model, year]
   );
 
   return rows

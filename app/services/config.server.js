@@ -51,6 +51,14 @@ export const AppConfig = {
     enabled: process.env.FITMENT_ENABLED === "true"
   },
 
+  chat: {
+    /** localStorage = shared across tabs; sessionStorage = per tab only */
+    conversationStorage:
+      process.env.CHAT_CONVERSATION_STORAGE === "sessionStorage"
+        ? "sessionStorage"
+        : "localStorage"
+  },
+
   tools: {
     productSearchNames: [
       "search_catalog",
@@ -58,7 +66,8 @@ export const AppConfig = {
       "find_fitment_products",
       "get_fitment_next_step"
     ],
-    maxProductsToDisplay: 3
+    /** Show "Calling tool: …" in the storefront chat UI (set CHAT_SHOW_TOOL_CALLS=true in dev). */
+    showToolCallsInChat: process.env.CHAT_SHOW_TOOL_CALLS === "true"
   }
 };
 
