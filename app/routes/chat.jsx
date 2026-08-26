@@ -22,6 +22,7 @@ import {
   getFitmentTools,
   isFitmentTool
 } from "../fitment/fitment-tools.server.js";
+import { enrichProductsWithComparison } from "../services/product-compare.server.js";
 
 
 /**
@@ -218,6 +219,7 @@ async function handleChatSession({
     // Prepare conversation state
     let conversationHistory = [];
     let productsToDisplay = [];
+    let fitmentOptionsToDisplay = null;
 
     // Save user message to the database
     await saveMessage(conversationId, 'user', userMessage);
@@ -370,6 +372,11 @@ async function handleChatSession({
                   productsToDisplay,
                   conversationId
                 );
+
+                const choiceOptions = toolService.extractFitmentChoiceOptions(toolUseResponse);
+                if (choiceOptions?.options?.length) {
+                  fitmentOptionsToDisplay = choiceOptions;
+                }
               }
             } catch (historyError) {
               console.error("[chat] failed to record tool result", historyError);
@@ -401,19 +408,27 @@ async function handleChatSession({
     // Signal end of turn
     stream.sendMessage({ type: 'end_turn' });
 
+    // Clickable engine / qualifier choices (after assistant text)
+    if (fitmentOptionsToDisplay?.options?.length) {
+      stream.sendMessage({
+        type: 'fitment_options',
+        field: fitmentOptionsToDisplay.field,
+        title: fitmentOptionsToDisplay.title,
+        options: fitmentOptionsToDisplay.options
+      });
+    }
+
     // Send product results if available
     if (productsToDisplay.length > 0) {
-      // In-stock first; out-of-stock at the end
-      productsToDisplay.sort(
-        (a, b) => Number(b.inStock === true) - Number(a.inStock === true)
-      );
+      productsToDisplay = enrichProductsWithComparison(productsToDisplay);
       console.log(
         "[chat] product_results to client:",
         productsToDisplay.map((p) => ({
           title: p.title,
           inStock: p.inStock,
-          availableForSale: p.availableForSale,
-          inventoryQuantity: p.inventoryQuantity
+          filterType: p.filterType,
+          isBest: p.isBest,
+          compareScore: p.compareScore
         }))
       );
       stream.sendMessage({

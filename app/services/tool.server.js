@@ -4,6 +4,7 @@
  */
 import { saveMessage } from "../db.server";
 import AppConfig from "./config.server";
+import { enrichProductsWithComparison, buildCompareAttributes } from "./product-compare.server.js";
 
 /**
  * Creates a tool service instance
@@ -29,6 +30,56 @@ export function createToolService() {
     await addToolResultToHistory(conversationHistory, toolUseId, toolUseResponse.content, conversationId);
   };
 
+  /**
+   * Build clickable choice chips for engine / qualifier fitment prompts.
+   */
+  const extractFitmentChoiceOptions = (toolUseResponse) => {
+    try {
+      const data = extractToolResponseData(toolUseResponse);
+      if (!data || !Array.isArray(data.options) || data.options.length === 0) {
+        return null;
+      }
+
+      if (data.status === "need_engine") {
+        return {
+          field: "engine",
+          title: "Choose an engine",
+          options: data.options
+            .map((option) => {
+              if (typeof option === "string") {
+                return { label: option, value: option };
+              }
+              const label = option.label || option.value || option.engine || option.id;
+              return label ? { label: String(label), value: String(label) } : null;
+            })
+            .filter(Boolean)
+        };
+      }
+
+      if (data.status === "need_qualifier") {
+        const qualifierName = data.qualifierName || "an option";
+        return {
+          field: "qualifier",
+          title: `Choose ${qualifierName}`,
+          options: data.options
+            .map((option) => {
+              if (typeof option === "string") {
+                return { label: option, value: option };
+              }
+              const label = option.label || option.value || option.id;
+              return label ? { label: String(label), value: String(label) } : null;
+            })
+            .filter(Boolean)
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error("Error extracting fitment choice options:", error);
+      return null;
+    }
+  };
+
   const processProductSearchResult = (toolUseResponse) => {
     try {
       console.log("Processing product search result");
@@ -36,9 +87,7 @@ export function createToolService() {
       const products = extractProductsFromResponse(responseData);
 
       const formatted = products.map(formatProductData);
-      // In-stock first; out-of-stock at the end
-      formatted.sort((a, b) => Number(b.inStock === true) - Number(a.inStock === true));
-      return formatted;
+      return enrichProductsWithComparison(formatted);
     } catch (error) {
       console.error("Error processing product search results:", error);
       return [];
@@ -126,12 +175,33 @@ export function createToolService() {
       id: variantId || product.product_id || product.id || product.partNumber || `product-${Math.random().toString(36).substring(7)}`,
       title: product.title || product.partTypeName || product.name || "Product",
       price,
+      priceAmount: typeof product.priceAmount === "number" ? product.priceAmount : null,
+      compareAtPrice: product.compareAtPrice || null,
       image_url: resolveProductImageUrl(product),
       description: product.description || product.note || "",
       url: productUrl,
       availableForSale: availability.availableForSale,
       inStock: availability.inStock,
-      inventoryQuantity: availability.inventoryQuantity
+      inventoryQuantity: availability.inventoryQuantity,
+      vendor: product.vendor || "",
+      sku: product.sku || product.partNumber || "",
+      filterType: product.filterType,
+      isHepa: product.isHepa,
+      hasAntibacterial: product.hasAntibacterial,
+      hasCharcoal: product.hasCharcoal,
+      hasParticulate: product.hasParticulate,
+      yGroup: product.yGroup || "",
+      features: Array.isArray(product.features) ? product.features : undefined,
+      tags: Array.isArray(product.tags) ? product.tags : product.tags,
+      ...((!product.filterType && !product.isHepa)
+        ? buildCompareAttributes({
+            tags: product.tags,
+            title: product.title || product.partTypeName || product.name || "",
+            descriptionHtml: product.descriptionHtml || product.description || "",
+            vendor: product.vendor || "",
+            sku: product.sku || product.partNumber || ""
+          })
+        : {})
     };
   };
 
@@ -261,6 +331,7 @@ export function createToolService() {
     handleToolError,
     handleToolSuccess,
     processProductSearchResult,
+    extractFitmentChoiceOptions,
     addToolResultToHistory
   };
 }

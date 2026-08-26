@@ -10,7 +10,7 @@ embedded = true
 automatically_update_urls_on_dev = true
 
 
-[events]
+[webhooks]
 api_version = "unstable"
 
 [access_scopes]

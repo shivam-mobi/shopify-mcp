@@ -1,3 +1,5 @@
+import { buildCompareAttributes } from "./product-compare.server.js";
+
 const VARIANTS_BY_IDS_QUERY = `#graphql
   query VariantsByIds($ids: [ID!]!) {
     nodes(ids: $ids) {
@@ -5,6 +7,7 @@ const VARIANTS_BY_IDS_QUERY = `#graphql
         id
         title
         price
+        compareAtPrice
         sku
         availableForSale
         inventoryQuantity
@@ -19,6 +22,9 @@ const VARIANTS_BY_IDS_QUERY = `#graphql
           title
           handle
           status
+          vendor
+          tags
+          descriptionHtml
           onlineStoreUrl
           featuredImage {
             url
@@ -120,18 +126,37 @@ function normalizeVariantNode(node) {
     availableForSale === true &&
     (inventoryQuantity == null || inventoryQuantity > 0);
 
+  const sku = node.sku ? String(node.sku).trim() : "";
+  const compareAttrs = buildCompareAttributes({
+    tags: product.tags,
+    title,
+    descriptionHtml: product.descriptionHtml || "",
+    vendor: product.vendor || "",
+    sku
+  });
+
+  const priceAmount = node.price != null ? Number(node.price) : null;
+  const compareAtPrice =
+    node.compareAtPrice != null && node.compareAtPrice !== ""
+      ? formatPrice(node.compareAtPrice)
+      : null;
+
   return {
     variantId: String(node.id),
-    sku: node.sku ? String(node.sku).trim() : "",
+    sku,
     title,
     price: formatPrice(node.price),
+    priceAmount: Number.isFinite(priceAmount) ? priceAmount : null,
+    compareAtPrice,
     image_url: imageUrl,
     handle,
     url: buildProductUrl(handle, product.onlineStoreUrl),
     availableForSale,
     inStock,
     inventoryQuantity,
-    inventoryPolicy: node.inventoryPolicy || null
+    inventoryPolicy: node.inventoryPolicy || null,
+    descriptionHtml: product.descriptionHtml || "",
+    ...compareAttrs
   };
 }
 

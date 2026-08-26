@@ -14,6 +14,7 @@ import { fetchProductList } from "./repositories/productRepository.js";
 import { fetchQualifierCollection } from "./repositories/qualifierRepository.js";
 import { fetchYears, matchYear } from "./repositories/yearRepository.js";
 import { decodeVin, extractVin } from "./vin.server.js";
+import { enrichProductsWithComparison } from "../services/product-compare.server.js";
 
 function toolResult(content) {
   return {
@@ -38,26 +39,45 @@ function formatProducts(products, vehicle, qualifiers) {
     id: product.variantId || product.partNumber,
     title: product.title,
     price: product.price,
+    priceAmount: product.priceAmount ?? null,
+    compareAtPrice: product.compareAtPrice || null,
     image_url: product.image_url,
     description: product.note,
     url: product.url,
     variantId: product.variantId,
     partNumber: product.partNumber,
+    sku: product.sku || product.partNumber,
     handle: product.handle,
+    vendor: product.vendor || "",
     availableForSale: product.availableForSale === true,
     inStock: product.inStock === true,
     inventoryQuantity:
-      typeof product.inventoryQuantity === "number" ? product.inventoryQuantity : null
+      typeof product.inventoryQuantity === "number" ? product.inventoryQuantity : null,
+    filterType: product.filterType || "standard",
+    isHepa: product.isHepa === true,
+    hasAntibacterial: product.hasAntibacterial === true,
+    hasCharcoal: product.hasCharcoal === true,
+    hasParticulate: product.hasParticulate === true,
+    yGroup: product.yGroup || "",
+    features: Array.isArray(product.features) ? product.features : [],
+    tags: Array.isArray(product.tags) ? product.tags : []
   }));
 
-  // In-stock first; out-of-stock at the end
-  formatted.sort((a, b) => Number(b.inStock === true) - Number(a.inStock === true));
+  const ranked = enrichProductsWithComparison(formatted);
+  const best = ranked.find((p) => p.isBest) || null;
 
   return {
     status: products.length ? "success" : "not_found",
     vehicle,
     qualifiers,
-    products: formatted
+    products: ranked,
+    bestProductId: best?.id || null,
+    bestProductTitle: best?.title || null,
+    ui_instruction:
+      "CRITICAL: Product cards + Quick comparison + Best product UI are shown in chat automatically. " +
+      "Do NOT list products, prices, descriptions, notes, stock, or Variant IDs in your reply. " +
+      "Do NOT mention a best pick, best product, or recommend a specific product by name in text. " +
+      "Reply in 1-2 short sentences only (e.g. matching filters found for their vehicle), then ask if they want to add one to the cart."
   };
 }
 
@@ -95,10 +115,12 @@ async function resolveProductsFlow({
     if (engineCheck.showDropdown && engineCheck.engines.length > 1) {
       return {
         status: "need_engine",
-        message: "Multiple engines match this vehicle. Ask the customer to choose one.",
+        message: "Multiple engines match this vehicle. Ask the customer to choose one. Clickable buttons are shown in the chat UI — do NOT list the engine options in your reply text.",
         vehicle: { year, make, model },
         options: engineCheck.engines.map((row) => row.engine),
-        requiresEngineSelection: true
+        requiresEngineSelection: true,
+        ui_instruction:
+          "Clickable engine buttons are shown automatically. Reply in 1 short sentence asking them to tap an engine. Do NOT list 2.0L/2.5L or any engine names in the message."
       };
     }
     if (engineCheck.engines.length >= 1) {
@@ -134,13 +156,15 @@ async function resolveProductsFlow({
     if (!matched) {
       return {
         status: "need_qualifier",
-        message: `Ask the customer to choose ${qualifier.name}.`,
+        message: `Ask the customer to choose ${qualifier.name}. Clickable buttons are shown in the chat UI — do NOT list the qualifier options in your reply text.`,
         qualifierName: qualifier.name,
         vehicle: { year, make, model, engine: engineSelection.engine },
         options: qualifier.values.map((option) => ({
           id: option.id,
           label: option.value
-        }))
+        })),
+        ui_instruction:
+          "Clickable qualifier buttons are shown automatically. Reply in 1 short sentence asking them to tap an option. Do NOT list the option names in the message."
       };
     }
   }

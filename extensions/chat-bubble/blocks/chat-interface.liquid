@@ -1,8 +1,17 @@
-{{ 'chat.css' | asset_url | stylesheet_tag }}
+<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=history-restore-41">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
-<div class="shop-ai-chat-container">
-  <div class="shop-ai-chat-bubble" style="background-color: {{ block.settings.chat_bubble_color }}">
+{% assign brand_color = block.settings.chat_bubble_color | default: '#00BCF2' %}
+{% if brand_color == '#5046e4' or brand_color == '#5046E4' %}
+  {% assign brand_color = '#00BCF2' %}
+{% endif %}
+
+<div
+  class="shop-ai-chat-container"
+  data-shop-ai-assets="history-restore-41"
+  style="--shop-ai-brand: {{ brand_color }};"
+>
+  <div class="shop-ai-chat-bubble">
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
     </svg>
@@ -30,7 +39,7 @@
   </div>
 </div>
 
-<script src="{{ 'chat.js' | asset_url }}?v=aira-name-10" defer></script>
+<script src="{{ 'chat.js' | asset_url }}?v=history-restore-41" defer></script>
 <script>
   window.shopChatConfig = {
     apiUrl: "https://struggle-throwing-recycled.ngrok-free.dev",
@@ -51,7 +60,7 @@
       "type": "color",
       "id": "chat_bubble_color",
       "label": "Chat Bubble Color",
-      "default": "#5046e4"
+      "default": "#00BCF2"
     },
     {
       "type": "text",

@@ -277,16 +277,196 @@
       },
 
       /**
+       * Display clickable engine / qualifier suggestion buttons
+       */
+      displayFitmentOptions: function(payload) {
+        const { messagesContainer, chatInput } = this.elements;
+        const options = Array.isArray(payload?.options) ? payload.options : [];
+        if (!options.length) return;
+
+        // Remove any previous unused suggestion chips
+        messagesContainer
+          .querySelectorAll('.shop-ai-fitment-options')
+          .forEach((el) => el.remove());
+
+        const wrap = document.createElement('div');
+        wrap.classList.add('shop-ai-fitment-options');
+
+        if (payload.title) {
+          const title = document.createElement('div');
+          title.classList.add('shop-ai-fitment-options-title');
+          title.textContent = payload.title;
+          wrap.appendChild(title);
+        }
+
+        const list = document.createElement('div');
+        list.classList.add('shop-ai-fitment-options-list');
+
+        options.forEach((option) => {
+          const label = option.label || option.value;
+          const value = option.value || option.label;
+          if (!label || !value) return;
+
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.classList.add('shop-ai-fitment-option');
+          button.textContent = label;
+          button.addEventListener('click', () => {
+            if (wrap.classList.contains('is-used')) return;
+            wrap.classList.add('is-used');
+            wrap.querySelectorAll('.shop-ai-fitment-option').forEach((btn) => {
+              btn.disabled = true;
+              if (btn === button) btn.classList.add('is-selected');
+            });
+
+            if (chatInput) chatInput.value = '';
+            ShopAIChat.Message.sendText(value, messagesContainer);
+          });
+          list.appendChild(button);
+        });
+
+        wrap.appendChild(list);
+        messagesContainer.appendChild(wrap);
+
+        // Buttons already show the choices — drop the duplicate list from assistant text
+        const assistants = messagesContainer.querySelectorAll('.shop-ai-message.assistant');
+        for (let i = assistants.length - 1; i >= 0; i -= 1) {
+          const el = assistants[i];
+          if (!el.dataset.rawText || !el.dataset.rawText.trim()) continue;
+          el.dataset.rawText = ShopAIChat.Formatting.stripListedFitmentOptions(
+            el.dataset.rawText,
+            options
+          );
+          ShopAIChat.Formatting.formatMessageContent(el);
+          break;
+        }
+
+        this.scrollToBottom();
+      },
+
+      /**
+       * If this turn's assistant text landed after product cards, move it just above them.
+       * Never jump over a user message (that would scramble later turns after refresh).
+       */
+      placeAssistantTextBeforeProducts: function(messageEl) {
+        const { messagesContainer } = this.elements;
+        if (!messagesContainer) return;
+
+        const productSections = messagesContainer.querySelectorAll('.shop-ai-product-section');
+        if (!productSections.length) return;
+
+        const lastProducts = productSections[productSections.length - 1];
+        const textEl = (messageEl && this.isNonEmptyAssistant(messageEl))
+          ? messageEl
+          : this.findSameTurnAssistantAfter(lastProducts);
+
+        if (!textEl) return;
+        if (!(textEl.compareDocumentPosition(lastProducts) & Node.DOCUMENT_POSITION_PRECEDING)) {
+          return;
+        }
+
+        let node = lastProducts.nextSibling;
+        while (node && node !== textEl) {
+          if (node.classList && node.classList.contains('shop-ai-message') && node.classList.contains('user')) {
+            return;
+          }
+          node = node.nextSibling;
+        }
+
+        lastProducts.parentNode.insertBefore(textEl, lastProducts);
+      },
+
+      isNonEmptyAssistant: function(el) {
+        return !!(
+          el &&
+          el.classList &&
+          el.classList.contains('shop-ai-message') &&
+          el.classList.contains('assistant') &&
+          String(el.dataset.rawText || el.textContent || '').trim()
+        );
+      },
+
+      findSameTurnAssistantAfter: function(productSection) {
+        let node = productSection.nextSibling;
+        while (node) {
+          if (node.classList && node.classList.contains('shop-ai-message')) {
+            if (node.classList.contains('user')) return null;
+            if (this.isNonEmptyAssistant(node)) return node;
+          }
+          node = node.nextSibling;
+        }
+        return null;
+      },
+
+      removeEmptyAssistant: function(el) {
+        if (!el || !el.parentNode) return;
+        if (!el.classList.contains('assistant')) return;
+        if (String(el.dataset.rawText || el.textContent || '').trim()) return;
+        el.remove();
+      },
+
+      ensureAssistantMessage: function(currentMessageElement, messagesContainer, updateCurrentElement) {
+        if (currentMessageElement && currentMessageElement.parentNode) {
+          return currentMessageElement;
+        }
+        const el = document.createElement('div');
+        el.classList.add('shop-ai-message', 'assistant');
+        el.textContent = '';
+        el.dataset.rawText = '';
+        messagesContainer.appendChild(el);
+        if (typeof updateCurrentElement === 'function') {
+          updateCurrentElement(el);
+        }
+        return el;
+      },
+
+      appendHistoryMessage: function(message, messagesContainer) {
+        const role = message.role === 'assistant' ? 'assistant' : 'user';
+        let blocks = null;
+
+        try {
+          const parsed = JSON.parse(message.content);
+          if (Array.isArray(parsed)) blocks = parsed;
+        } catch (e) {
+          blocks = null;
+        }
+
+        if (!blocks) {
+          const text = String(message.content || '').trim();
+          if (text) ShopAIChat.Message.add(text, role, messagesContainer);
+          return;
+        }
+
+        blocks.forEach((contentBlock) => {
+          if (contentBlock.type === 'text' && String(contentBlock.text || '').trim()) {
+            ShopAIChat.Message.add(contentBlock.text, role, messagesContainer);
+          } else if (contentBlock.type === 'product_results' && Array.isArray(contentBlock.products)) {
+            this.displayProductResults(contentBlock.products);
+          } else if (contentBlock.type === 'tool_use' && contentBlock.name) {
+            ShopAIChat.Message.addToolUse(
+              `Calling tool: ${contentBlock.name} with arguments: ${JSON.stringify(contentBlock.input || {})}`,
+              messagesContainer
+            );
+          }
+        });
+      },
+
+      /**
        * Display product results in the chat
        * @param {Array} products - Array of product data objects
        */
       displayProductResults: function(products) {
         const { messagesContainer } = this.elements;
+        console.log('[ShopAIChat] displayProductResults compare-best-12', {
+          count: Array.isArray(products) ? products.length : 0,
+          best: Array.isArray(products) ? products.find((p) => p && p.isBest)?.title : null
+        });
 
         // Create a wrapper for the product section
         const productSection = document.createElement('div');
         productSection.classList.add('shop-ai-product-section');
         messagesContainer.appendChild(productSection);
+        this.placeAssistantTextBeforeProducts();
 
         // Add a header for the product results
         const header = document.createElement('div');
@@ -294,21 +474,32 @@
         header.innerHTML = '<h4>Top Matching Products</h4>';
         productSection.appendChild(header);
 
+        const list = Array.isArray(products) ? products.slice() : [];
+        const best = list.find((p) => p && p.isBest) || list[0] || null;
+
         // Create the product grid container
         const productsContainer = document.createElement('div');
         productsContainer.classList.add('shop-ai-product-grid');
         productSection.appendChild(productsContainer);
 
-        if (!products || !Array.isArray(products) || products.length === 0) {
+        if (!list.length) {
           const noProductsMessage = document.createElement('p');
           noProductsMessage.textContent = "No products found";
           noProductsMessage.style.padding = "10px";
           productsContainer.appendChild(noProductsMessage);
         } else {
-          products.forEach(product => {
+          list.forEach(product => {
             const productCard = ShopAIChat.Product.createCard(product);
             productsContainer.appendChild(productCard);
           });
+
+          if (list.length > 1) {
+            productSection.appendChild(ShopAIChat.Product.createComparisonTable(list));
+          }
+
+          if (best) {
+            productSection.appendChild(ShopAIChat.Product.createBestProductSection(best));
+          }
         }
 
         this.scrollToBottom();
@@ -326,19 +517,31 @@
        */
       send: async function(chatInput, messagesContainer) {
         const userMessage = chatInput.value.trim();
-        const conversationId = getConversationId();
-
-        // Add user message to chat
-        this.add(userMessage, 'user', messagesContainer);
+        if (!userMessage) return;
 
         // Clear input
         chatInput.value = '';
+
+        await this.sendText(userMessage, messagesContainer);
+      },
+
+      /**
+       * Send a prepared message (typed or from a suggestion chip)
+       */
+      sendText: async function(userMessage, messagesContainer) {
+        const text = String(userMessage || '').trim();
+        if (!text) return;
+
+        const conversationId = getConversationId();
+
+        // Add user message to chat
+        this.add(text, 'user', messagesContainer);
 
         // Show typing indicator
         ShopAIChat.UI.showTypingIndicator();
 
         try {
-          ShopAIChat.API.streamResponse(userMessage, conversationId, messagesContainer);
+          ShopAIChat.API.streamResponse(text, conversationId, messagesContainer);
         } catch (error) {
           console.error('Error communicating with the LLM API:', error);
           ShopAIChat.UI.removeTypingIndicator();
@@ -354,6 +557,8 @@
        * @returns {HTMLElement} The created message element
        */
       add: function(text, sender, messagesContainer) {
+        if (!String(text || '').trim()) return null;
+
         const messageElement = document.createElement('div');
         messageElement.classList.add('shop-ai-message', sender);
 
@@ -458,13 +663,16 @@
         const rawText = element.dataset.rawText;
 
         // Process the text with various Markdown features
-        let processedText = rawText;
+        let processedText = this.stripBestPickFromReply(
+          this.stripDuplicateProductListing(rawText)
+        );
 
         // Remove markdown images entirely (LLM often emits ![alt](image_url)).
         // The link regex below would otherwise turn them into clickable "!alt" image links.
         processedText = processedText.replace(/!\[[^\]]*\]\([^)]+\)/g, '');
         // Remove stock quantity lines from assistant text (cards show stock status)
         processedText = processedText.replace(/^\s*Stock:\s*.*$/gim, '');
+        processedText = processedText.replace(/^\s*Variant ID:\s*.*$/gim, '');
         processedText = processedText.replace(/\n{3,}/g, '\n\n').trim();
 
         // Fix placeholder storefront hosts the model sometimes invents
@@ -506,6 +714,99 @@
 
         // Apply the formatted HTML
         element.innerHTML = processedText;
+      },
+
+      /**
+       * Engine/qualifier choices live in buttons — drop them from assistant text.
+       */
+      stripListedFitmentOptions: function(text, options) {
+        let source = String(text || '');
+        const labels = (Array.isArray(options) ? options : [])
+          .map((option) => String(option.label || option.value || '').trim())
+          .filter(Boolean);
+        if (!labels.length) return source;
+
+        labels.forEach((label) => {
+          const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          source = source.replace(
+            new RegExp(`^\\s*(?:[-*]\\s+|\\d+\\.\\s+)?(?:\\*\\*)?${escaped}(?:\\*\\*)?\\s*$`, 'gim'),
+            ''
+          );
+          source = source.replace(new RegExp(`\\*\\*${escaped}\\*\\*`, 'gi'), '');
+        });
+
+        source = source
+          .replace(/please choose one of the following(?: engines?)?:?\s*/gi, '')
+          .replace(/choose one of the following(?: engines?)?:?\s*/gi, '')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+
+        return source;
+      },
+
+      /**
+       * Best pick lives in the UI card — strip it from assistant chat text.
+       */
+      stripBestPickFromReply: function(text) {
+        let source = String(text || '');
+        if (!/\bbest pick\b|\bbest product is\b|\brecommended pick\b/i.test(source)) {
+          return source;
+        }
+
+        source = source
+          .replace(/[^.!?\n]*\bbest pick\b[^.!?\n]*[.!?]*/gi, ' ')
+          .replace(/[^.!?\n]*\bbest product is\b[^.!?\n]*[.!?]*/gi, ' ')
+          .replace(/[^.!?\n]*\brecommended pick\b[^.!?\n]*[.!?]*/gi, ' ')
+          .replace(/[ \t]{2,}/g, ' ')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+
+        return source;
+      },
+
+      /**
+       * Hide long LLM product dumps — cards + comparison UI already show them.
+       */
+      stripDuplicateProductListing: function(text) {
+        const source = String(text || '');
+        const variantIdCount = (source.match(/Variant ID:\s*gid:\/\/shopify\/ProductVariant\//gi) || []).length;
+        const priceLineCount = (source.match(/^\s*Price:\s*/gim) || []).length;
+        const looksLikeCatalogDump =
+          variantIdCount >= 1 ||
+          priceLineCount >= 2 ||
+          (/Description:\s*/i.test(source) && priceLineCount >= 1);
+
+        if (!looksLikeCatalogDump) {
+          return source;
+        }
+
+        const fallback =
+          "I found matching filters for your vehicle. Browse the product cards and comparison below, then tell me which one to add to your cart.";
+
+        // Keep only a short intro before the first Price:/Variant ID:/product dump block
+        const cut = source.search(/\n\s*(?:Price:|Variant ID:|Description:)/i);
+        let intro = cut > 0 ? source.slice(0, cut).trim() : '';
+
+        // Drop intro lines that are themselves product titles in a list
+        intro = intro
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .filter((line) => !/^(Price|Description|Variant ID|Stock):/i.test(line))
+          .filter((line) => !/gid:\/\/shopify\/ProductVariant\//i.test(line))
+          .join(' ')
+          .trim();
+
+        if (!intro || intro.length > 220 || /Price:|Variant ID:/i.test(intro)) {
+          return fallback;
+        }
+
+        // If intro is only "Here are the products..." keep a cleaner line
+        if (/here are the products|following products|products that fit/i.test(intro)) {
+          return fallback;
+        }
+
+        return intro;
       },
 
       /**
@@ -626,15 +927,10 @@
           const decoder = new TextDecoder();
           let buffer = '';
 
-          // Create initial message element
-          let messageElement = document.createElement('div');
-          messageElement.classList.add('shop-ai-message', 'assistant');
-          messageElement.textContent = '';
-          messageElement.dataset.rawText = '';
-          messagesContainer.appendChild(messageElement);
-          currentMessageElement = messageElement;
+          const updateCurrent = (newElement) => {
+            currentMessageElement = newElement;
+          };
 
-          // Process the stream
           while (true) {
             const { value, done } = await reader.read();
             if (done) break;
@@ -647,14 +943,21 @@
               if (line.startsWith('data: ')) {
                 try {
                   const data = JSON.parse(line.slice(6));
-                  this.handleStreamEvent(data, currentMessageElement, messagesContainer, userMessage,
-                    (newElement) => { currentMessageElement = newElement; });
+                  this.handleStreamEvent(
+                    data,
+                    currentMessageElement,
+                    messagesContainer,
+                    userMessage,
+                    updateCurrent
+                  );
                 } catch (e) {
                   console.error('Error parsing event data:', e, line);
                 }
               }
             }
           }
+
+          ShopAIChat.UI.removeEmptyAssistant(currentMessageElement);
         } catch (error) {
           console.error('Error in streaming:', error);
           ShopAIChat.UI.removeTypingIndicator();
@@ -681,6 +984,11 @@
 
           case 'chunk':
             ShopAIChat.UI.removeTypingIndicator();
+            currentMessageElement = ShopAIChat.UI.ensureAssistantMessage(
+              currentMessageElement,
+              messagesContainer,
+              updateCurrentElement
+            );
             currentMessageElement.dataset.rawText += data.chunk;
             currentMessageElement.textContent = currentMessageElement.dataset.rawText;
             ShopAIChat.UI.scrollToBottom();
@@ -688,23 +996,43 @@
 
           case 'message_complete':
             ShopAIChat.UI.removeTypingIndicator();
-            ShopAIChat.Formatting.formatMessageContent(currentMessageElement);
+            if (currentMessageElement && String(currentMessageElement.dataset.rawText || '').trim()) {
+              ShopAIChat.Formatting.formatMessageContent(currentMessageElement);
+              ShopAIChat.UI.placeAssistantTextBeforeProducts(currentMessageElement);
+            } else {
+              ShopAIChat.UI.removeEmptyAssistant(currentMessageElement);
+              if (typeof updateCurrentElement === 'function') updateCurrentElement(null);
+            }
             ShopAIChat.UI.scrollToBottom();
             break;
 
           case 'end_turn':
             ShopAIChat.UI.removeTypingIndicator();
+            ShopAIChat.UI.removeEmptyAssistant(currentMessageElement);
+            if (currentMessageElement && currentMessageElement.parentNode) {
+              ShopAIChat.UI.placeAssistantTextBeforeProducts(currentMessageElement);
+            }
             break;
 
           case 'error':
             console.error('Stream error:', data.error);
             ShopAIChat.UI.removeTypingIndicator();
+            currentMessageElement = ShopAIChat.UI.ensureAssistantMessage(
+              currentMessageElement,
+              messagesContainer,
+              updateCurrentElement
+            );
             currentMessageElement.textContent = "Sorry, I couldn't process your request. Please try again later.";
             break;
 
           case 'rate_limit_exceeded':
             console.error('Rate limit exceeded:', data.error);
             ShopAIChat.UI.removeTypingIndicator();
+            currentMessageElement = ShopAIChat.UI.ensureAssistantMessage(
+              currentMessageElement,
+              messagesContainer,
+              updateCurrentElement
+            );
             currentMessageElement.textContent = "Sorry, our servers are currently busy. Please try again later.";
             break;
 
@@ -717,6 +1045,10 @@
             ShopAIChat.UI.displayProductResults(data.products);
             break;
 
+          case 'fitment_options':
+            ShopAIChat.UI.displayFitmentOptions(data);
+            break;
+
           case 'tool_use':
             if (data.tool_use_message) {
               ShopAIChat.Message.addToolUse(data.tool_use_message, messagesContainer);
@@ -724,18 +1056,14 @@
             break;
 
           case 'new_message':
-            ShopAIChat.Formatting.formatMessageContent(currentMessageElement);
+            ShopAIChat.UI.removeEmptyAssistant(currentMessageElement);
+            if (currentMessageElement && currentMessageElement.parentNode) {
+              ShopAIChat.Formatting.formatMessageContent(currentMessageElement);
+            }
             ShopAIChat.UI.showTypingIndicator();
-
-            // Create new message element for the next response
-            const newMessageElement = document.createElement('div');
-            newMessageElement.classList.add('shop-ai-message', 'assistant');
-            newMessageElement.textContent = '';
-            newMessageElement.dataset.rawText = '';
-            messagesContainer.appendChild(newMessageElement);
-
-            // Update the current element reference
-            updateCurrentElement(newMessageElement);
+            if (typeof updateCurrentElement === 'function') {
+              updateCurrentElement(null);
+            }
             break;
 
           case 'content_block_complete':
@@ -788,20 +1116,9 @@
             return;
           }
 
-          // Add messages to the UI - filter out tool results; restore product cards
+          // Add messages to the UI - skip empty/tool_result; restore text, tools, products
           data.messages.forEach(message => {
-            try {
-              const messageContents = JSON.parse(message.content);
-              for (const contentBlock of messageContents) {
-                if (contentBlock.type === 'text') {
-                  ShopAIChat.Message.add(contentBlock.text, message.role, messagesContainer);
-                } else if (contentBlock.type === 'product_results' && Array.isArray(contentBlock.products)) {
-                  ShopAIChat.UI.displayProductResults(contentBlock.products);
-                }
-              }
-            } catch (e) {
-              ShopAIChat.Message.add(message.content, message.role, messagesContainer);
-            }
+            ShopAIChat.UI.appendHistoryMessage(message, messagesContainer);
           });
 
           // Scroll to bottom
@@ -964,6 +1281,9 @@
       createCard: function(product) {
         const card = document.createElement('div');
         card.classList.add('shop-ai-product-card');
+        if (product.isBest) {
+          card.classList.add('shop-ai-product-card--best');
+        }
 
         // Create image container
         const imageContainer = document.createElement('div');
@@ -978,6 +1298,14 @@
           this.src = 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png';
         };
         imageContainer.appendChild(image);
+
+        if (product.isBest) {
+          const badge = document.createElement('span');
+          badge.classList.add('shop-ai-best-badge');
+          badge.textContent = 'Best pick';
+          imageContainer.appendChild(badge);
+        }
+
         card.appendChild(imageContainer);
 
         // Add product info
@@ -1021,6 +1349,12 @@
         const price = document.createElement('p');
         price.classList.add('shop-ai-product-price');
         price.textContent = product.price;
+        if (product.compareAtPrice) {
+          const compare = document.createElement('span');
+          compare.classList.add('shop-ai-product-compare-price');
+          compare.textContent = ` ${product.compareAtPrice}`;
+          price.appendChild(compare);
+        }
         info.appendChild(price);
 
         const qty = typeof product.inventoryQuantity === 'number' ? product.inventoryQuantity : null;
@@ -1062,6 +1396,173 @@
 
         card.appendChild(info);
 
+        return card;
+      },
+
+      createComparisonTable: function(products) {
+        const wrap = document.createElement('div');
+        wrap.classList.add('shop-ai-compare');
+
+        const heading = document.createElement('h5');
+        heading.classList.add('shop-ai-compare-title');
+        heading.textContent = 'Quick comparison';
+        wrap.appendChild(heading);
+
+        const table = document.createElement('table');
+        table.classList.add('shop-ai-compare-table');
+
+        const productName = (product) => String(product.title || product.sku || product.partNumber || 'Product');
+
+        const yesNo = (value) => (value ? 'Yes' : 'No');
+
+        const headerRow = document.createElement('tr');
+        const featureHeader = document.createElement('th');
+        featureHeader.textContent = 'Feature';
+        headerRow.appendChild(featureHeader);
+        products.forEach((product) => {
+          const th = document.createElement('th');
+          th.textContent = productName(product);
+          th.title = product.title || '';
+          if (product.isBest) th.classList.add('is-best');
+          headerRow.appendChild(th);
+        });
+        table.appendChild(headerRow);
+
+        const rows = [
+          { label: 'HEPA', value: (p) => yesNo(p.isHepa) },
+          { label: 'Antibacterial', value: (p) => yesNo(p.hasAntibacterial) },
+          { label: 'Charcoal / odor', value: (p) => yesNo(p.hasCharcoal) },
+          { label: 'Price', value: (p) => p.price || '—' },
+          {
+            label: 'Stock',
+            value: (p) => (p.inStock && p.availableForSale !== false ? 'In stock' : 'Out of stock')
+          }
+        ];
+
+        rows.forEach((row) => {
+          const tr = document.createElement('tr');
+          const label = document.createElement('td');
+          label.textContent = row.label;
+          tr.appendChild(label);
+          products.forEach((product) => {
+            const td = document.createElement('td');
+            td.textContent = row.value(product);
+            if (product.isBest) td.classList.add('is-best');
+            tr.appendChild(td);
+          });
+          table.appendChild(tr);
+        });
+
+        wrap.appendChild(table);
+        return wrap;
+      },
+
+      createBestProductSection: function(bestProduct) {
+        const section = document.createElement('div');
+        section.classList.add('shop-ai-best-section');
+
+        const heading = document.createElement('h5');
+        heading.classList.add('shop-ai-best-section-title');
+        heading.textContent = 'Best product';
+        section.appendChild(heading);
+
+        section.appendChild(ShopAIChat.Product.createBestHighlightCard(bestProduct));
+        return section;
+      },
+
+      createBestHighlightCard: function(product) {
+        const card = document.createElement('div');
+        card.classList.add('shop-ai-best-highlight');
+
+        const imageWrap = document.createElement('div');
+        imageWrap.classList.add('shop-ai-best-highlight-image');
+        const image = document.createElement('img');
+        image.src = product.image_url || 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png';
+        image.alt = product.title || 'Best product';
+        image.onerror = function() {
+          this.src = 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png';
+        };
+        imageWrap.appendChild(image);
+
+        const badge = document.createElement('span');
+        badge.classList.add('shop-ai-best-badge');
+        badge.textContent = 'Best pick';
+        imageWrap.appendChild(badge);
+        card.appendChild(imageWrap);
+
+        const info = document.createElement('div');
+        info.classList.add('shop-ai-best-highlight-info');
+
+        let productHref = '';
+        if (product.url) {
+          productHref = product.url;
+          if (productHref.includes('yourstore.com')) {
+            const storefrontOrigin = (window.shopChatConfig && window.shopChatConfig.storefrontUrl)
+              ? String(window.shopChatConfig.storefrontUrl).replace(/\/+$/, '')
+              : window.location.origin;
+            productHref = productHref.replace(/https?:\/\/(?:www\.)?yourstore\.com/gi, storefrontOrigin);
+          } else if (productHref.startsWith('/')) {
+            const storefrontOrigin = (window.shopChatConfig && window.shopChatConfig.storefrontUrl)
+              ? String(window.shopChatConfig.storefrontUrl).replace(/\/+$/, '')
+              : window.location.origin;
+            productHref = storefrontOrigin + productHref;
+          }
+        }
+
+        const title = document.createElement('h3');
+        title.classList.add('shop-ai-best-highlight-title');
+        title.textContent = product.title || '';
+        if (productHref) {
+          title.classList.add('shop-ai-best-highlight-title--link');
+          title.addEventListener('click', function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            window.open(productHref, '_blank', 'noopener,noreferrer');
+          });
+        }
+        info.appendChild(title);
+
+        const price = document.createElement('p');
+        price.classList.add('shop-ai-product-price');
+        price.textContent = product.price || '';
+        info.appendChild(price);
+
+        const qty = typeof product.inventoryQuantity === 'number' ? product.inventoryQuantity : null;
+        const inStock =
+          product.inStock === true &&
+          product.availableForSale !== false &&
+          qty !== 0;
+
+        const stock = document.createElement('p');
+        stock.classList.add('shop-ai-product-stock');
+        if (inStock) {
+          stock.classList.add('in-stock');
+          stock.textContent = 'In stock';
+        } else {
+          stock.classList.add('out-of-stock');
+          stock.textContent = 'Out of stock';
+        }
+        info.appendChild(stock);
+
+        if (inStock) {
+          const actions = document.createElement('div');
+          actions.classList.add('shop-ai-best-highlight-actions');
+          const button = document.createElement('button');
+          button.classList.add('shop-ai-add-to-cart');
+          button.textContent = 'Add to Cart';
+          button.addEventListener('click', function() {
+            const input = document.querySelector('.shop-ai-chat-input input');
+            if (input) {
+              input.value = `Add ${product.title} to my cart`;
+              const sendButton = document.querySelector('.shop-ai-chat-send');
+              if (sendButton) sendButton.click();
+            }
+          });
+          actions.appendChild(button);
+          info.appendChild(actions);
+        }
+
+        card.appendChild(info);
         return card;
       }
     },

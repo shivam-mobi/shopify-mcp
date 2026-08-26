@@ -464,15 +464,39 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
     force: true
   });
 
+  const verification = synced?.checkoutId
+    ? await fetchVerifiedCheckoutShipping(mcpClient, synced.checkoutId)
+    : null;
+
+  const verifiedAddress = verification?.shippingAddress
+    ? {
+        ...verification.shippingAddress,
+        phone_number:
+          verification.shippingAddress.phone_number ||
+          verification.buyerPhone ||
+          null
+      }
+    : null;
   const validationErrors = [
     ...(synced?.validationErrors || []),
-    ...extractCheckoutValidationErrors(synced?.checkout)
+    ...(verification?.validationErrors || []),
+    ...extractCheckoutValidationErrors(synced?.checkout),
+    ...extractCheckoutValidationErrors(verification?.checkout)
   ].filter(Boolean);
 
-  if (validationErrors.length > 0) {
+  // Only keep address/buyer related failures here; item/stock issues are separate.
+  const shippingValidationErrors = validationErrors.filter((item) => {
+    const code = String(item?.code || item || "");
+    const content = String(item?.content || item?.readable || item || "");
+    return /phone|address|postal|zip|delivery|shipping|fulfillment|buyer|destination|region|state|locality|city|country|name|street|first_name|last_name/i.test(
+      `${code} ${content}`
+    );
+  });
+
+  if (shippingValidationErrors.length > 0) {
     const readableIssues = [
       ...new Set(
-        validationErrors.map((item) =>
+        shippingValidationErrors.map((item) =>
           typeof item === "string"
             ? humanizeCheckoutValidationError("", item)
             : item.readable || humanizeCheckoutValidationError(item.code, item.content)
@@ -482,7 +506,8 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
 
     console.warn("[cart-wrapper] set_cart_shipping validation failed", {
       conversationId,
-      errors: readableIssues
+      errors: readableIssues,
+      verifiedStreet: verifiedAddress?.street_address || null
     });
 
     return toolResult({
@@ -496,31 +521,48 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
     });
   }
 
-  if (!synced?.shippingAddress?.street_address) {
+  if (!verifiedAddress?.street_address || !shippingAddressMatchesExpected(verifiedAddress, destination)) {
+    console.warn("[cart-wrapper] set_cart_shipping not verified on checkout", {
+      conversationId,
+      checkoutId: synced?.checkoutId || null,
+      expected: destination,
+      verified: verifiedAddress,
+      buyerPhone: verification?.buyerPhone || null
+    });
+
     return toolResult({
       success: false,
       shipping_saved: false,
-      issues: [synced?.error || "Shopify did not accept the shipping address."],
+      issues: ["Shopify did not keep the shipping address on checkout."],
       customer_message:
-        "I couldn't save your shipping address yet. Please double-check the address details and try again.",
+        "I tried to save your shipping address, but Shopify did not keep it on the checkout yet. " +
+        "Please send the address again and I'll retry.",
       instruction:
-        "The shipping address was NOT saved. Tell the customer clearly and ask them to retry. Never say it was saved."
+        "The shipping address was NOT saved on Shopify checkout. Do not claim it was saved. Ask the customer to resend the address."
     });
   }
 
-  await setConversationShippingAddress(conversationId, writableShippingAddress(synced.shippingAddress));
+  await setConversationShippingAddress(conversationId, writableShippingAddress(verifiedAddress));
 
-  console.log("[cart-wrapper] set_cart_shipping", {
+  console.log("[cart-wrapper] set_cart_shipping verified", {
     conversationId,
     itemCount: cartLineItems.length,
     checkoutId: synced.checkoutId,
-    savedStreet: synced.shippingAddress.street_address
+    savedStreet: verifiedAddress.street_address,
+    savedPhone: verifiedAddress.phone_number || verification?.buyerPhone || null,
+    checkoutUrl: verification?.checkoutUrl || synced.checkoutUrl || null
   });
 
   return toolResult(
     formatCartSummary(live.cart, live.raw, {
-      checkoutUrl: synced.checkoutUrl,
-      shippingAddress: synced.shippingAddress
+      checkoutUrl: verification?.checkoutUrl || synced.checkoutUrl,
+      shippingAddress: {
+        ...verifiedAddress,
+        phone_number:
+          verifiedAddress.phone_number ||
+          verification?.buyerPhone ||
+          destination.phone_number
+      }
     })
   );
 }
@@ -653,6 +695,68 @@ function extractShippingDestination(checkout) {
   return null;
 }
 
+function normalizeComparable(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function normalizePhoneDigits(phone) {
+  return String(phone || "").replace(/\D/g, "");
+}
+
+/**
+ * Confirm Shopify actually stored the destination we sent (not just echo / local fallback).
+ */
+function shippingAddressMatchesExpected(actual, expected) {
+  if (!actual?.street_address || !expected?.street_address) return false;
+
+  const streetOk =
+    normalizeComparable(actual.street_address) === normalizeComparable(expected.street_address);
+  const cityOk =
+    !expected.address_locality ||
+    normalizeComparable(actual.address_locality) === normalizeComparable(expected.address_locality);
+  const zipOk =
+    !expected.postal_code ||
+    normalizeComparable(actual.postal_code) === normalizeComparable(expected.postal_code);
+  const regionOk =
+    !expected.address_region ||
+    normalizeComparable(actual.address_region) === normalizeComparable(expected.address_region);
+
+  const expectedPhone = normalizePhoneDigits(expected.phone_number);
+  const actualPhone = normalizePhoneDigits(actual.phone_number || actual.buyer?.phone_number);
+  const phoneOk =
+    !expectedPhone ||
+    (Boolean(actualPhone) &&
+      (actualPhone === expectedPhone ||
+        actualPhone.endsWith(expectedPhone) ||
+        expectedPhone.endsWith(actualPhone)));
+
+  return streetOk && cityOk && zipOk && regionOk && phoneOk;
+}
+
+async function fetchVerifiedCheckoutShipping(mcpClient, checkoutId) {
+  if (!checkoutId) return null;
+
+  try {
+    const response = await mcpClient.callTool("get_checkout", { id: checkoutId });
+    const checkout = extractCheckoutPayload(response);
+    if (!checkout?.id) return null;
+
+    return {
+      checkout,
+      checkoutUrl: extractContinueUrl(response) || checkout.continue_url || null,
+      shippingAddress: extractShippingDestination(checkout),
+      validationErrors: extractCheckoutValidationErrors(checkout),
+      buyerPhone: checkout?.buyer?.phone_number || null
+    };
+  } catch (error) {
+    console.warn("[cart-wrapper] get_checkout verify failed", { checkoutId, message: error.message });
+    return null;
+  }
+}
+
 function isUsLikeCountry(country) {
   const value = String(country || "").trim().toUpperCase();
   return value === "US" || value === "USA" || value === "UNITED STATES";
@@ -727,7 +831,7 @@ async function syncCheckoutWithCart(
       return {
         checkoutId: updated.checkout.id,
         checkoutUrl: updated.checkoutUrl,
-        shippingAddress: updated.shippingAddress || destination,
+        shippingAddress: updated.shippingAddress || null,
         checkout: updated.checkout,
         validationErrors
       };
@@ -771,7 +875,7 @@ async function syncCheckoutWithCart(
   return {
     checkoutId: created.checkout.id,
     checkoutUrl: created.checkoutUrl,
-    shippingAddress: created.shippingAddress || destination,
+    shippingAddress: created.shippingAddress || null,
     checkout: created.checkout,
     validationErrors
   };
@@ -847,7 +951,7 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
       return {
         checkout: retried,
         checkoutUrl: extractContinueUrl(retryResponse) || retried.continue_url,
-        shippingAddress,
+        shippingAddress: extractShippingDestination(retried),
         validationErrors: extractCheckoutValidationErrors(retried)
       };
     }
@@ -855,7 +959,7 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
     return {
       checkout,
       checkoutUrl: extractContinueUrl(updateResponse) || checkout.continue_url,
-      shippingAddress: shippingAddress || destination || extractShippingDestination(existing),
+      shippingAddress: shippingAddress || extractShippingDestination(existing),
       validationErrors: extractCheckoutValidationErrors(checkout)
     };
   } catch (error) {
@@ -869,16 +973,8 @@ async function createCheckoutFromCart(mcpClient, cart, destination) {
     if (destination?.phone_number) {
       overrides.buyer = { phone_number: destination.phone_number };
     }
-    if (destination) {
-      overrides.fulfillment = {
-        methods: [
-          {
-            type: "shipping",
-            destinations: [destination]
-          }
-        ]
-      };
-    }
+    // Do not attach fulfillment on create_checkout — destinations stick reliably
+    // only after update_checkout with checkout line_item_ids.
 
     const response = await mcpClient.callTool(
       "create_checkout",
@@ -891,20 +987,24 @@ async function createCheckoutFromCart(mcpClient, cart, destination) {
     }
 
     let shippingAddress = extractShippingDestination(checkout);
+    let checkoutUrl = extractContinueUrl(response) || checkout.continue_url;
+    let validationErrors = extractCheckoutValidationErrors(checkout);
 
-    if (destination && !shippingAddress?.street_address) {
+    if (destination?.street_address) {
       const lineItems = buildCheckoutLineItems(checkout.line_items || cart.line_items);
       const lineItemIds = lineItems.map((line) => line.id).filter(Boolean);
       const updateResponse = await mcpClient.callTool("update_checkout", {
         id: checkout.id,
         checkout: {
           line_items: lineItems,
-          buyer: { phone_number: destination.phone_number },
+          buyer: destination.phone_number
+            ? { phone_number: destination.phone_number }
+            : undefined,
           fulfillment: {
             methods: [
               {
                 type: "shipping",
-                line_item_ids: lineItemIds,
+                ...(lineItemIds.length ? { line_item_ids: lineItemIds } : {}),
                 destinations: [destination]
               }
             ]
@@ -912,20 +1012,16 @@ async function createCheckoutFromCart(mcpClient, cart, destination) {
         }
       });
       checkout = extractCheckoutPayload(updateResponse) || checkout;
-      shippingAddress = extractShippingDestination(checkout) || destination;
-      return {
-        checkout,
-        checkoutUrl: extractContinueUrl(updateResponse) || checkout.continue_url,
-        shippingAddress,
-        validationErrors: extractCheckoutValidationErrors(checkout)
-      };
+      shippingAddress = extractShippingDestination(checkout);
+      checkoutUrl = extractContinueUrl(updateResponse) || checkout.continue_url || checkoutUrl;
+      validationErrors = extractCheckoutValidationErrors(checkout);
     }
 
     return {
       checkout,
-      checkoutUrl: extractContinueUrl(response) || checkout.continue_url,
-      shippingAddress: shippingAddress || destination,
-      validationErrors: extractCheckoutValidationErrors(checkout)
+      checkoutUrl,
+      shippingAddress,
+      validationErrors
     };
   } catch (error) {
     return { error: error.message };

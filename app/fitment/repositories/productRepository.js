@@ -156,13 +156,26 @@ export async function fetchProductList(
       note: notes.get(row.sku) ?? "",
       image_url: live.image_url || "",
       price: live.price || "",
+      priceAmount: live.priceAmount ?? null,
+      compareAtPrice: live.compareAtPrice || null,
       handle: live.handle ?? "",
       variantId: live.variantId || gid,
       url: live.url || "",
       availableForSale: live.availableForSale === true,
       inStock: live.inStock === true,
       inventoryQuantity:
-        typeof live.inventoryQuantity === "number" ? live.inventoryQuantity : null
+        typeof live.inventoryQuantity === "number" ? live.inventoryQuantity : null,
+      vendor: live.vendor || "",
+      sku: live.sku || row.sku,
+      filterType: live.filterType || "standard",
+      isHepa: live.isHepa === true,
+      hasAntibacterial: live.hasAntibacterial === true,
+      hasCharcoal: live.hasCharcoal === true,
+      hasParticulate: live.hasParticulate === true,
+      yGroup: live.yGroup || "",
+      features: Array.isArray(live.features) ? live.features : [],
+      tags: Array.isArray(live.tags) ? live.tags : [],
+      descriptionHtml: live.descriptionHtml || ""
     });
   }
 
