@@ -96,8 +96,8 @@ model LlmRequestLog {
 model McpCallLog {
   id             String   @id @default(cuid())
   conversationId String?
-  server         String
-  method         String
+  server         String   // storefront | ucp | customer | admin
+  method         String   // tools/call | tools/list | graphql
   toolName       String?
   endpoint       String
   request        String
@@ -107,24 +107,7 @@ model McpCallLog {
   createdAt      DateTime @default(now())
 
   @@index([conversationId])
+  @@index([server])
   @@index([toolName])
-  @@index([createdAt])
-}
-
-model ShopifyAdminApiLog {
-  id         String   @id @default(cuid())
-  shop       String
-  operation  String
-  authMode   String
-  endpoint   String
-  request    String
-  response   String
-  statusCode Int
-  durationMs Int?
-  error      String?
-  createdAt  DateTime @default(now())
-
-  @@index([shop])
-  @@index([operation])
   @@index([createdAt])
 }

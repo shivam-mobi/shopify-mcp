@@ -171,6 +171,7 @@ async function buildFinalMessageFromParts(parts, streamHandlers) {
     stop_reason: functionCalls.length > 0 ? "tool_use" : "end_turn"
   };
 
+  // Assistant message must be recorded before tool results (OpenAI history order).
   streamHandlers.onMessage?.(finalMessage);
 
   if (streamHandlers.onToolUse) {

@@ -469,7 +469,8 @@ export async function storeLlmRequestLog({ request, response, statusCode, provid
 }
 
 /**
- * Persist Shopify MCP JSON-RPC calls (storefront, UCP, customer).
+ * Persist Shopify MCP JSON-RPC and Admin GraphQL calls.
+ * server: storefront | ucp | customer | admin
  * Sensitive fields (tokens, auth headers) are redacted before storage.
  */
 export async function storeMcpCallLog({
@@ -499,41 +500,6 @@ export async function storeMcpCallLog({
     });
   } catch (error) {
     console.error("Error storing MCP call log:", error);
-    return null;
-  }
-}
-
-/**
- * Persist Shopify Admin API GraphQL calls (fitment product enrichment, etc.).
- * Tokens and secrets are redacted before storage.
- */
-export async function storeShopifyAdminApiLog({
-  shop,
-  operation,
-  authMode,
-  endpoint,
-  request,
-  response,
-  statusCode,
-  durationMs,
-  error
-}) {
-  try {
-    return await prisma.shopifyAdminApiLog.create({
-      data: {
-        shop: String(shop || "unknown"),
-        operation: String(operation || "unknown"),
-        authMode: String(authMode || "unknown"),
-        endpoint: String(endpoint || ""),
-        request: stringifyMcpPayload(sanitizeMcpPayload(request)),
-        response: stringifyMcpPayload(sanitizeMcpPayload(response)),
-        statusCode: Number.isInteger(statusCode) ? statusCode : 0,
-        durationMs: Number.isInteger(durationMs) ? durationMs : null,
-        error: error ? String(error) : null
-      }
-    });
-  } catch (logError) {
-    console.error("Error storing Shopify Admin API log:", logError);
     return null;
   }
 }

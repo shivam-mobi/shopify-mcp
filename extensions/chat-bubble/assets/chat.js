@@ -586,7 +586,7 @@
        */
       addToolUse: function(toolMessage, messagesContainer) {
         // Parse the tool message to extract tool name and arguments
-        const match = toolMessage.match(/Calling tool: (\w+) with arguments: (.+)/);
+        const match = toolMessage.match(/Calling tool: (.+?) with arguments: ([\s\S]+)/);
         if (!match) {
           // Fallback for unexpected format
           const toolUseElement = document.createElement('div');
@@ -776,10 +776,16 @@
         const source = String(text || '');
         const variantIdCount = (source.match(/Variant ID:\s*gid:\/\/shopify\/ProductVariant\//gi) || []).length;
         const priceLineCount = (source.match(/^\s*Price:\s*/gim) || []).length;
+        const pricedAtCount = (source.match(/\bPriced at\s*\$/gi) || []).length;
+        const inlinePriceCount = (source.match(/\$\d+\.\d{2}/g) || []).length;
         const looksLikeCatalogDump =
           variantIdCount >= 1 ||
           priceLineCount >= 2 ||
-          (/Description:\s*/i.test(source) && priceLineCount >= 1);
+          pricedAtCount >= 1 ||
+          (inlinePriceCount >= 2 && /filter|product|cabin|hepa|febreez/i.test(source)) ||
+          (/Description:\s*/i.test(source) && priceLineCount >= 1) ||
+          (/here are the options|following (?:filters|products)|options below/i.test(source) &&
+            (pricedAtCount >= 1 || inlinePriceCount >= 2));
 
         if (!looksLikeCatalogDump) {
           return source;
@@ -788,8 +794,10 @@
         const fallback =
           "I found matching filters for your vehicle. Browse the product cards and comparison below, then tell me which one to add to your cart.";
 
-        // Keep only a short intro before the first Price:/Variant ID:/product dump block
-        const cut = source.search(/\n\s*(?:Price:|Variant ID:|Description:)/i);
+        // Keep only a short intro before the first product dump block
+        const cut = source.search(
+          /\n\s*(?:Price:|Variant ID:|Description:)|(?:\n|^)[^*\n]{10,}:\s*(?:Priced at\s*\$|\$\d+\.\d{2})/i
+        );
         let intro = cut > 0 ? source.slice(0, cut).trim() : '';
 
         // Drop intro lines that are themselves product titles in a list
@@ -799,15 +807,17 @@
           .filter(Boolean)
           .filter((line) => !/^(Price|Description|Variant ID|Stock):/i.test(line))
           .filter((line) => !/gid:\/\/shopify\/ProductVariant\//i.test(line))
+          .filter((line) => !/\bPriced at\s*\$/i.test(line))
+          .filter((line) => !/\$\d+\.\d{2}/.test(line))
           .join(' ')
           .trim();
 
-        if (!intro || intro.length > 220 || /Price:|Variant ID:/i.test(intro)) {
+        if (!intro || intro.length > 220 || /Price:|Variant ID:|\$\d+\.\d{2}/i.test(intro)) {
           return fallback;
         }
 
         // If intro is only "Here are the products..." keep a cleaner line
-        if (/here are the products|following products|products that fit/i.test(intro)) {
+        if (/here are the (?:products|options)|following products|products that fit|you will need a cabin air filter\. here are/i.test(intro)) {
           return fallback;
         }
 

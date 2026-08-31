@@ -229,6 +229,21 @@ export function annotateRankedProductsForLlm(rankedProducts = []) {
 }
 
 /**
+ * Minimal product rows for LLM tool history — cart/add only, not for chat display.
+ * Omits title, price, description, and features so the model does not repeat the UI cards.
+ */
+export function buildLlmProductSummary(rankedProducts = []) {
+  return rankedProducts.map((product, index) => ({
+    position: index + 1,
+    variant_id: resolveProductVariantId(product),
+    is_best_pick: product.isBest === true,
+    inStock: product.inStock === true,
+    filterType: product.filterType || null,
+    vendor: product.vendor || null
+  }));
+}
+
+/**
  * Best pick / first product metadata for LLM cart adds (hidden from storefront UI).
  */
 export function buildProductListingMetadata(rankedProducts = []) {
@@ -253,6 +268,7 @@ export default {
   enrichProductsWithComparison,
   resolveProductVariantId,
   annotateRankedProductsForLlm,
+  buildLlmProductSummary,
   buildProductListingMetadata,
   normalizeVendorName,
   isPreferredBestPickVendor,

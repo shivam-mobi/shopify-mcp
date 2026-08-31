@@ -80,10 +80,9 @@ function formatProducts(products, vehicle, qualifiers) {
     products: productsForLlm,
     ...listingMeta,
     ui_instruction: hasProducts
-      ? "CRITICAL: Product cards + Quick comparison + Best product UI are shown in chat automatically. " +
-        "Do NOT list products, prices, descriptions, notes, stock, or Variant IDs in your reply. " +
-        "Do NOT mention a best pick, best product, or recommend a specific product by name in text. " +
-        "Reply in 1-2 short sentences only (e.g. matching filters found for their vehicle), then ask if they want to add one to the cart. " +
+      ? "CRITICAL: Top Matching Products cards, Quick comparison, and Best pick UI are already shown in chat. " +
+        "FORBIDDEN in your reply: product names, prices, 'Priced at $…', descriptions, feature bullets, numbered lists, or naming a specific filter. " +
+        "Do NOT say 'here are the options' and then list them. Reply in 1-2 short sentences only (e.g. matching filters found for their vehicle), then ask if they want to add one to the cart. " +
         PRODUCT_LISTING_CART_INSTRUCTION
       : "Genuine empty catalog result (fitment ran successfully but no products exist for this vehicle). " +
         "Reply in 1 short sentence that no matching filters were found for their vehicle. " +

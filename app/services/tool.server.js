@@ -4,7 +4,7 @@
  */
 import { saveMessage } from "../db.server";
 import AppConfig from "./config.server";
-import { enrichProductsWithComparison, buildCompareAttributes, annotateRankedProductsForLlm, buildProductListingMetadata, resolveProductVariantId } from "./product-compare.server.js";
+import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId } from "./product-compare.server.js";
 
 /**
  * Creates a tool service instance
@@ -121,18 +121,24 @@ export function createToolService() {
 
   const buildProductSearchToolHistory = (toolUseResponse, rankedProducts, toolName) => {
     const originalData = extractToolResponseData(toolUseResponse) || {};
-    const products = annotateRankedProductsForLlm(rankedProducts);
+    const products = buildLlmProductSummary(rankedProducts);
     const listingMeta = buildProductListingMetadata(rankedProducts);
+    const {
+      best_pick_title: _bestPickTitle,
+      bestProductTitle: _bestProductTitle,
+      ...listingMetaForLlm
+    } = listingMeta;
 
     const enriched = {
       status: originalData.status || "success",
       source: toolName,
       products,
-      ...listingMeta,
+      ...listingMetaForLlm,
       ui_instruction:
         originalData.ui_instruction ||
-        "CRITICAL: Product cards are shown in chat automatically. Do NOT list products or variant IDs in your reply. " +
-        "Reply in 1-2 short sentences, then ask if they want to add one to the cart."
+        "CRITICAL: Top Matching Products cards, Quick comparison, and Best pick UI are already shown in chat. " +
+        "FORBIDDEN in your reply: product names, prices, 'Priced at $…', descriptions, feature bullets, numbered product lists, or recommending a specific filter by name. " +
+        "Reply in 1-2 short sentences only (e.g. matching filters were found for their vehicle), then ask if they want to add one to the cart."
     };
 
     if (originalData.vehicle) enriched.vehicle = originalData.vehicle;

@@ -1,5 +1,5 @@
 import { buildCompareAttributes } from "./product-compare.server.js";
-import { storeShopifyAdminApiLog } from "../db.server.js";
+import { storeMcpCallLog } from "../db.server.js";
 
 const VARIANTS_BY_IDS_QUERY = `#graphql
   query VariantsByIds($ids: [ID!]!) {
@@ -148,16 +148,23 @@ async function callAdminGraphql({
     }
     throw error;
   } finally {
-    void storeShopifyAdminApiLog({
-      shop,
-      operation,
-      authMode,
+    void storeMcpCallLog({
+      server: "admin",
+      method: "graphql",
+      toolName: operation,
       endpoint,
-      request: requestPayload,
-      response: summarizeAdminGraphqlResponse(responseBody),
+      request: {
+        shop,
+        ...requestPayload
+      },
+      response: errorMessage
+        ? {
+            error: errorMessage,
+            body: summarizeAdminGraphqlResponse(responseBody)
+          }
+        : summarizeAdminGraphqlResponse(responseBody),
       statusCode,
-      durationMs: Date.now() - startedAt,
-      error: errorMessage
+      durationMs: Date.now() - startedAt
     });
   }
 }

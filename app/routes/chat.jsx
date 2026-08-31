@@ -23,6 +23,7 @@ import {
   isFitmentTool
 } from "../fitment/fitment-tools.server.js";
 import { enrichProductsWithComparison } from "../services/product-compare.server.js";
+import { buildStoreHelpHintMessage } from "../services/store-help-hints.server.js";
 
 
 /**
@@ -42,7 +43,10 @@ export async function loader({ request }) {
   // Public storefront config (conversation persistence, etc.)
   if (url.searchParams.get("config") === "true") {
     return new Response(
-      JSON.stringify({ conversationStorage: AppConfig.chat.conversationStorage }),
+      JSON.stringify({
+        conversationStorage: AppConfig.chat.conversationStorage,
+        showToolCallsInChat: AppConfig.tools.showToolCallsInChat
+      }),
       { headers: getCorsHeaders(request) }
     );
   }
@@ -258,6 +262,11 @@ async function handleChatSession({
       conversationHistory.unshift(shippingAddressHint);
     }
 
+    const storeHelpHint = buildStoreHelpHintMessage(userMessage);
+    if (storeHelpHint) {
+      conversationHistory.unshift(storeHelpHint);
+    }
+
     // Execute the conversation stream
     let finalMessage = { role: 'user', content: userMessage };
 
@@ -302,9 +311,11 @@ async function handleChatSession({
             const toolUseMessage = `Calling tool: ${toolName} with arguments: ${JSON.stringify(toolArgs)}`;
 
             if (AppConfig.tools.showToolCallsInChat) {
+              console.log("[chat] tool_use SSE → client", { toolName, toolArgs });
               stream.sendMessage({
                 type: 'tool_use',
-                tool_use_message: toolUseMessage
+                tool_use_message: toolUseMessage,
+                tool_name: toolName
               });
             }
 

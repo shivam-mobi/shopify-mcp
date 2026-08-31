@@ -18,7 +18,7 @@ export function createOpenAIService(apiKey = process.env.OPENAI_API_KEY) {
   }, streamHandlers) => {
     const systemInstruction = getSystemPrompt(promptType);
     const openAiMessages = repairOpenAIToolCallSequence(
-      convertMessagesToOpenAI(messages, systemInstruction)
+      repairToolMessageOrder(convertMessagesToOpenAI(messages, systemInstruction))
     );
     const openAiTools = convertToolsToOpenAI(tools);
 
@@ -107,6 +107,7 @@ export function createOpenAIService(apiKey = process.env.OPENAI_API_KEY) {
         response: { streamed: true, chunks, finalMessage }
       });
 
+      // Assistant message (with tool_calls) MUST be recorded before tool results.
       streamHandlers.onMessage?.(finalMessage);
 
       if (streamHandlers.onToolUse) {
@@ -215,6 +216,46 @@ function convertMessagesToOpenAI(messages = [], systemInstruction) {
   }
 
   return openAiMessages;
+}
+
+/**
+ * OpenAI requires: assistant message with tool_calls, then tool result(s).
+ * A prior bug recorded tool results before the assistant turn — repair on read.
+ */
+function repairToolMessageOrder(messages = []) {
+  const repaired = [];
+
+  for (let i = 0; i < messages.length; i += 1) {
+    const message = messages[i];
+    const next = messages[i + 1];
+
+    if (
+      message.role === "tool" &&
+      next?.role === "assistant" &&
+      Array.isArray(next.tool_calls) &&
+      next.tool_calls.some((call) => call.id === message.tool_call_id)
+    ) {
+      repaired.push(next);
+      repaired.push(message);
+      i += 1;
+      continue;
+    }
+
+    if (message.role === "tool") {
+      const prev = repaired[repaired.length - 1];
+      const prevMatches =
+        prev?.role === "assistant" &&
+        Array.isArray(prev.tool_calls) &&
+        prev.tool_calls.some((call) => call.id === message.tool_call_id);
+      if (!prevMatches) {
+        continue;
+      }
+    }
+
+    repaired.push(message);
+  }
+
+  return repaired;
 }
 
 /**

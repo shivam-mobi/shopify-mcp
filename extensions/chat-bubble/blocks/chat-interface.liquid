@@ -1,4 +1,4 @@
-<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=history-restore-41">
+<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=tool-call-display-42">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
 {% assign brand_color = block.settings.chat_bubble_color | default: '#00BCF2' %}
@@ -8,7 +8,7 @@
 
 <div
   class="shop-ai-chat-container"
-  data-shop-ai-assets="history-restore-41"
+  data-shop-ai-assets="tool-call-display-42"
   style="--shop-ai-brand: {{ brand_color }};"
 >
   <div class="shop-ai-chat-bubble">
@@ -39,7 +39,7 @@
   </div>
 </div>
 
-<script src="{{ 'chat.js' | asset_url }}?v=history-restore-41" defer></script>
+<script src="{{ 'chat.js' | asset_url }}?v=tool-call-display-42" defer></script>
 <script>
   window.shopChatConfig = {
     apiUrl: "https://struggle-throwing-recycled.ngrok-free.dev",
