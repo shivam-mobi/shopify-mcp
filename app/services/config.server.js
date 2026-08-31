@@ -45,8 +45,29 @@ export const AppConfig = {
   mcp: {
     ucpAgentProfile: process.env.UCP_AGENT_PROFILE ||
       "https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json",
+    /**
+     * Dev Dashboard → Catalogs API key (Token tier for UCP/Cart/Checkout MCP).
+     * Not the same as SHOPIFY_API_KEY / SHOPIFY_ADMIN_ACCESS_TOKEN.
+     */
+    catalog: {
+      clientId: process.env.CATALOG_CLIENT_ID || "",
+      clientSecret: process.env.CATALOG_CLIENT_SECRET || "",
+      /** Used only when request has no client IP (e.g. warmup). */
+      buyerIpFallback: process.env.CATALOG_BUYER_IP_FALLBACK || "127.0.0.1"
+    },
     /** Persist Shopify MCP tool calls to SQLite (set MCP_LOG_ENABLED=false to disable). */
-    logCalls: process.env.MCP_LOG_ENABLED !== "false"
+    logCalls: process.env.MCP_LOG_ENABLED !== "false",
+    /** Cache tools/list until process restart (set MCP_TOOLS_LIST_CACHE=false to disable). */
+    toolsListCacheEnabled: process.env.MCP_TOOLS_LIST_CACHE !== "false",
+    /** Warm tools/list at process start from STOREFRONT_URL (set MCP_WARMUP_ON_START=false to skip). */
+    warmupOnStart: process.env.MCP_WARMUP_ON_START !== "false",
+    /** Exit process if storefront/UCP tools fail to load at warmup. */
+    warmupFailHard: process.env.MCP_WARMUP_FAIL_HARD !== "false",
+    /**
+     * Also require customer tools/list at startup (after well-known discovery).
+     * Set MCP_WARMUP_REQUIRE_CUSTOMER=false if Customer Accounts are disabled on the shop.
+     */
+    warmupRequireCustomer: process.env.MCP_WARMUP_REQUIRE_CUSTOMER !== "false"
   },
 
   fitment: {

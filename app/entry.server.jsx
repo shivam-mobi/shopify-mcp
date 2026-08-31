@@ -4,6 +4,7 @@ import { ServerRouter } from "react-router";
 import { createReadableStreamFromReadable } from "@react-router/node";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
+import { ensureMcpToolsWarmed } from "./mcp-client";
 
 export const streamTimeout = 5000;
 
@@ -13,6 +14,8 @@ export default async function handleRequest(
   responseHeaders,
   reactRouterContext,
 ) {
+  await ensureMcpToolsWarmed();
+
   addDocumentResponseHeaders(request, responseHeaders);
   const userAgent = request.headers.get("user-agent");
   const callbackName = isbot(userAgent ?? "") ? "onAllReady" : "onShellReady";

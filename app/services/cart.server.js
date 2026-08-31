@@ -647,22 +647,62 @@ export function extractCheckoutPayload(toolResponse) {
 }
 
 /**
- * Buyer-fixable checkout validation errors (phone/address/etc).
+ * Buyer-facing checkout validation errors (phone/address/etc).
  * Ignores expected escalation noise like payment extension prompts.
  * Returns { code, content, readable } objects for LLM/customer messaging.
+ *
+ * Works on checkout objects AND raw MCP tool responses (including isError
+ * payloads that only have messages + continue_url and no checkout id).
  */
 export function extractCheckoutValidationErrors(checkoutOrResponse) {
-  const checkout = checkoutOrResponse?.id
-    ? checkoutOrResponse
-    : extractCheckoutPayload(checkoutOrResponse) || checkoutOrResponse?.structuredContent;
+  if (!checkoutOrResponse) {
+    return [];
+  }
 
-  const messages = Array.isArray(checkout?.messages) ? checkout.messages : [];
+  // Sometimes callers pass a dumped JSON/error string — try to parse it.
+  if (typeof checkoutOrResponse === "string") {
+    try {
+      return extractCheckoutValidationErrors(JSON.parse(checkoutOrResponse));
+    } catch {
+      return [];
+    }
+  }
+
+  const structured = checkoutOrResponse.structuredContent;
+  const parsedText = parseToolTextContent(checkoutOrResponse);
+  const checkout =
+    checkoutOrResponse.id
+      ? checkoutOrResponse
+      : extractCheckoutPayload(checkoutOrResponse) || structured || parsedText;
+
+  const messagePools = [
+    checkout?.messages,
+    structured?.messages,
+    parsedText?.messages,
+    checkoutOrResponse.messages
+  ];
+
+  const messages = [];
+  const seen = new Set();
+  for (const pool of messagePools) {
+    if (!Array.isArray(pool)) continue;
+    for (const message of pool) {
+      const key = `${message?.code || ""}|${message?.content || message?.message || ""}|${message?.path || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      messages.push(message);
+    }
+  }
+
   if (!messages.length) {
     return [];
   }
 
   const ignoredCodes = new Set([
-    "extension_interaction_required"
+    "extension_interaction_required",
+    // Agent checkout often cannot complete in-protocol; buyer uses continue_url.
+    // Do not treat this as a shipping/address failure that hides checkout_url.
+    "item_unavailable"
   ]);
 
   // Any address/buyer field Shopify may reject when adding/updating shipping
@@ -670,15 +710,19 @@ export function extractCheckoutValidationErrors(checkoutOrResponse) {
     /phone|address|postal|zip|delivery|shipping|fulfillment|buyer|destination|region|state|locality|city|country|name|street|email|province|first_name|last_name/i;
 
   return messages
-    .filter((message) => message && message.type === "error")
+    .filter((message) => message && (message.type === "error" || !message.type))
     .filter((message) => !ignoredCodes.has(String(message.code || "")))
     .filter((message) => {
-      // During address add/update, surface all recoverable errors to the customer
-      if (message.severity === "recoverable") return true;
-      if (message.severity === "requires_buyer_input" && fieldHints.test(String(message.code || "") + String(message.content || ""))) {
+      const blob = `${message.code || ""} ${message.content || ""} ${message.path || ""}`;
+      // Only keep recoverable errors that are clearly address/buyer field issues.
+      // (Do not pull in generic recoverable codes like stock/escalation noise.)
+      if (message.severity === "recoverable") {
+        return fieldHints.test(blob);
+      }
+      if (message.severity === "requires_buyer_input" && fieldHints.test(blob)) {
         return true;
       }
-      return fieldHints.test(String(message.code || "")) || fieldHints.test(String(message.content || ""));
+      return fieldHints.test(blob);
     })
     .map((message) => {
       const content = String(message.content || message.message || "").trim();
@@ -686,21 +730,23 @@ export function extractCheckoutValidationErrors(checkoutOrResponse) {
       return {
         code,
         content,
-        readable: humanizeCheckoutValidationError(code, content)
+        path: message.path || null,
+        readable: humanizeCheckoutValidationError(code, content, message.path)
       };
     })
     .filter((item) => item.readable);
 }
 
-export function humanizeCheckoutValidationError(code, content = "") {
+export function humanizeCheckoutValidationError(code, content = "", path = "") {
   const normalizedCode = String(code || "").toLowerCase();
   const raw = String(content || "").trim().replace(/\s+/g, " ");
-  const blob = `${normalizedCode} ${raw.toLowerCase()}`;
+  const pathBlob = String(path || "").toLowerCase();
+  const blob = `${normalizedCode} ${raw.toLowerCase()} ${pathBlob}`;
 
   if (blob.includes("phone")) {
     return (
-      "The phone number is invalid. Please provide a real mobile/phone number " +
-      "(for example 305-555-1234), not a placeholder like 9999999999."
+      "The phone number is invalid. Please provide a real working phone number " +
+      "(for example +1 305-555-1234). Placeholder numbers like 9999999999 are not accepted."
     );
   }
 
@@ -985,6 +1031,12 @@ export function formatCartSummary(
   const totalEntry = cart.totals?.find((t) => t.type === "total");
   const subtotalEntry = cart.totals?.find((t) => t.type === "subtotal");
 
+  const resolvedCheckoutUrl =
+    checkoutUrl ||
+    rawResponse?.structuredContent?.checkout_url ||
+    rawResponse?.checkout_url ||
+    null;
+
   const summary = {
     success: true,
     cart_id: cart.id,
@@ -994,11 +1046,7 @@ export function formatCartSummary(
     subtotal: formatMoney(subtotalEntry?.amount, cart.currency),
     total: formatMoney(totalEntry?.amount, cart.currency),
     continue_url: cart.continue_url || null,
-    checkout_url:
-      checkoutUrl ||
-      rawResponse?.structuredContent?.checkout_url ||
-      rawResponse?.checkout_url ||
-      null,
+    checkout_url: resolvedCheckoutUrl,
     instruction:
       "Base your reply ONLY on this summary. Do not claim items were added/removed unless they appear here."
   };
@@ -1006,8 +1054,9 @@ export function formatCartSummary(
   if (shippingAddress) {
     summary.shipping_saved = true;
     summary.shipping_address = shippingAddress;
-    summary.instruction =
-      "Shipping was saved successfully ONLY because shipping_saved is true. Confirm shipping_address and share checkout_url. Do not say there was an error.";
+    summary.instruction = resolvedCheckoutUrl
+      ? "Shipping was saved successfully ONLY because shipping_saved is true. Confirm shipping_address and share checkout_url. Do not say there was an error."
+      : "Shipping address is on file (shipping_saved is true) but checkout_url is not available. Confirm cart items/totals only — do NOT invent a checkout link and do NOT use continue_url as a checkout/payment link.";
   }
 
   return summary;

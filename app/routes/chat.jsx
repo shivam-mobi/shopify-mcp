@@ -2,7 +2,7 @@
  * Chat API Route
  * Handles chat interactions with the configured LLM provider and tools
  */
-import MCPClient from "../mcp-client";
+import MCPClient, { ensureMcpToolsWarmed } from "../mcp-client";
 import { saveMessage, getConversationHistory, storeCustomerAccountUrls, getCustomerAccountUrls as getCustomerAccountUrlsFromDb, getConversationCartId } from "../db.server";
 import AppConfig from "../services/config.server";
 import { createSseStream } from "../services/streaming.server";
@@ -149,6 +149,8 @@ async function handleChatSession({
   const toolService = createToolService();
 
   // Initialize MCP client
+  await ensureMcpToolsWarmed();
+
   const shopId = request.headers.get("X-Shopify-Shop-Id");
   const shopDomainHeader = request.headers.get("X-Shopify-Shop-Domain");
   const shopDomain = request.headers.get("Origin");
@@ -164,12 +166,14 @@ async function handleChatSession({
   });
   const customerAccountUrls = await getCustomerAccountUrls(shopDomain, conversationId);
   const mcpApiUrl = customerAccountUrls?.mcpApiUrl ?? null;
+  const buyerIp = getBuyerIpFromRequest(request);
 
   const mcpClient = new MCPClient(
     shopDomain,
     conversationId,
     shopId,
     mcpApiUrl,
+    { buyerIp }
   );
 
   try {
@@ -663,6 +667,34 @@ function enrichHistoryWithProductResults(messages, toolService) {
 
   flushPendingProducts(messages[messages.length - 1]);
   return out;
+}
+
+/**
+ * Buyer IP for Shopify Token-tier UCP (Shopify-Buyer-IP header).
+ * @param {Request} request
+ * @returns {string|null}
+ */
+function getBuyerIpFromRequest(request) {
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) {
+    const first = forwarded.split(",")[0]?.trim();
+    if (first) return first;
+  }
+
+  const realIp = request.headers.get("x-real-ip")?.trim();
+  if (realIp) return realIp;
+
+  const cfIp = request.headers.get("cf-connecting-ip")?.trim();
+  if (cfIp) return cfIp;
+
+  const ngrokIp = request.headers.get("x-forwarded-for") ||
+    request.headers.get("fly-client-ip") ||
+    request.headers.get("true-client-ip");
+  if (ngrokIp) {
+    return String(ngrokIp).split(",")[0].trim();
+  }
+
+  return null;
 }
 
 /**

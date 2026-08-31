@@ -17,7 +17,6 @@ import {
   extractCartPayload,
   extractCheckoutPayload,
   extractCheckoutValidationErrors,
-  humanizeCheckoutValidationError,
   extractContinueUrl,
   fetchLiveCart,
   formatCartSummary,
@@ -103,7 +102,10 @@ export function getCartWrapperTools() {
     },
     {
       name: "get_my_cart",
-      description: "Show the current cart contents, totals, and checkout link for this conversation.",
+      description:
+        "Show the current cart contents, totals, and checkout link for this conversation. " +
+        "Call this when the customer wants to checkout / proceed / pay / get the checkout link. " +
+        "If shipping is already on file, the server creates/refreshes checkout and returns checkout_url when Shopify allows it.",
       input_schema: {
         type: "object",
         properties: {}
@@ -115,8 +117,12 @@ export function getCartWrapperTools() {
         "Set or update shipping address on checkout (replaces any previous address). Keeps all cart products. " +
         "YOU must convert the customer's free-text address into Shopify fields before calling: " +
         "split first/last name; use 2-letter state (New York/new yark → NY); use ISO country (USA → US). " +
+        "Phone: keep E.164 with + when the customer gives it (e.g. +13454656723). Do NOT strip the +. " +
+        "10-digit US numbers are also fine — the server will add +1. " +
         "Prefer structured fields over address_text. Do NOT ask the customer to reformat — convert yourself. " +
-        "If the tool returns success:false / shipping_saved:false, the address was NOT saved — explain customer_message clearly and ask for corrected details. Never claim it was saved.",
+        "On success:false / shipping_saved:false: tell the customer the exact issues[] / shopify_errors content " +
+        "(e.g. \"Phone is invalid\"). Ask ONLY for the failed field(s). Never invent formatting rules like \"remove the +\". " +
+        "Never re-ask the full address list. Never claim it was saved.",
       input_schema: {
         type: "object",
         properties: {
@@ -127,7 +133,12 @@ export function getCartWrapperTools() {
           },
           first_name: { type: "string" },
           last_name: { type: "string" },
-          phone_number: { type: "string" },
+          phone_number: {
+            type: "string",
+            description:
+              "Buyer phone. Prefer E.164 with country code when provided (e.g. +13454656723). " +
+              "Keep the leading +. Also accept 10-digit US numbers (3454656723). Never strip +."
+          },
           street_address: { type: "string" },
           extended_address: { type: "string" },
           address_locality: { type: "string", description: "City" },
@@ -201,6 +212,8 @@ export function buildShippingAddressHintMessage(userMessage) {
       "first_name, last_name, phone_number, street_address, address_locality (city), " +
       "address_region (2-letter US state — infer from city when clear, e.g. New York/new yark → NY), " +
       "postal_code, address_country (US not USA). " +
+      "For phone_number: if the customer wrote +13454656723 (or any +country… number), pass it WITH the +. " +
+      "Do NOT strip +, and do NOT tell them to remove + or reformat the phone. " +
       "Do NOT ask the customer to reformat or re-provide state/country when you can convert from their message."
   };
 }
@@ -357,6 +370,11 @@ async function removeFromCart(
     response
   );
 
+  const qtyInstruction =
+    nextQty <= 0
+      ? "Product was fully removed from the cart. Base your reply ONLY on the items list."
+      : `Quantity was reduced from ${currentQty} to ${nextQty}. Do NOT say the product was removed. Base your reply ONLY on the items list.`;
+
   return toolResult({
     ...summary,
     action: nextQty <= 0 ? "removed_product" : "reduced_quantity",
@@ -364,10 +382,7 @@ async function removeFromCart(
     previous_quantity: currentQty,
     removed_quantity: Math.min(reduceBy, currentQty),
     new_quantity: Math.max(0, nextQty),
-    instruction:
-      nextQty <= 0
-        ? "Product was fully removed from the cart. Base your reply ONLY on the items list."
-        : `Quantity was reduced from ${currentQty} to ${nextQty}. Do NOT say the product was removed. Base your reply ONLY on the items list.`
+    instruction: [qtyInstruction, summary.instruction].filter(Boolean).join(" ")
   });
 }
 
@@ -461,8 +476,33 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
 
   const synced = await syncCheckoutWithCart(mcpClient, conversationId, live.cart, {
     shipping: destination,
-    force: true
+    force: true,
+    allowCreate: true
   });
+
+  if (synced?.rate_limited || /rate limit|too many requests/i.test(String(synced?.error || ""))) {
+    const transport = parseShopifyTransportError(synced.error || synced.shopify_error || "");
+    const issues = [
+      synced.shopify_error ||
+        transport.shopify_error ||
+        synced.error ||
+        "Rate limit exceeded"
+    ].filter(Boolean);
+
+    return toolResult({
+      success: false,
+      shipping_saved: false,
+      rate_limited: true,
+      retry_after_seconds:
+        synced.retry_after_seconds ?? transport.retry_after_seconds ?? null,
+      shopify_errors: issues.map((content) => ({ content })),
+      issues,
+      instruction:
+        "Shipping was NOT saved because Shopify rate-limited checkout. " +
+        "Tell the customer the exact issues[] message (Rate limit exceeded / retry_after_seconds). " +
+        "Do NOT claim the address was saved. Do NOT share a checkout link."
+    });
+  }
 
   const verification = synced?.checkoutId
     ? await fetchVerifiedCheckoutShipping(mcpClient, synced.checkoutId)
@@ -481,7 +521,8 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
     ...(synced?.validationErrors || []),
     ...(verification?.validationErrors || []),
     ...extractCheckoutValidationErrors(synced?.checkout),
-    ...extractCheckoutValidationErrors(verification?.checkout)
+    ...extractCheckoutValidationErrors(verification?.checkout),
+    ...extractCheckoutValidationErrors(synced?.error)
   ].filter(Boolean);
 
   // Only keep address/buyer related failures here; item/stock issues are separate.
@@ -494,30 +535,42 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
   });
 
   if (shippingValidationErrors.length > 0) {
-    const readableIssues = [
-      ...new Set(
-        shippingValidationErrors.map((item) =>
-          typeof item === "string"
-            ? humanizeCheckoutValidationError("", item)
-            : item.readable || humanizeCheckoutValidationError(item.code, item.content)
-        )
-      )
+    const shopifyErrors = shippingValidationErrors.map((item) => {
+      if (typeof item === "string") {
+        return { code: "", content: item, readable: item };
+      }
+      const content = String(item.content || item.readable || "").trim();
+      const code = String(item.code || "").trim();
+      return {
+        code,
+        content,
+        path: item.path || null,
+        // Prefer Shopify's own wording (e.g. "Phone is invalid").
+        readable: content || item.readable || code
+      };
+    });
+    const issues = [
+      ...new Set(shopifyErrors.map((item) => item.readable).filter(Boolean))
     ];
 
     console.warn("[cart-wrapper] set_cart_shipping validation failed", {
       conversationId,
-      errors: readableIssues,
+      errors: shopifyErrors,
       verifiedStreet: verifiedAddress?.street_address || null
     });
 
     return toolResult({
       success: false,
       shipping_saved: false,
-      issues: readableIssues,
-      customer_message: buildReadableShippingFailureMessage(readableIssues),
+      shopify_errors: shopifyErrors,
+      issues,
       instruction:
-        "The shipping address was NOT saved. Explain customer_message to the customer in plain, friendly language. " +
-        "Ask them to fix the listed issues. NEVER say the address was saved. Do NOT share checkout_url as if shipping succeeded."
+        "Shipping was NOT saved. Tell the customer the exact problem from issues/shopify_errors " +
+        "(example: if issues says \"Phone is invalid\", say the phone number is invalid and ask only for a valid phone). " +
+        "Do NOT invent phone formatting advice (never say remove +, never require only 10 digits). " +
+        "+E.164 numbers like +13454656723 are valid to send as-is. " +
+        "Do NOT re-ask the full address form. Do NOT say a vague \"there was an issue, provide your address again\". " +
+        "Never claim the address was saved."
     });
   }
 
@@ -527,18 +580,19 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
       checkoutId: synced?.checkoutId || null,
       expected: destination,
       verified: verifiedAddress,
-      buyerPhone: verification?.buyerPhone || null
+      buyerPhone: verification?.buyerPhone || null,
+      syncedError: synced?.error || null
     });
 
     return toolResult({
       success: false,
       shipping_saved: false,
-      issues: ["Shopify did not keep the shipping address on checkout."],
-      customer_message:
-        "I tried to save your shipping address, but Shopify did not keep it on the checkout yet. " +
-        "Please send the address again and I'll retry.",
+      issues: synced?.error
+        ? [String(synced.error)]
+        : ["Shipping address was not accepted by checkout."],
       instruction:
-        "The shipping address was NOT saved on Shopify checkout. Do not claim it was saved. Ask the customer to resend the address."
+        "Shipping was NOT saved. Tell the customer clearly using issues if present. " +
+        "Ask only for what failed — do not re-list the full address form. Never claim it was saved."
     });
   }
 
@@ -564,23 +618,6 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
           destination.phone_number
       }
     })
-  );
-}
-
-function buildReadableShippingFailureMessage(issues = []) {
-  const unique = [...new Set(issues.filter(Boolean))];
-  if (unique.length === 0) {
-    return "I couldn't save your shipping address yet because some details look invalid. Please check and send the corrected info.";
-  }
-
-  if (unique.length === 1) {
-    return `I couldn't save your shipping address yet. ${unique[0]} Please send the corrected detail and I'll update it.`;
-  }
-
-  return (
-    "I couldn't save your shipping address yet. Please fix these issues:\n" +
-    unique.map((issue, index) => `${index + 1}. ${issue}`).join("\n") +
-    "\nOnce you send the corrected details, I'll try again."
   );
 }
 
@@ -779,13 +816,13 @@ function writableShippingAddress(destination = {}) {
 /**
  * Keep one checkout per conversation.
  * - If activeCheckoutId exists → update_checkout (items + shipping)
- * - Else if shipping (or force) → create_checkout once and store id
+ * - Else if shipping (or force) and allowCreate → create_checkout once and store id
  */
 async function syncCheckoutWithCart(
   mcpClient,
   conversationId,
   cart,
-  { shipping = null, force = false } = {}
+  { shipping = null, force = false, allowCreate = true } = {}
 ) {
   const savedShipping =
     shipping || (await getConversationShippingAddress(conversationId));
@@ -813,7 +850,10 @@ async function syncCheckoutWithCart(
 
     if (updated?.checkout?.id) {
       await setConversationCheckoutId(conversationId, updated.checkout.id);
-      const validationErrors = extractCheckoutValidationErrors(updated.checkout);
+      const validationErrors = [
+        ...(updated.validationErrors || []),
+        ...extractCheckoutValidationErrors(updated.checkout)
+      ];
       if (validationErrors.length === 0 && updated.shippingAddress) {
         await setConversationShippingAddress(
           conversationId,
@@ -833,23 +873,54 @@ async function syncCheckoutWithCart(
         checkoutUrl: updated.checkoutUrl,
         shippingAddress: updated.shippingAddress || null,
         checkout: updated.checkout,
-        validationErrors
+        validationErrors,
+        error: updated.error || null,
+        rate_limited: updated.rate_limited || false,
+        retry_after_seconds: updated.retry_after_seconds || null
       };
     }
 
-    // Stale/expired checkout — create a new one.
+    // Field validation failure without a usable checkout payload — do not recreate.
+    if ((updated?.validationErrors || []).length > 0 || updated?.rate_limited) {
+      return {
+        checkoutId,
+        checkoutUrl: updated.checkoutUrl || null,
+        shippingAddress: null,
+        checkout: updated.checkout || null,
+        validationErrors: updated.validationErrors || [],
+        error: updated.error || null,
+        rate_limited: updated.rate_limited || false,
+        retry_after_seconds: updated.retry_after_seconds || null
+      };
+    }
+
+    // Stale/expired checkout — create a new one only when allowed.
     console.warn("[cart-wrapper] checkout update failed, creating new checkout", {
       conversationId,
       checkoutId,
-      error: updated?.error
+      error: updated?.error,
+      allowCreate
     });
     await clearConversationCheckoutId(conversationId);
     checkoutId = null;
   }
 
+  if (!allowCreate) {
+    return {
+      skipped_create: true,
+      shippingAddress: destination,
+      error: null
+    };
+  }
+
   const created = await createCheckoutFromCart(mcpClient, cart, destination);
   if (!created?.checkout?.id) {
-    return { error: created?.error || "create_checkout failed" };
+    return {
+      error: created?.error || "create_checkout failed",
+      validationErrors: created?.validationErrors || [],
+      rate_limited: created?.rate_limited || false,
+      retry_after_seconds: created?.retry_after_seconds || null
+    };
   }
 
   await setConversationCheckoutId(conversationId, created.checkout.id);
@@ -877,7 +948,9 @@ async function syncCheckoutWithCart(
     checkoutUrl: created.checkoutUrl,
     shippingAddress: created.shippingAddress || null,
     checkout: created.checkout,
-    validationErrors
+    validationErrors,
+    rate_limited: created.rate_limited || false,
+    retry_after_seconds: created.retry_after_seconds || null
   };
 }
 
@@ -919,14 +992,36 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
       checkout: checkoutBody
     });
 
-    const checkout = extractCheckoutPayload(updateResponse) || existing;
+    const responseErrors = extractCheckoutValidationErrors(updateResponse);
+    const checkoutFromUpdate = extractCheckoutPayload(updateResponse);
+
+    // Shopify often returns isError + messages without a checkout id (e.g. invalid phone).
+    if (!checkoutFromUpdate?.id && responseErrors.length > 0) {
+      return {
+        checkout: existing,
+        checkoutUrl: extractContinueUrl(getResponse) || existing.continue_url || null,
+        shippingAddress: null,
+        validationErrors: responseErrors,
+        error: responseErrors[0]?.readable || extractToolErrorText(updateResponse)
+      };
+    }
+
+    const checkout = checkoutFromUpdate || existing;
     if (!checkout?.id) {
-      return { error: extractToolErrorText(updateResponse) || "update_checkout failed" };
+      return {
+        error: extractToolErrorText(updateResponse) || "update_checkout failed",
+        validationErrors: responseErrors
+      };
     }
 
     // If we sent destination but response omitted it, run a second update with fresh line ids.
     let shippingAddress = extractShippingDestination(checkout);
-    if (destination && !shippingAddress?.street_address) {
+    let validationErrors = [
+      ...responseErrors,
+      ...extractCheckoutValidationErrors(checkout)
+    ];
+
+    if (destination && !shippingAddress?.street_address && responseErrors.length === 0) {
       const lineItemIds = (checkout.line_items || [])
         .map((line) => line.id)
         .filter(Boolean);
@@ -946,24 +1041,31 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
           }
         }
       });
+      const retryErrors = extractCheckoutValidationErrors(retryResponse);
       const retried = extractCheckoutPayload(retryResponse) || checkout;
-      shippingAddress = extractShippingDestination(retried) || destination;
+      shippingAddress = extractShippingDestination(retried);
+      validationErrors = [
+        ...validationErrors,
+        ...retryErrors,
+        ...extractCheckoutValidationErrors(retried)
+      ];
       return {
         checkout: retried,
         checkoutUrl: extractContinueUrl(retryResponse) || retried.continue_url,
-        shippingAddress: extractShippingDestination(retried),
-        validationErrors: extractCheckoutValidationErrors(retried)
+        shippingAddress: shippingAddress || null,
+        validationErrors,
+        error: retryErrors[0]?.readable || null
       };
     }
 
     return {
       checkout,
       checkoutUrl: extractContinueUrl(updateResponse) || checkout.continue_url,
-      shippingAddress: shippingAddress || extractShippingDestination(existing),
-      validationErrors: extractCheckoutValidationErrors(checkout)
+      shippingAddress: shippingAddress || null,
+      validationErrors
     };
   } catch (error) {
-    return { error: error.message };
+    return { error: error.message, ...parseShopifyTransportError(error) };
   }
 }
 
@@ -981,14 +1083,21 @@ async function createCheckoutFromCart(mcpClient, cart, destination) {
       buildCreateCheckoutArgs(cart.id, cart, overrides)
     );
     let checkout = extractCheckoutPayload(response);
+    const createErrors = extractCheckoutValidationErrors(response);
 
     if (!checkout?.id) {
-      return { error: extractToolErrorText(response) || "create_checkout failed" };
+      return {
+        error: createErrors[0]?.readable || extractToolErrorText(response) || "create_checkout failed",
+        validationErrors: createErrors
+      };
     }
 
     let shippingAddress = extractShippingDestination(checkout);
     let checkoutUrl = extractContinueUrl(response) || checkout.continue_url;
-    let validationErrors = extractCheckoutValidationErrors(checkout);
+    let validationErrors = [
+      ...createErrors,
+      ...extractCheckoutValidationErrors(checkout)
+    ];
 
     if (destination?.street_address) {
       const lineItems = buildCheckoutLineItems(checkout.line_items || cart.line_items);
@@ -1011,21 +1120,132 @@ async function createCheckoutFromCart(mcpClient, cart, destination) {
           }
         }
       });
-      checkout = extractCheckoutPayload(updateResponse) || checkout;
-      shippingAddress = extractShippingDestination(checkout);
-      checkoutUrl = extractContinueUrl(updateResponse) || checkout.continue_url || checkoutUrl;
-      validationErrors = extractCheckoutValidationErrors(checkout);
+      const updateErrors = extractCheckoutValidationErrors(updateResponse);
+      const updatedCheckout = extractCheckoutPayload(updateResponse);
+      if (updatedCheckout?.id) {
+        checkout = updatedCheckout;
+        shippingAddress = extractShippingDestination(checkout);
+        checkoutUrl = extractContinueUrl(updateResponse) || checkout.continue_url || checkoutUrl;
+      } else {
+        shippingAddress = null;
+      }
+      validationErrors = [
+        ...validationErrors,
+        ...updateErrors,
+        ...extractCheckoutValidationErrors(checkout)
+      ];
     }
 
     return {
       checkout,
       checkoutUrl,
       shippingAddress,
-      validationErrors
+      validationErrors,
+      error: validationErrors[0]?.readable || null
     };
   } catch (error) {
-    return { error: error.message };
+    return { error: error.message, ...parseShopifyTransportError(error) };
   }
+}
+
+/** Parse Shopify MCP transport failures (429 rate limit, etc.) for the LLM. */
+function parseShopifyTransportError(error) {
+  const message = String(error?.message || error || "");
+  const status = Number(error?.status) || (/Request failed:\s*(\d+)/i.exec(message)?.[1]
+    ? Number(/Request failed:\s*(\d+)/i.exec(message)[1])
+    : 0);
+
+  const retryMatch =
+    /retry after\s+(\d+)\s*seconds/i.exec(message) ||
+    /retry-after["\s:]+(\d+)/i.exec(message);
+  const retryAfterSeconds = retryMatch ? Number(retryMatch[1]) : null;
+
+  const rateLimited =
+    status === 429 ||
+    /rate limit exceeded/i.test(message) ||
+    /too many requests/i.test(message);
+
+  let shopifyMessage = message;
+  try {
+    const jsonMatch = message.match(/\{[\s\S]*\}$/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const rpcError = parsed?.error;
+      if (rpcError?.message || rpcError?.data) {
+        shopifyMessage = [rpcError.message, rpcError.data].filter(Boolean).join(" — ");
+      }
+    }
+  } catch {
+    // keep raw message
+  }
+
+  return {
+    status: status || null,
+    rate_limited: rateLimited,
+    retry_after_seconds: retryAfterSeconds,
+    shopify_error: shopifyMessage
+  };
+}
+
+function buildCartSummaryWithCheckoutIssue(cart, rawResponse, synced, savedShipping) {
+  const transport = parseShopifyTransportError(synced?.error || synced?.shopify_error || "");
+  const rateLimited = Boolean(synced?.rate_limited || transport.rate_limited);
+  const retryAfter =
+    synced?.retry_after_seconds ?? transport.retry_after_seconds ?? null;
+  const shopifyError =
+    synced?.shopify_error ||
+    transport.shopify_error ||
+    synced?.error ||
+    "Checkout sync failed";
+
+  const issues = [
+    ...new Set(
+      [
+        ...(synced?.validationErrors || []).map((item) =>
+          typeof item === "string" ? item : item.content || item.readable
+        ),
+        shopifyError
+      ].filter(Boolean)
+    )
+  ];
+
+  // If Shopify still gave a checkout URL, keep it — do not hide the link.
+  const checkoutUrl = synced?.checkoutUrl || null;
+  const summary = formatCartSummary(cart, rawResponse, {
+    checkoutUrl,
+    shippingAddress: checkoutUrl ? synced?.shippingAddress || savedShipping : null
+  });
+
+  if (checkoutUrl && !rateLimited) {
+    return {
+      ...summary,
+      success: true,
+      cart_updated: true,
+      checkout_url: checkoutUrl,
+      issues,
+      instruction:
+        "Cart updated. checkout_url is available — share it as: You can [click here to proceed to checkout](URL). " +
+        "Ignore escalation noise; the customer completes payment on that Shopify page."
+    };
+  }
+
+  return {
+    ...summary,
+    success: true,
+    cart_updated: true,
+    checkout_sync_failed: true,
+    rate_limited: rateLimited,
+    retry_after_seconds: retryAfter,
+    shipping_address_on_file: savedShipping || null,
+    shopify_errors: issues.map((content) => ({ content })),
+    issues,
+    checkout_url: null,
+    instruction:
+      "The cart items/totals above DID update successfully. " +
+      "Checkout sync FAILED — read issues[] / shopify_errors and tell the customer that exact problem " +
+      "(e.g. Rate limit exceeded / Too many requests, and retry_after_seconds if present). " +
+      "Do NOT share a checkout link. Do NOT claim checkout is ready. Do NOT invent a success-only reply."
+  };
 }
 
 function buildUpdateCheckoutLineItems(cartLines = [], checkoutLines = []) {
@@ -1051,9 +1271,17 @@ function buildUpdateCheckoutLineItems(cartLines = [], checkoutLines = []) {
 }
 
 /**
- * After cart changes: update the same checkout (or create once) so address stays.
+ * After cart changes: keep checkout in sync when shipping is on file so checkout_url
+ * is returned (same behavior as before). On Shopify 429 / sync failure, surface the
+ * error instead of faking a ready checkout link.
  */
-async function summarizeCartWithShipping(mcpClient, conversationId, cart, rawResponse) {
+async function summarizeCartWithShipping(
+  mcpClient,
+  conversationId,
+  cart,
+  rawResponse,
+  { allowCreate = true } = {}
+) {
   const savedShipping = await getConversationShippingAddress(conversationId);
   const checkoutId = await getConversationCheckoutId(conversationId);
 
@@ -1061,16 +1289,82 @@ async function summarizeCartWithShipping(mcpClient, conversationId, cart, rawRes
     return formatCartSummary(cart, rawResponse);
   }
 
+  // Rare: caller opted out of create (should not hide URL when checkout already exists).
+  if (!checkoutId && !allowCreate) {
+    return {
+      ...formatCartSummary(cart, rawResponse, {
+        checkoutUrl: null,
+        shippingAddress: savedShipping
+      }),
+      checkout_url: null,
+      needs_checkout_link: true,
+      instruction:
+        "Cart update succeeded and shipping is on file, but checkout_url is not available yet. " +
+        "Do NOT invent a checkout link. Tell the customer their cart was updated. " +
+        "If they ask to checkout/proceed, call get_my_cart to obtain checkout_url."
+    };
+  }
+
   const synced = await syncCheckoutWithCart(mcpClient, conversationId, cart, {
-    shipping: savedShipping
+    shipping: savedShipping,
+    allowCreate,
+    force: Boolean(allowCreate && savedShipping?.street_address && !checkoutId)
   });
 
   if (!synced) {
-    return formatCartSummary(cart, rawResponse);
+    return formatCartSummary(cart, rawResponse, {
+      checkoutUrl: null,
+      shippingAddress: savedShipping
+    });
+  }
+
+  if (
+    synced.rate_limited ||
+    (synced.error && !synced.checkoutUrl) ||
+    ((synced.validationErrors || []).length > 0 && !synced.checkoutUrl)
+  ) {
+    return buildCartSummaryWithCheckoutIssue(
+      cart,
+      rawResponse,
+      synced,
+      savedShipping
+    );
+  }
+
+  // Checkout URL present — share it even if Shopify also sent escalation messages
+  // (item_unavailable / extension_interaction_required / requires_escalation).
+  if (synced.checkoutUrl) {
+    return formatCartSummary(cart, rawResponse, {
+      checkoutUrl: synced.checkoutUrl,
+      shippingAddress: synced.shippingAddress || savedShipping
+    });
+  }
+
+  if ((synced.validationErrors || []).length > 0 || synced.error) {
+    return buildCartSummaryWithCheckoutIssue(
+      cart,
+      rawResponse,
+      synced,
+      savedShipping
+    );
+  }
+
+  if (synced.skipped_create) {
+    return {
+      ...formatCartSummary(cart, rawResponse, {
+        checkoutUrl: null,
+        shippingAddress: savedShipping
+      }),
+      checkout_url: null,
+      needs_checkout_link: true,
+      instruction:
+        "Cart is up to date and shipping is on file, but checkout_url is not available yet. " +
+        "Do NOT invent a checkout link. If the customer wants to pay, call get_my_cart."
+    };
   }
 
   return formatCartSummary(cart, rawResponse, {
-    checkoutUrl: synced.checkoutUrl,
+    checkoutUrl: synced.checkoutUrl || null,
     shippingAddress: synced.shippingAddress || savedShipping
   });
 }
