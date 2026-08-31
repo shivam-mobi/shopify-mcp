@@ -384,10 +384,17 @@ async function handleChatSession({
               }
             } catch (historyError) {
               console.error("[chat] failed to record tool result", historyError);
-              await toolService.addToolResultToHistory(
-                conversationHistory,
+              await toolService.handleToolError(
+                {
+                  error: {
+                    type: "internal_error",
+                    data: historyError.message
+                  }
+                },
+                toolName,
                 toolUseId,
-                `Tool failed: ${historyError.message}`,
+                conversationHistory,
+                stream.sendMessage,
                 conversationId
               );
             }

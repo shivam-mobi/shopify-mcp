@@ -16,10 +16,29 @@ export function createToolService() {
       console.log("Auth required for tool:", toolName);
       await addToolResultToHistory(conversationHistory, toolUseId, toolUseResponse.error.data, conversationId);
       sendMessage({ type: 'auth_required' });
-    } else {
-      console.log("Tool use error", toolUseResponse.error);
-      await addToolResultToHistory(conversationHistory, toolUseId, toolUseResponse.error.data, conversationId);
+      return;
     }
+
+    const userMessage = AppConfig.errorMessages.toolFailure;
+    console.log("Tool use error", { toolName, error: toolUseResponse.error });
+
+    await addToolResultToHistory(
+      conversationHistory,
+      toolUseId,
+      JSON.stringify({
+        error: true,
+        tool: toolName,
+        user_message: userMessage,
+        instruction:
+          "The customer was already shown user_message in the chat UI. " +
+          "Do NOT send any additional assistant reply for this tool failure. " +
+          "If the platform requires text, output user_message exactly and nothing else — " +
+          "no follow-up questions, no 'let me know if you need something else', no alternate help offers."
+      }),
+      conversationId
+    );
+
+    sendMessage({ type: 'tool_error', message: userMessage });
   };
 
   const handleToolSuccess = async (toolUseResponse, toolName, toolUseId, conversationHistory, productsToDisplay, conversationId) => {
@@ -209,6 +228,12 @@ export function createToolService() {
       productUrl = `${storefrontBase}${productUrl}`;
     }
 
+    const vendor =
+      product.vendor ||
+      product.brand ||
+      variant?.product?.vendor ||
+      "";
+
     const normalizedVariantId = resolveProductVariantId({ variantId, variant_id: product.variant_id, id: variantId });
 
     return {
@@ -225,7 +250,7 @@ export function createToolService() {
       availableForSale: availability.availableForSale,
       inStock: availability.inStock,
       inventoryQuantity: availability.inventoryQuantity,
-      vendor: product.vendor || "",
+      vendor,
       sku: product.sku || product.partNumber || "",
       filterType: product.filterType,
       isHepa: product.isHepa,
@@ -240,7 +265,7 @@ export function createToolService() {
             tags: product.tags,
             title: product.title || product.partTypeName || product.name || "",
             descriptionHtml: product.descriptionHtml || product.description || "",
-            vendor: product.vendor || "",
+            vendor,
             sku: product.sku || product.partNumber || ""
           })
         : {})

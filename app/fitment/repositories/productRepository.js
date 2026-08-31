@@ -145,7 +145,7 @@ export async function fetchProductList(
 
     if (!live) {
       console.warn(
-        `Shopify variant not found for sku=${row.sku} variant_id=${row.variant_id} shop=${shop}`
+        `Shopify variant not resolved for sku=${row.sku} variant_id=${row.variant_id} shop=${shop}`
       );
       continue;
     }
@@ -177,6 +177,12 @@ export async function fetchProductList(
       tags: Array.isArray(live.tags) ? live.tags : [],
       descriptionHtml: live.descriptionHtml || ""
     });
+  }
+
+  if (variantRows.length > 0 && products.length === 0) {
+    throw new Error(
+      `Failed to load Shopify product details for ${variantRows.length} fitment variant(s)`
+    );
   }
 
   return products;

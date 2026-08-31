@@ -39,7 +39,9 @@ export const AppConfig = {
     apiKeyError: "Please check your LLM API key in environment variables",
     rateLimitExceeded: "Rate limit exceeded",
     rateLimitDetails: "Please try again later",
-    genericError: "Failed to get a response from the LLM provider"
+    genericError: "Failed to get a response from the LLM provider",
+    toolFailure:
+      "Sorry, I couldn't complete that right now. Please try again in a moment."
   },
 
   mcp: {

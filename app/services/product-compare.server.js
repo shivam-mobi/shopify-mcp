@@ -10,6 +10,21 @@ export const PRODUCT_LISTING_CART_INSTRUCTION =
   "For 'add product #2' or 'second one', use the product where position=2 and pass its variant_id. " +
   "Never use variant_ids from older product searches earlier in this conversation.";
 
+/** Vendors preferred for best pick when multiple products are in stock. */
+const PREFERRED_BEST_PICK_VENDORS = ["FEBREZE"];
+
+export function normalizeVendorName(vendor = "") {
+  return String(vendor || "").trim().toUpperCase();
+}
+
+export function isPreferredBestPickVendor(vendor = "") {
+  const normalized = normalizeVendorName(vendor);
+  if (!normalized) return false;
+  return PREFERRED_BEST_PICK_VENDORS.some(
+    (preferred) => normalized === preferred || normalized.includes(preferred)
+  );
+}
+
 function normalizeTagList(tags) {
   if (Array.isArray(tags)) {
     return tags.map((tag) => String(tag || "").trim()).filter(Boolean);
@@ -106,6 +121,7 @@ export function scoreProductForComparison(product = {}) {
   let score = 0;
 
   if (product.inStock === true && product.availableForSale !== false) score += 40;
+  if (isPreferredBestPickVendor(product.vendor)) score += 50;
   if (product.isHepa === true) score += 30;
   if (product.hasAntibacterial === true) score += 15;
   if (product.hasCharcoal === true) score += 10;
@@ -122,6 +138,7 @@ export function scoreProductForComparison(product = {}) {
 
 function buildBestReason(product) {
   const reasons = [];
+  if (isPreferredBestPickVendor(product.vendor)) reasons.push("Febreze");
   if (product.isHepa) reasons.push("HEPA");
   if (product.hasAntibacterial) reasons.push("antibacterial");
   if (product.hasCharcoal) reasons.push("odor control");
@@ -237,5 +254,7 @@ export default {
   resolveProductVariantId,
   annotateRankedProductsForLlm,
   buildProductListingMetadata,
+  normalizeVendorName,
+  isPreferredBestPickVendor,
   PRODUCT_LISTING_CART_INSTRUCTION
 };

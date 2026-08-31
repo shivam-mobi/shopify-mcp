@@ -71,19 +71,24 @@ function formatProducts(products, vehicle, qualifiers) {
   const ranked = enrichProductsWithComparison(formatted);
   const productsForLlm = annotateRankedProductsForLlm(ranked);
   const listingMeta = buildProductListingMetadata(ranked);
+  const hasProducts = products.length > 0;
 
   return {
-    status: products.length ? "success" : "not_found",
+    status: hasProducts ? "success" : "not_found",
     vehicle,
     qualifiers,
     products: productsForLlm,
     ...listingMeta,
-    ui_instruction:
-      "CRITICAL: Product cards + Quick comparison + Best product UI are shown in chat automatically. " +
-      "Do NOT list products, prices, descriptions, notes, stock, or Variant IDs in your reply. " +
-      "Do NOT mention a best pick, best product, or recommend a specific product by name in text. " +
-      "Reply in 1-2 short sentences only (e.g. matching filters found for their vehicle), then ask if they want to add one to the cart. " +
-      PRODUCT_LISTING_CART_INSTRUCTION
+    ui_instruction: hasProducts
+      ? "CRITICAL: Product cards + Quick comparison + Best product UI are shown in chat automatically. " +
+        "Do NOT list products, prices, descriptions, notes, stock, or Variant IDs in your reply. " +
+        "Do NOT mention a best pick, best product, or recommend a specific product by name in text. " +
+        "Reply in 1-2 short sentences only (e.g. matching filters found for their vehicle), then ask if they want to add one to the cart. " +
+        PRODUCT_LISTING_CART_INSTRUCTION
+      : "Genuine empty catalog result (fitment ran successfully but no products exist for this vehicle). " +
+        "Reply in 1 short sentence that no matching filters were found for their vehicle. " +
+        "Do NOT mention region/country unless the customer asked. " +
+        "Do NOT ask 'would you like assistance with anything else' or offer alternate help."
   };
 }
 

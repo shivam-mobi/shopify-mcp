@@ -110,3 +110,21 @@ model McpCallLog {
   @@index([toolName])
   @@index([createdAt])
 }
+
+model ShopifyAdminApiLog {
+  id         String   @id @default(cuid())
+  shop       String
+  operation  String
+  authMode   String
+  endpoint   String
+  request    String
+  response   String
+  statusCode Int
+  durationMs Int?
+  error      String?
+  createdAt  DateTime @default(now())
+
+  @@index([shop])
+  @@index([operation])
+  @@index([createdAt])
+}

@@ -1,4 +1,5 @@
 import { buildCompareAttributes } from "./product-compare.server.js";
+import { storeShopifyAdminApiLog } from "../db.server.js";
 
 const VARIANTS_BY_IDS_QUERY = `#graphql
   query VariantsByIds($ids: [ID!]!) {
@@ -37,6 +38,129 @@ const VARIANTS_BY_IDS_QUERY = `#graphql
 
 const NODES_BATCH_SIZE = 50;
 const DEFAULT_API_VERSION = "2025-10";
+const ADMIN_OPERATION_VARIANTS_BY_IDS = "VariantsByIds";
+
+function summarizeAdminGraphqlResponse(payload) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+
+  if (payload.error && !payload.data) {
+    return payload;
+  }
+
+  const nodes = payload.data?.nodes;
+  if (!Array.isArray(nodes)) {
+    return {
+      errors: payload.errors || null,
+      dataKeys: payload.data ? Object.keys(payload.data) : []
+    };
+  }
+
+  return {
+    errors: payload.errors || null,
+    nodeCount: nodes.length,
+    nonNullNodes: nodes.filter(Boolean).length,
+    sampleNodes: nodes
+      .filter(Boolean)
+      .slice(0, 5)
+      .map((node) => ({
+        id: node.id,
+        sku: node.sku,
+        title: node.product?.title || node.title,
+        price: node.price,
+        status: node.product?.status,
+        availableForSale: node.availableForSale,
+        inventoryQuantity: node.inventoryQuantity
+      }))
+  };
+}
+
+async function callAdminGraphql({
+  shop,
+  query,
+  variables,
+  operation,
+  authMode,
+  admin = null
+}) {
+  const apiVersion = process.env.SHOPIFY_API_VERSION || DEFAULT_API_VERSION;
+  const endpoint = `https://${shop}/admin/api/${apiVersion}/graphql.json`;
+  const startedAt = Date.now();
+  let statusCode = 0;
+  let responseBody = null;
+  let errorMessage = null;
+
+  const requestPayload = {
+    operation,
+    variables,
+    authMode
+  };
+
+  try {
+    if (authMode === "access_token") {
+      const token = getAdminAccessToken();
+      if (!token) {
+        throw new Error("Missing SHOPIFY_ADMIN_ACCESS_TOKEN");
+      }
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": token
+        },
+        body: JSON.stringify({ query, variables })
+      });
+
+      statusCode = response.status;
+      responseBody = await response.json();
+
+      if (!response.ok) {
+        const message =
+          responseBody?.errors?.[0]?.message ||
+          responseBody?.error ||
+          `HTTP ${response.status}`;
+        throw new Error(`Admin GraphQL failed: ${message}`);
+      }
+    } else {
+      responseBody = await (await admin.graphql(query, { variables })).json();
+      statusCode = responseBody?.errors?.length ? 400 : 200;
+
+      if (responseBody?.errors?.length) {
+        const message = responseBody.errors
+          .map((entry) => entry?.message || String(entry))
+          .filter(Boolean)
+          .join("; ");
+        throw new Error(message || "Shopify Admin API returned errors");
+      }
+    }
+
+    return responseBody;
+  } catch (error) {
+    errorMessage = error.message;
+    statusCode = Number.isInteger(error.status) ? error.status : statusCode || 0;
+    if (!responseBody) {
+      responseBody = {
+        error: error.message,
+        code: error.code || null
+      };
+    }
+    throw error;
+  } finally {
+    void storeShopifyAdminApiLog({
+      shop,
+      operation,
+      authMode,
+      endpoint,
+      request: requestPayload,
+      response: summarizeAdminGraphqlResponse(responseBody),
+      statusCode,
+      durationMs: Date.now() - startedAt,
+      error: errorMessage
+    });
+  }
+}
 
 /**
  * Normalize MySQL variant_id values to Shopify ProductVariant GIDs.
@@ -156,6 +280,7 @@ function normalizeVariantNode(node) {
     inventoryQuantity,
     inventoryPolicy: node.inventoryPolicy || null,
     descriptionHtml: product.descriptionHtml || "",
+    vendor: product.vendor || "",
     ...compareAttrs
   };
 }
@@ -189,37 +314,6 @@ function getAdminAccessToken() {
   ).trim();
 }
 
-async function adminGraphqlWithToken(shop, query, variables) {
-  const token = getAdminAccessToken();
-  if (!token) {
-    throw new Error("Missing SHOPIFY_ADMIN_ACCESS_TOKEN");
-  }
-
-  const apiVersion = process.env.SHOPIFY_API_VERSION || DEFAULT_API_VERSION;
-  const url = `https://${shop}/admin/api/${apiVersion}/graphql.json`;
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": token
-    },
-    body: JSON.stringify({ query, variables })
-  });
-
-  const payload = await response.json();
-
-  if (!response.ok) {
-    const message =
-      payload?.errors?.[0]?.message ||
-      payload?.error ||
-      `HTTP ${response.status}`;
-    throw new Error(`Admin GraphQL failed: ${message}`);
-  }
-
-  return payload;
-}
-
 /**
  * Fetch live title, price, and image for ProductVariant GIDs via Admin API.
  * Prefers SHOPIFY_ADMIN_ACCESS_TOKEN; falls back to Partner offline session.
@@ -247,18 +341,21 @@ export async function fetchShopifyVariantsByIds(shop, variantIds = []) {
       shop: shopDomain,
       uniqueGids: uniqueGids.length
     });
+    if (uniqueGids.length > 0 && !shopDomain) {
+      throw new Error("Missing shop domain for Shopify Admin API");
+    }
     return new Map();
   }
 
   if (!/\.myshopify\.com$/i.test(shopDomain)) {
-    console.error(
-      `[shopify] Invalid shop for Admin API: "${shopDomain}". Expected *.myshopify.com`
-    );
-    return new Map();
+    const message = `Invalid shop for Admin API: "${shopDomain}". Expected *.myshopify.com`;
+    console.error(`[shopify] ${message}`);
+    throw new Error(message);
   }
 
   const byGid = new Map();
   const token = getAdminAccessToken();
+  const authMode = token ? "access_token" : "offline_session";
 
   try {
     let admin = null;
@@ -278,39 +375,19 @@ export async function fetchShopifyVariantsByIds(shop, variantIds = []) {
         `[shopify] GraphQL batch ${Math.floor(i / NODES_BATCH_SIZE) + 1}: ${batch.length} ids`
       );
 
-      const payload = token
-        ? await adminGraphqlWithToken(shopDomain, VARIANTS_BY_IDS_QUERY, variables)
-        : await (await admin.graphql(VARIANTS_BY_IDS_QUERY, { variables })).json();
+      const payload = await callAdminGraphql({
+        shop: shopDomain,
+        query: VARIANTS_BY_IDS_QUERY,
+        variables,
+        operation: ADMIN_OPERATION_VARIANTS_BY_IDS,
+        authMode,
+        admin
+      });
 
       console.log(
         "[shopify] GraphQL response summary:",
-        JSON.stringify(
-          {
-            errors: payload.errors || null,
-            nodeCount: payload.data?.nodes?.length ?? 0,
-            nonNullNodes: (payload.data?.nodes ?? []).filter(Boolean).length,
-            sampleNodes: (payload.data?.nodes ?? [])
-              .filter(Boolean)
-              .slice(0, 3)
-              .map((node) => ({
-                id: node.id,
-                sku: node.sku,
-                title: node.product?.title || node.title,
-                price: node.price,
-                status: node.product?.status,
-                availableForSale: node.availableForSale,
-                inventoryQuantity: node.inventoryQuantity
-              }))
-          },
-          null,
-          2
-        )
+        JSON.stringify(summarizeAdminGraphqlResponse(payload), null, 2)
       );
-
-      if (payload.errors?.length) {
-        console.error("Shopify Admin API errors:", payload.errors);
-        continue;
-      }
 
       let skippedInactive = 0;
       for (const node of payload.data?.nodes ?? []) {
@@ -335,6 +412,13 @@ export async function fetchShopifyVariantsByIds(shop, variantIds = []) {
   } catch (error) {
     console.error(`Failed to fetch Shopify variants for ${shopDomain}:`, error.message);
     console.error("[shopify] Full error:", error);
+    throw error;
+  }
+
+  if (uniqueGids.length > 0 && byGid.size === 0) {
+    throw new Error(
+      `Shopify Admin API returned no product data for ${uniqueGids.length} variant(s)`
+    );
   }
 
   console.log("[shopify] Resolved variants map size=", byGid.size);

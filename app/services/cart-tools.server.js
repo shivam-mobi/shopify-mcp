@@ -27,7 +27,14 @@ import {
   toolError,
   updateCartLineItems
 } from "./cart.server";
+import AppConfig from "./config.server.js";
 
+const TOOL_FAILURE_USER_MESSAGE = AppConfig.errorMessages.toolFailure;
+
+const RATE_LIMIT_CUSTOMER_INSTRUCTION =
+  `The customer was already shown: "${TOOL_FAILURE_USER_MESSAGE}" ` +
+  "Do not add any other sentence. No follow-up questions, no 'let me know if you need something else', " +
+  "no rate limits, 429, or retry timers.";
 const RAW_CART_TOOL_NAMES = new Set([
   "create_cart",
   "get_cart",
@@ -509,26 +516,15 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
   });
 
   if (synced?.rate_limited || /rate limit|too many requests/i.test(String(synced?.error || ""))) {
-    const transport = parseShopifyTransportError(synced.error || synced.shopify_error || "");
-    const issues = [
-      synced.shopify_error ||
-        transport.shopify_error ||
-        synced.error ||
-        "Rate limit exceeded"
-    ].filter(Boolean);
-
     return toolResult({
       success: false,
       shipping_saved: false,
       rate_limited: true,
-      retry_after_seconds:
-        synced.retry_after_seconds ?? transport.retry_after_seconds ?? null,
-      shopify_errors: issues.map((content) => ({ content })),
-      issues,
+      user_message: TOOL_FAILURE_USER_MESSAGE,
       instruction:
         "Shipping was NOT saved because Shopify rate-limited checkout. " +
-        "Tell the customer the exact issues[] message (Rate limit exceeded / retry_after_seconds). " +
-        "Do NOT claim the address was saved. Do NOT share a checkout link."
+        RATE_LIMIT_CUSTOMER_INSTRUCTION +
+        " Do NOT claim the address was saved. Do NOT share a checkout link."
     });
   }
 
@@ -1274,14 +1270,20 @@ function buildCartSummaryWithCheckoutIssue(cart, rawResponse, synced, savedShipp
     rate_limited: rateLimited,
     retry_after_seconds: retryAfter,
     shipping_address_on_file: savedShipping || null,
-    shopify_errors: issues.map((content) => ({ content })),
-    issues,
+    user_message: rateLimited ? TOOL_FAILURE_USER_MESSAGE : undefined,
+    shopify_errors: rateLimited
+      ? [{ content: TOOL_FAILURE_USER_MESSAGE }]
+      : issues.map((content) => ({ content })),
+    issues: rateLimited ? [TOOL_FAILURE_USER_MESSAGE] : issues,
     checkout_url: null,
-    instruction:
-      "The cart items/totals above DID update successfully. " +
-      "Checkout sync FAILED — read issues[] / shopify_errors and tell the customer that exact problem " +
-      "(e.g. Rate limit exceeded / Too many requests, and retry_after_seconds if present). " +
-      "Do NOT share a checkout link. Do NOT claim checkout is ready. Do NOT invent a success-only reply."
+    instruction: rateLimited
+      ? "The cart items/totals above DID update successfully. " +
+        "Checkout sync FAILED due to rate limiting. " +
+        RATE_LIMIT_CUSTOMER_INSTRUCTION +
+        " Do NOT share a checkout link. Do NOT claim checkout is ready."
+      : "The cart items/totals above DID update successfully. " +
+        "Checkout sync FAILED — read issues[] / shopify_errors and tell the customer that exact problem. " +
+        "Do NOT share a checkout link. Do NOT claim checkout is ready. Do NOT invent a success-only reply."
   };
 }
 

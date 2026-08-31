@@ -545,7 +545,11 @@
         } catch (error) {
           console.error('Error communicating with the LLM API:', error);
           ShopAIChat.UI.removeTypingIndicator();
-          this.add("Sorry, I couldn't process your request at the moment. Please try again later.", 'assistant', messagesContainer);
+          this.add(
+            "Sorry, I couldn't complete that right now. Please try again in a moment.",
+            'assistant',
+            messagesContainer
+          );
         }
       },
 
@@ -962,8 +966,11 @@
         } catch (error) {
           console.error('Error in streaming:', error);
           ShopAIChat.UI.removeTypingIndicator();
-          ShopAIChat.Message.add("Sorry, I couldn't process your request. Please try again later.",
-            'assistant', messagesContainer);
+          ShopAIChat.Message.add(
+            "Sorry, I couldn't complete that right now. Please try again in a moment.",
+            'assistant',
+            messagesContainer
+          );
         }
       },
 
@@ -1023,18 +1030,24 @@
               messagesContainer,
               updateCurrentElement
             );
-            currentMessageElement.textContent = "Sorry, I couldn't process your request. Please try again later.";
+            currentMessageElement.textContent =
+              "Sorry, I couldn't complete that right now. Please try again in a moment.";
             break;
 
+          case 'tool_error':
           case 'rate_limit_exceeded':
-            console.error('Rate limit exceeded:', data.error);
+            console.error('Tool error:', data.message || data.error);
             ShopAIChat.UI.removeTypingIndicator();
-            currentMessageElement = ShopAIChat.UI.ensureAssistantMessage(
-              currentMessageElement,
-              messagesContainer,
-              updateCurrentElement
+            ShopAIChat.UI.removeEmptyAssistant(currentMessageElement);
+            ShopAIChat.Message.add(
+              data.message ||
+                "Sorry, I couldn't complete that right now. Please try again in a moment.",
+              'assistant',
+              messagesContainer
             );
-            currentMessageElement.textContent = "Sorry, our servers are currently busy. Please try again later.";
+            if (typeof updateCurrentElement === 'function') {
+              updateCurrentElement(null);
+            }
             break;
 
           case 'auth_required':

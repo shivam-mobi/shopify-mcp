@@ -2,6 +2,7 @@
  * Streaming Service
  * Provides utilities for handling server-sent events (SSE) streams
  */
+import AppConfig from "./config.server.js";
 
 /**
  * Creates a StreamManager to handle SSE streams with proper backpressure
@@ -64,10 +65,9 @@ export function createStreamManager(encoder, controller) {
         details: 'Please check LLM_PROVIDER and the matching API key in .env'
       });
     } else if (error.status === 429 || error.status === 529 || error.message?.includes('RESOURCE_EXHAUSTED') || error.message?.includes('Overloaded') || error.message?.includes('quota')) {
-      sendError({
-        type: 'rate_limit_exceeded',
-        error: 'Rate limit exceeded',
-        details: 'Please try again later'
+      sendMessage({
+        type: 'tool_error',
+        message: AppConfig.errorMessages.toolFailure
       });
     } else if (error.message?.includes('billing') || error.message?.includes('credit')) {
       sendError({
