@@ -673,6 +673,7 @@
         // Remove stock quantity lines from assistant text (cards show stock status)
         processedText = processedText.replace(/^\s*Stock:\s*.*$/gim, '');
         processedText = processedText.replace(/^\s*Variant ID:\s*.*$/gim, '');
+        processedText = processedText.replace(/gid:\/\/shopify\/ProductVariant\/\d+/gi, '');
         processedText = processedText.replace(/\n{3,}/g, '\n\n').trim();
 
         // Fix placeholder storefront hosts the model sometimes invents

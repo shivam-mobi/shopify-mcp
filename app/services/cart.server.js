@@ -282,13 +282,18 @@ function buildPreservedCartUpdate({
     cart.buyer = buyer;
   }
 
-  const fulfillment = normalizeFulfillment(
-    incomingCart.fulfillment,
-    existingCart?.fulfillment,
-    filterCartLinesForVariants(existingCart?.line_items, lineItems)
-  );
-  if (fulfillment) {
-    cart.fulfillment = fulfillment;
+  // Do NOT preserve cart.fulfillment when line items change.
+  // Shipping address is applied on checkout (UCP); stale cart fulfillment
+  // line_item_ids from older products can cause Shopify to drop newly added variants.
+  if (hasFulfillmentMethods(incomingCart.fulfillment)) {
+    const fulfillment = normalizeFulfillment(
+      incomingCart.fulfillment,
+      null,
+      filterCartLinesForVariants(existingCart?.line_items, lineItems)
+    );
+    if (fulfillment) {
+      cart.fulfillment = fulfillment;
+    }
   }
 
   const discounts = pickNonEmptyObject(incomingCart.discounts, existingCart?.discounts);

@@ -4,7 +4,7 @@
  */
 import { saveMessage } from "../db.server";
 import AppConfig from "./config.server";
-import { enrichProductsWithComparison, buildCompareAttributes } from "./product-compare.server.js";
+import { enrichProductsWithComparison, buildCompareAttributes, annotateRankedProductsForLlm, buildProductListingMetadata, resolveProductVariantId } from "./product-compare.server.js";
 
 /**
  * Creates a tool service instance
@@ -23,11 +23,17 @@ export function createToolService() {
   };
 
   const handleToolSuccess = async (toolUseResponse, toolName, toolUseId, conversationHistory, productsToDisplay, conversationId) => {
+    let historyContent = toolUseResponse.content;
+
     if (AppConfig.tools.productSearchNames.includes(toolName)) {
-      productsToDisplay.push(...processProductSearchResult(toolUseResponse));
+      const ranked = processProductSearchResult(toolUseResponse);
+      if (ranked.length > 0) {
+        productsToDisplay.push(...ranked);
+        historyContent = buildProductSearchToolHistory(toolUseResponse, ranked, toolName);
+      }
     }
 
-    await addToolResultToHistory(conversationHistory, toolUseId, toolUseResponse.content, conversationId);
+    await addToolResultToHistory(conversationHistory, toolUseId, historyContent, conversationId);
   };
 
   /**
@@ -94,6 +100,38 @@ export function createToolService() {
     }
   };
 
+  const buildProductSearchToolHistory = (toolUseResponse, rankedProducts, toolName) => {
+    const originalData = extractToolResponseData(toolUseResponse) || {};
+    const products = annotateRankedProductsForLlm(rankedProducts);
+    const listingMeta = buildProductListingMetadata(rankedProducts);
+
+    const enriched = {
+      status: originalData.status || "success",
+      source: toolName,
+      products,
+      ...listingMeta,
+      ui_instruction:
+        originalData.ui_instruction ||
+        "CRITICAL: Product cards are shown in chat automatically. Do NOT list products or variant IDs in your reply. " +
+        "Reply in 1-2 short sentences, then ask if they want to add one to the cart."
+    };
+
+    if (originalData.vehicle) enriched.vehicle = originalData.vehicle;
+    if (originalData.qualifiers) enriched.qualifiers = originalData.qualifiers;
+
+    console.log("[tool] enriched product listing for LLM history", {
+      source: toolName,
+      count: products.length,
+      best_pick_variant_id: listingMeta.best_pick_variant_id,
+      first_product_variant_id: listingMeta.first_product_variant_id
+    });
+
+    return [{
+      type: "text",
+      text: JSON.stringify(enriched)
+    }];
+  };
+
   const extractToolResponseData = (toolUseResponse) => {
     if (toolUseResponse.structuredContent) {
       return toolUseResponse.structuredContent;
@@ -149,7 +187,7 @@ export function createToolService() {
       price = `${product.price_range.currency} ${product.price_range.min}`;
     }
 
-    const variantId = product.variantId || variant?.id;
+    const variantId = product.variantId || product.variant_id || variant?.id;
     const availability = resolveProductAvailability(product, variant);
     const storefrontBase = (
       process.env.STOREFRONT_URL ||
@@ -171,8 +209,12 @@ export function createToolService() {
       productUrl = `${storefrontBase}${productUrl}`;
     }
 
+    const normalizedVariantId = resolveProductVariantId({ variantId, variant_id: product.variant_id, id: variantId });
+
     return {
-      id: variantId || product.product_id || product.id || product.partNumber || `product-${Math.random().toString(36).substring(7)}`,
+      id: normalizedVariantId || product.product_id || product.id || product.partNumber || `product-${Math.random().toString(36).substring(7)}`,
+      variantId: normalizedVariantId,
+      variant_id: normalizedVariantId,
       title: product.title || product.partTypeName || product.name || "Product",
       price,
       priceAmount: typeof product.priceAmount === "number" ? product.priceAmount : null,

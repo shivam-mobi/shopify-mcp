@@ -2,6 +2,13 @@
  * Product comparison helpers for fitment/catalog results.
  * Derives filter attributes from Shopify tags/title/description and ranks a "best" pick.
  */
+import { toVariantGid } from "./shopify-products.server.js";
+
+export const PRODUCT_LISTING_CART_INSTRUCTION =
+  "When the customer asks to add the best pick, best product, first product, #1, or top recommendation, " +
+  "call add_to_cart with best_pick_variant_id (same as first_product_variant_id) from THIS tool result only. " +
+  "For 'add product #2' or 'second one', use the product where position=2 and pass its variant_id. " +
+  "Never use variant_ids from older product searches earlier in this conversation.";
 
 function normalizeTagList(tags) {
   if (Array.isArray(tags)) {
@@ -184,8 +191,51 @@ export function enrichProductsWithComparison(products = []) {
   return enriched;
 }
 
+/**
+ * Normalize variant id from a product record to a ProductVariant GID.
+ */
+export function resolveProductVariantId(product = {}) {
+  const raw = product.variant_id || product.variantId || product.id || null;
+  return toVariantGid(raw);
+}
+
+/**
+ * Add position, variant_id, and is_best_pick to each ranked product for LLM tool history.
+ */
+export function annotateRankedProductsForLlm(rankedProducts = []) {
+  return rankedProducts.map((product, index) => ({
+    ...product,
+    position: index + 1,
+    variant_id: resolveProductVariantId(product),
+    is_best_pick: product.isBest === true
+  }));
+}
+
+/**
+ * Best pick / first product metadata for LLM cart adds (hidden from storefront UI).
+ */
+export function buildProductListingMetadata(rankedProducts = []) {
+  const best = rankedProducts.find((p) => p.isBest) || rankedProducts[0] || null;
+  const first = rankedProducts[0] || null;
+  const bestVariantId = best ? resolveProductVariantId(best) : null;
+  const firstVariantId = first ? resolveProductVariantId(first) : null;
+
+  return {
+    best_pick_variant_id: bestVariantId,
+    best_pick_title: best?.title || null,
+    first_product_variant_id: firstVariantId,
+    bestProductId: bestVariantId,
+    bestProductTitle: best?.title || null,
+    cart_instruction: PRODUCT_LISTING_CART_INSTRUCTION
+  };
+}
+
 export default {
   buildCompareAttributes,
   scoreProductForComparison,
-  enrichProductsWithComparison
+  enrichProductsWithComparison,
+  resolveProductVariantId,
+  annotateRankedProductsForLlm,
+  buildProductListingMetadata,
+  PRODUCT_LISTING_CART_INSTRUCTION
 };

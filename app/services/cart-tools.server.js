@@ -267,19 +267,47 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
     merged
   );
 
+  // Trust live cart after update — response / stale fulfillment can omit new variants.
+  const verified = await fetchLiveCart(mcpClient, conversationId);
+  const verifiedCart = verified?.cart || extractCartPayload(response);
+  const added = (verifiedCart?.line_items || []).some(
+    (line) => line?.item?.id === variantId
+  );
+
   console.log("[cart-wrapper] add_to_cart", {
     conversationId,
     variantId,
     before: live.cart.line_items?.length || 0,
-    after: merged.length
+    merged: merged.length,
+    after: verifiedCart?.line_items?.length || 0,
+    added
   });
+
+  if (!added) {
+    return toolResult({
+      success: false,
+      shipping_saved: false,
+      variant_id: variantId,
+      items: (verifiedCart?.line_items || []).map((line) => ({
+        title: line.item?.title || "Product",
+        quantity: line.quantity || 1,
+        variant_id: line.item?.id
+      })),
+      issues: [
+        "Shopify did not add that product to the cart. It may be unavailable for purchase right now."
+      ],
+      instruction:
+        "The requested product was NOT added. Tell the customer clearly using issues[]. " +
+        "Do NOT claim it is in the cart. Base any cart list ONLY on items[]."
+    });
+  }
 
   return toolResult(
     await summarizeCartWithShipping(
       mcpClient,
       conversationId,
-      extractCartPayload(response),
-      response
+      verifiedCart,
+      verified?.raw || response
     )
   );
 }
@@ -964,6 +992,15 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
     }
 
     const lineItems = buildUpdateCheckoutLineItems(cart.line_items, existing.line_items);
+    console.log("[cart-wrapper] update_checkout line_items", {
+      cartCount: cart.line_items?.length || 0,
+      checkoutCount: existing.line_items?.length || 0,
+      sending: lineItems.map((line) => ({
+        variantId: line?.item?.id,
+        quantity: line?.quantity,
+        hasCheckoutLineId: Boolean(line?.id)
+      }))
+    });
     const checkoutBody = {
       line_items: lineItems,
       buyer: destination?.phone_number

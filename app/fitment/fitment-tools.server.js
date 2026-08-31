@@ -14,7 +14,12 @@ import { fetchProductList } from "./repositories/productRepository.js";
 import { fetchQualifierCollection } from "./repositories/qualifierRepository.js";
 import { fetchYears, matchYear } from "./repositories/yearRepository.js";
 import { decodeVin, extractVin } from "./vin.server.js";
-import { enrichProductsWithComparison } from "../services/product-compare.server.js";
+import {
+  enrichProductsWithComparison,
+  annotateRankedProductsForLlm,
+  buildProductListingMetadata,
+  PRODUCT_LISTING_CART_INSTRUCTION
+} from "../services/product-compare.server.js";
 
 function toolResult(content) {
   return {
@@ -64,20 +69,21 @@ function formatProducts(products, vehicle, qualifiers) {
   }));
 
   const ranked = enrichProductsWithComparison(formatted);
-  const best = ranked.find((p) => p.isBest) || null;
+  const productsForLlm = annotateRankedProductsForLlm(ranked);
+  const listingMeta = buildProductListingMetadata(ranked);
 
   return {
     status: products.length ? "success" : "not_found",
     vehicle,
     qualifiers,
-    products: ranked,
-    bestProductId: best?.id || null,
-    bestProductTitle: best?.title || null,
+    products: productsForLlm,
+    ...listingMeta,
     ui_instruction:
       "CRITICAL: Product cards + Quick comparison + Best product UI are shown in chat automatically. " +
       "Do NOT list products, prices, descriptions, notes, stock, or Variant IDs in your reply. " +
       "Do NOT mention a best pick, best product, or recommend a specific product by name in text. " +
-      "Reply in 1-2 short sentences only (e.g. matching filters found for their vehicle), then ask if they want to add one to the cart."
+      "Reply in 1-2 short sentences only (e.g. matching filters found for their vehicle), then ask if they want to add one to the cart. " +
+      PRODUCT_LISTING_CART_INSTRUCTION
   };
 }
 
