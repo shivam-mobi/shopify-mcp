@@ -16,7 +16,8 @@ import {
   callCartWrapperTool,
   appendFinalCartSnapshot,
   filterCartToolsForLlm,
-  buildShippingAddressHintMessage
+  buildShippingAddressHintMessage,
+  buildShippingEmailHintMessage
 } from "../services/cart-tools.server";
 import { isFitmentConfigured } from "../fitment/database.server.js";
 import {
@@ -262,6 +263,11 @@ async function handleChatSession({
     const shippingAddressHint = buildShippingAddressHintMessage(userMessage);
     if (shippingAddressHint) {
       conversationHistory.unshift(shippingAddressHint);
+    }
+
+    const shippingEmailHint = buildShippingEmailHintMessage(userMessage);
+    if (shippingEmailHint) {
+      conversationHistory.unshift(shippingEmailHint);
     }
 
     const storeHelpHint = buildStoreHelpHintMessage(userMessage);

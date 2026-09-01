@@ -31,6 +31,9 @@ import AppConfig from "./config.server.js";
 
 const TOOL_FAILURE_USER_MESSAGE = AppConfig.errorMessages.toolFailure;
 
+const SHIPPING_ASK_LIST_TEXT =
+  "1. First Name\n2. Last Name\n3. Phone Number\n4. Email (optional)\n5. Street Address\n6. City\n7. State/Region\n8. Postal Code\n9. Country";
+
 export const CART_MUTATION_TOOL_NAMES = new Set([
   "add_to_cart",
   "remove_from_cart",
@@ -137,8 +140,13 @@ export function getCartWrapperTools() {
         "YOU convert the customer's free-text into structured fields when you can (name, phone, street, city, state, ZIP, country). " +
         "NEVER invent First/Last Name from street or building names (Cooper Square is NOT a person). NEVER invent or guess a phone number. " +
         "If the customer only sent an address line, pass address fields only — leave name/phone blank if missing and the server will ask, OR reuse them when updating an address already on file. " +
+        "For partial updates (email, name, phone, or one address field), pass ONLY the fields the customer gave — the server merges any missing fields from the saved shipping address on file. " +
         "Use 2-letter US state (New York → NY) and ISO country (USA → US). Keep phone in E.164 with + when the customer gave it. " +
         "Required before save: First Name, Last Name, Phone Number, Street Address, City, Postal Code, Country (State/Region too for US). " +
+        "Email is optional — pass it when the customer provides one. " +
+        "When asking for missing shipping fields (2+ required items), use this EXACT list and always include item 4 Email (optional):\n" +
+        SHIPPING_ASK_LIST_TEXT + "\n" +
+        "If the customer already gave an email, pass it on set_cart_shipping — do not wait until after the address is saved. " +
         "The server validates ALL required fields before Shopify — never call with blank fields you can fill yourself. " +
         "If success:false / shipping_saved:false, read issues[] and ask the customer ONLY for missing or invalid fields listed there. " +
         "If empty_cart:true, ask the customer to add a product to their cart first — do NOT show a generic error. " +
@@ -157,6 +165,11 @@ export function getCartWrapperTools() {
             type: "string",
             description:
               "Phone Number (required). Prefer E.164 with + when provided. 10-digit US numbers are also fine."
+          },
+          email: {
+            type: "string",
+            description:
+              "Email address (optional). For order confirmation and updates — not a substitute for first/last name."
           },
           street_address: { type: "string", description: "Street Address (required)" },
           extended_address: { type: "string" },
@@ -240,6 +253,7 @@ export function buildShippingAddressHintMessage(userMessage) {
   }
 
   const hasPhone = Boolean(extractPhoneFromText(text));
+  const hasEmail = Boolean(extractEmailFromText(text));
   const hasName = Boolean(parseAddressText(userMessage)?.first_name || extractNamePartsFromText(text));
   const addressOnly = Boolean(parseAddressLineOnly(text));
 
@@ -250,10 +264,19 @@ export function buildShippingAddressHintMessage(userMessage) {
   if (addressOnly || (!hasName && !hasPhone)) {
     content +=
       "They did NOT give a person name or phone in this message — do NOT invent name from the street/building and do NOT guess a phone. " +
-      "Omit first_name, last_name, and phone_number (or leave blank). The server will ask ONLY for what is missing. ";
+      "Omit first_name, last_name, and phone_number (or leave blank). The server will ask ONLY for what is missing. " +
+      "If you must ask for missing fields, use this EXACT list (always include item 4 Email (optional)):\n" +
+      `${SHIPPING_ASK_LIST_TEXT}\n`;
   } else {
     content +=
       "Include first_name, last_name, and phone_number only if the customer provided them. ";
+  }
+
+  if (hasEmail) {
+    content += "Include email when the customer provided one — email is optional but helpful for order updates. ";
+  } else {
+    content +=
+      "Email is optional — you may offer to add one for order updates after the address is saved. ";
   }
 
   content +=
@@ -261,6 +284,38 @@ export function buildShippingAddressHintMessage(userMessage) {
     "If anything is missing or invalid, ask ONLY for those fields — never re-list the full form.";
 
   return { role: "system", content };
+}
+
+/** When the customer only asks to add/update email (no address in message). */
+export function buildShippingEmailHintMessage(userMessage) {
+  const text = String(userMessage || "").trim();
+  const email = extractEmailFromText(text);
+  if (!email) {
+    return null;
+  }
+
+  const wantsEmail =
+    /\b(emails?|e-mail)\b/i.test(text) ||
+    /\badd\s+(?:the\s+)?email\b/i.test(text) ||
+    /\bupdate\s+(?:my\s+)?email\b/i.test(text);
+  if (!wantsEmail) {
+    return null;
+  }
+
+  if (parseAddressText(userMessage) || parseAddressLineOnly(extractAddressText(text))) {
+    return null;
+  }
+
+  return {
+    role: "system",
+    content:
+      `The customer wants to add or update email: ${email}. ` +
+      "If shipping is already on file, call set_cart_shipping with email and reuse saved name/phone/address fields (pass email only — server merges the rest). " +
+      "If required address fields are still missing, ask in ONE message using this EXACT numbered list (never omit item 4):\n" +
+      `${SHIPPING_ASK_LIST_TEXT}\n` +
+      `Pass email: "${email}" on set_cart_shipping together with any address fields you already have — ` +
+      "do NOT say email will be added only after the rest of the address is saved."
+  };
 }
 
 export function buildActiveCartWrapperContextMessage(cartId) {
@@ -552,7 +607,7 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
 
   const validation = validateShippingAddressFields(normalized.address);
   if (validation.issues.length > 0) {
-    return shippingValidationFailure(validation);
+    return shippingValidationFailure(validation, normalized.address);
   }
 
   const resolved = normalized.address;
@@ -564,6 +619,7 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
 
   const destination = buildShippingDestination(resolved);
   const cartLineItems = toWritableLineItems(live.cart.line_items);
+  const buyer = buildCheckoutBuyer(resolved, live.cart?.buyer);
 
   try {
     await mcpClient.callTool("update_cart", buildPreservedCartUpdate({
@@ -575,9 +631,9 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
           address_region: resolved.address_region,
           postal_code: resolved.postal_code
         },
-        buyer: { phone_number: resolved.phone_number }
+        ...(buyer ? { buyer } : {})
       },
-      incomingBuyer: { phone_number: resolved.phone_number },
+      incomingBuyer: buyer,
       lineItems: cartLineItems
     }));
 
@@ -610,7 +666,12 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
         phone_number:
           verification.shippingAddress.phone_number ||
           verification.buyerPhone ||
-          null
+          destination.phone_number,
+        email:
+          verification.buyerEmail ||
+          resolved.email ||
+          savedShipping?.email ||
+          undefined
       }
     : null;
   const validationErrors = [
@@ -625,7 +686,7 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
   const shippingValidationErrors = validationErrors.filter((item) => {
     const code = String(item?.code || item || "");
     const content = String(item?.content || item?.readable || item || "");
-    return /phone|address|postal|zip|delivery|shipping|fulfillment|buyer|destination|region|state|locality|city|country|name|street|first_name|last_name/i.test(
+    return /phone|email|address|postal|zip|delivery|shipping|fulfillment|buyer|destination|region|state|locality|city|country|name|street|first_name|last_name/i.test(
       `${code} ${content}`
     );
   });
@@ -711,7 +772,12 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
         phone_number:
           verifiedAddress.phone_number ||
           verification?.buyerPhone ||
-          destination.phone_number
+          destination.phone_number,
+        email:
+          verifiedAddress.email ||
+          verification?.buyerEmail ||
+          resolved.email ||
+          undefined
       }
     })
   );
@@ -782,9 +848,44 @@ function extractToolErrorText(toolResponse) {
   return JSON.stringify(toolResponse.structuredContent || toolResponse);
 }
 
+function buildCheckoutBuyer(destination = {}, existingBuyer = null) {
+  const phone = !isBlank(destination?.phone_number)
+    ? normalizePhoneNumber(destination.phone_number, destination.address_country)
+    : existingBuyer?.phone_number || null;
+  const email = !isBlank(destination?.email)
+    ? normalizeEmail(destination.email)
+    : existingBuyer?.email || null;
+
+  if (!phone && !email) {
+    return existingBuyer || undefined;
+  }
+
+  return {
+    ...(existingBuyer || {}),
+    ...(phone ? { phone_number: phone } : {}),
+    ...(email ? { email } : {})
+  };
+}
+
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function isValidEmail(email) {
+  const normalized = normalizeEmail(email);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized);
+}
+
+function extractEmailFromText(text) {
+  const match = String(text || "").match(
+    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i
+  );
+  return match ? normalizeEmail(match[0]) : null;
+}
+
 function buildShippingDestination(resolved) {
   const phone = normalizePhoneNumber(resolved.phone_number, resolved.address_country);
-  return {
+  const destination = {
     first_name: resolved.first_name,
     last_name: resolved.last_name,
     phone_number: phone,
@@ -795,6 +896,12 @@ function buildShippingDestination(resolved) {
     postal_code: resolved.postal_code,
     address_country: resolved.address_country
   };
+
+  if (!isBlank(resolved.email)) {
+    destination.email = normalizeEmail(resolved.email);
+  }
+
+  return destination;
 }
 
 function buildCheckoutFulfillment(destination, lineItemIds = []) {
@@ -913,7 +1020,8 @@ async function fetchVerifiedCheckoutShipping(mcpClient, checkoutId) {
       checkoutUrl: extractContinueUrl(response) || checkout.continue_url || null,
       shippingAddress: extractShippingDestination(checkout),
       validationErrors: extractCheckoutValidationErrors(checkout),
-      buyerPhone: checkout?.buyer?.phone_number || null
+      buyerPhone: checkout?.buyer?.phone_number || null,
+      buyerEmail: checkout?.buyer?.email || null
     };
   } catch (error) {
     console.warn("[cart-wrapper] get_checkout verify failed", { checkoutId, message: error.message });
@@ -937,6 +1045,7 @@ function writableShippingAddress(destination = {}) {
     first_name: destination.first_name,
     last_name: destination.last_name,
     phone_number: destination.phone_number,
+    email: destination.email || undefined,
     street_address: destination.street_address,
     extended_address: destination.extended_address || undefined,
     address_locality: destination.address_locality,
@@ -990,7 +1099,13 @@ async function syncCheckoutWithCart(
       if (validationErrors.length === 0 && updated.shippingAddress) {
         await setConversationShippingAddress(
           conversationId,
-          writableShippingAddress(updated.shippingAddress)
+          writableShippingAddress({
+            ...updated.shippingAddress,
+            email:
+              savedShipping?.email ||
+              updated.checkout?.buyer?.email ||
+              undefined
+          })
         );
       }
 
@@ -1072,7 +1187,13 @@ async function syncCheckoutWithCart(
   if (validationErrors.length === 0 && created.shippingAddress) {
     await setConversationShippingAddress(
       conversationId,
-      writableShippingAddress(created.shippingAddress)
+      writableShippingAddress({
+        ...created.shippingAddress,
+        email:
+          savedShipping?.email ||
+          created.checkout?.buyer?.email ||
+          undefined
+      })
     );
   }
 
@@ -1121,9 +1242,7 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
     });
     const checkoutBody = {
       line_items: lineItems,
-      buyer: destination?.phone_number
-        ? { phone_number: destination.phone_number }
-        : existing.buyer || undefined
+      buyer: buildCheckoutBuyer(destination, existing.buyer)
     };
 
     if (destination) {
@@ -1185,7 +1304,7 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
           id: checkout.id,
           checkout: {
             line_items: allLineItems,
-            buyer: { phone_number: destination.phone_number },
+            buyer: buildCheckoutBuyer(destination, existing.buyer),
             fulfillment: buildCheckoutFulfillment(destination, allLineIds)
           }
         });
@@ -1221,8 +1340,8 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
 async function createCheckoutFromCart(mcpClient, cart, destination) {
   try {
     const overrides = {};
-    if (destination?.phone_number) {
-      overrides.buyer = { phone_number: destination.phone_number };
+    if (destination?.phone_number || destination?.email) {
+      overrides.buyer = buildCheckoutBuyer(destination, cart?.buyer);
     }
     if (cart?.context) {
       overrides.context = cart.context;
@@ -1262,9 +1381,7 @@ async function createCheckoutFromCart(mcpClient, cart, destination) {
         id: checkout.id,
         checkout: {
           ...(lineItems.length ? { line_items: lineItems } : {}),
-          buyer: destination.phone_number
-            ? { phone_number: destination.phone_number }
-            : undefined,
+          buyer: buildCheckoutBuyer(destination, checkout.buyer),
           fulfillment: buildCheckoutFulfillment(destination, lineItemIds)
         }
       });
@@ -1710,6 +1827,7 @@ const SHIPPING_FIELD_LABELS = {
   first_name: "First Name",
   last_name: "Last Name",
   phone_number: "Phone Number",
+  email: "Email",
   street_address: "Street Address",
   address_locality: "City",
   address_region: "State/Region",
@@ -1823,6 +1941,11 @@ function sanitizeShippingFromContext(address = {}, userMessage = "", savedShippi
     merged.phone_number = "";
   }
 
+  const emailInText = extractEmailFromText(text);
+  if (emailInText && isBlank(merged.email)) {
+    merged.email = emailInText;
+  }
+
   return merged;
 }
 
@@ -1832,7 +1955,20 @@ function applySavedShippingDefaults(address = {}, savedShipping = null) {
   }
 
   const merged = { ...address };
-  for (const field of ["first_name", "last_name", "phone_number"]) {
+  const mergeFields = [
+    "first_name",
+    "last_name",
+    "phone_number",
+    "email",
+    "street_address",
+    "extended_address",
+    "address_locality",
+    "address_region",
+    "postal_code",
+    "address_country"
+  ];
+
+  for (const field of mergeFields) {
     if (isBlank(merged[field]) && !isBlank(savedShipping[field])) {
       merged[field] = savedShipping[field];
     }
@@ -1875,6 +2011,10 @@ function validateShippingAddressFields(address = {}) {
     issues.push("Phone Number looks invalid — do not use placeholder numbers.");
   }
 
+  if (!isBlank(address.email) && !isValidEmail(address.email)) {
+    issues.push("Email address looks invalid.");
+  }
+
   if (!isBlank(address.street_address) && String(address.street_address).trim().length < 3) {
     issues.push("Street Address looks incomplete.");
   }
@@ -1913,7 +2053,31 @@ function validateShippingAddressFields(address = {}) {
   };
 }
 
-function shippingValidationFailure(validation) {
+function summarizeProvidedShippingFields(address = {}) {
+  const fieldOrder = [
+    "first_name",
+    "last_name",
+    "phone_number",
+    "email",
+    "street_address",
+    "extended_address",
+    "address_locality",
+    "address_region",
+    "postal_code",
+    "address_country"
+  ];
+
+  return fieldOrder
+    .filter((key) => !isBlank(address[key]))
+    .map((key) => ({
+      field: key,
+      label: key === "email" ? "Email (optional)" : (SHIPPING_FIELD_LABELS[key] || key),
+      value: String(address[key]).trim()
+    }));
+}
+
+function shippingValidationFailure(validation, address = {}) {
+  const providedFields = summarizeProvidedShippingFields(address);
   const failedLabels = validation.issues
     .map((issue) => issue.replace(/ is required\.?$| looks .*$/i, "").trim())
     .filter(Boolean);
@@ -1923,19 +2087,52 @@ function shippingValidationFailure(validation) {
       : failedLabels
   )];
 
-  const customerMessage = uniqueFailed.length
-    ? `I couldn't save your shipping address yet. Please provide: ${uniqueFailed.join(", ")}.`
-    : validation.issues[0] || "Some shipping details look invalid.";
+  const providedSummary = providedFields
+    .map((entry) => `${entry.label}: ${entry.value}`)
+    .join("; ");
+
+  let customerMessage;
+  if (providedFields.length > 0 && uniqueFailed.length > 0) {
+    customerMessage =
+      `I couldn't save your shipping address yet. I already have: ${providedSummary}. ` +
+      `I still need: ${uniqueFailed.join(", ")}.`;
+  } else if (uniqueFailed.length > 0) {
+    customerMessage =
+      `I couldn't save your shipping address yet. Please provide: ${uniqueFailed.join(", ")}.`;
+  } else {
+    customerMessage = validation.issues[0] || "Some shipping details look invalid.";
+  }
+
+  const addressCoreProvided = providedFields.some((entry) =>
+    ["street_address", "address_locality", "postal_code", "address_country"].includes(entry.field)
+  );
+  const askWithFullList = validation.missingLabels.length >= 2 && !addressCoreProvided;
+
+  const instructionParts = [
+    "The shipping address was NOT saved.",
+    providedFields.length > 0
+      ? "First tell the customer which fields we ALREADY HAVE (use provided_fields with values). " +
+        "Then ask ONLY for missing_fields — never re-ask for anything in provided_fields."
+      : null,
+    askWithFullList
+      ? "Ask in ONE message using this EXACT numbered list (always include item 4 Email (optional)):\n" +
+        `${SHIPPING_ASK_LIST_TEXT}\n` +
+        `Still required: ${validation.missingLabels.join(", ")}.`
+      : uniqueFailed.length > 0
+        ? `Ask only for: ${uniqueFailed.join(", ")}. Email is optional — do not require it unless the customer wants order updates.`
+        : "Ask the customer to fix the issues listed.",
+    "If a saved address exists, pass only the field the customer is updating on set_cart_shipping — the server fills the rest from saved shipping.",
+    "Never say the address was saved."
+  ];
 
   return toolResult({
     success: false,
     shipping_saved: false,
     issues: validation.issues,
+    provided_fields: providedFields,
     missing_fields: validation.missingLabels,
     customer_message: customerMessage,
-    instruction:
-      "The shipping address was NOT saved. Ask the customer ONLY for the fields in missing_fields or issues. " +
-      "Do NOT re-list the full address form. Never say the address was saved."
+    instruction: instructionParts.filter(Boolean).join(" ")
   });
 }
 
@@ -2172,6 +2369,10 @@ function normalizeShippingAddress(input = {}, { userMessage, existingCart, saved
     sanitized.address_region = String(sanitized.address_region).trim().toUpperCase();
   }
 
+  if (!isBlank(sanitized.email)) {
+    sanitized.email = normalizeEmail(sanitized.email);
+  }
+
   const missing = SHIPPING_REQUIRED_FIELDS.filter((field) => isBlank(sanitized[field]));
 
   return {
@@ -2188,5 +2389,6 @@ export default {
   filterCartToolsForLlm,
   callCartWrapperTool,
   appendFinalCartSnapshot,
-  buildActiveCartWrapperContextMessage
+  buildActiveCartWrapperContextMessage,
+  buildShippingEmailHintMessage
 };
