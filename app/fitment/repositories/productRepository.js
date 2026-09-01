@@ -98,7 +98,8 @@ export async function fetchProductList(
   engineId,
   selectedQualifiers = [],
   vehicle = {},
-  shop = null
+  shop = null,
+  conversationId = null
 ) {
   const safeEngineId = sanitizeEngineIdList(engineId);
   if (!safeEngineId) return [];
@@ -127,7 +128,8 @@ export async function fetchProductList(
   );
   const shopifyById = await fetchShopifyVariantsByIds(
     shop,
-    variantRows.map((row) => row.variant_id)
+    variantRows.map((row) => row.variant_id),
+    conversationId
   );
 
   const seen = new Set();

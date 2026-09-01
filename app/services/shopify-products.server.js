@@ -52,13 +52,13 @@ function summarizeAdminGraphqlResponse(payload) {
   const nodes = payload.data?.nodes;
   if (!Array.isArray(nodes)) {
     return {
-      errors: payload.errors || null,
+      ...(payload.errors?.length ? { errors: payload.errors } : {}),
       dataKeys: payload.data ? Object.keys(payload.data) : []
     };
   }
 
   return {
-    errors: payload.errors || null,
+    ...(payload.errors?.length ? { errors: payload.errors } : {}),
     nodeCount: nodes.length,
     nonNullNodes: nodes.filter(Boolean).length,
     sampleNodes: nodes
@@ -82,7 +82,8 @@ async function callAdminGraphql({
   variables,
   operation,
   authMode,
-  admin = null
+  admin = null,
+  conversationId = null
 }) {
   const apiVersion = process.env.SHOPIFY_API_VERSION || DEFAULT_API_VERSION;
   const endpoint = `https://${shop}/admin/api/${apiVersion}/graphql.json`;
@@ -149,6 +150,7 @@ async function callAdminGraphql({
     throw error;
   } finally {
     void storeMcpCallLog({
+      conversationId,
       server: "admin",
       method: "graphql",
       toolName: operation,
@@ -325,7 +327,7 @@ function getAdminAccessToken() {
  * Fetch live title, price, and image for ProductVariant GIDs via Admin API.
  * Prefers SHOPIFY_ADMIN_ACCESS_TOKEN; falls back to Partner offline session.
  */
-export async function fetchShopifyVariantsByIds(shop, variantIds = []) {
+export async function fetchShopifyVariantsByIds(shop, variantIds = [], conversationId = null) {
   const uniqueGids = [...new Set(
     variantIds
       .map((id) => toVariantGid(id))
@@ -388,7 +390,8 @@ export async function fetchShopifyVariantsByIds(shop, variantIds = []) {
         variables,
         operation: ADMIN_OPERATION_VARIANTS_BY_IDS,
         authMode,
-        admin
+        admin,
+        conversationId
       });
 
       console.log(

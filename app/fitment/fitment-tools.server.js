@@ -98,7 +98,8 @@ async function resolveProductsFlow({
   engine,
   qualifiers = [],
   shop = null,
-  vinFitment = null
+  vinFitment = null,
+  conversationId = null
 }) {
   console.log("[fitment:products] resolveProductsFlow start", {
     year,
@@ -184,7 +185,8 @@ async function resolveProductsFlow({
     engineSelection.engineConfigId,
     activeQualifiers,
     { year, make, model },
-    shop
+    shop,
+    conversationId
   );
 
   return formatProducts(
@@ -211,7 +213,8 @@ export async function getFitmentNextStep({
   engine,
   vin,
   qualifiers = [],
-  shop = null
+  shop = null,
+  conversationId = null
 } = {}) {
   const vinCandidate =
     extractVin(vin) ||
@@ -240,7 +243,8 @@ export async function getFitmentNextStep({
       engine: decoded.engine,
       qualifiers,
       shop,
-      vinFitment: decoded
+      vinFitment: decoded,
+      conversationId
     });
 
     console.log("[fitment:next_step] VIN products flow done", {
@@ -457,7 +461,8 @@ export async function getFitmentNextStep({
     model: matchedModel,
     engine,
     qualifiers,
-    shop
+    shop,
+    conversationId
   });
 
   console.log("[fitment:next_step] products flow done", {
@@ -551,8 +556,8 @@ export async function getFitmentQualifier({ year, make, model, engine, qualifier
   });
 }
 
-export async function findFitmentProducts(args, shop = null) {
-  const result = await getFitmentNextStep({ ...args, shop });
+export async function findFitmentProducts(args, shop = null, conversationId = null) {
+  const result = await getFitmentNextStep({ ...args, shop, conversationId });
   if (
     ["need_year", "need_make", "need_model", "need_engine", "need_qualifier", "need_filters"].includes(
       result.status
@@ -602,14 +607,14 @@ export function getFitmentTools() {
   ];
 }
 
-export async function callFitmentTool(toolName, toolArgs = {}, { shop = null } = {}) {
+export async function callFitmentTool(toolName, toolArgs = {}, { shop = null, conversationId = null } = {}) {
   const started = Date.now();
-  console.log("[fitment:tool] call start", { toolName, toolArgs, shop });
+  console.log("[fitment:tool] call start", { toolName, toolArgs, shop, conversationId });
   try {
     let result;
     switch (toolName) {
       case "get_fitment_next_step":
-        result = toolResult(await getFitmentNextStep({ ...toolArgs, shop }));
+        result = toolResult(await getFitmentNextStep({ ...toolArgs, shop, conversationId }));
         break;
       case "lookup_fitment_years":
         result = await lookupFitmentYears();
@@ -627,7 +632,7 @@ export async function callFitmentTool(toolName, toolArgs = {}, { shop = null } =
         result = await getFitmentQualifier(toolArgs);
         break;
       case "find_fitment_products":
-        result = await findFitmentProducts(toolArgs, shop);
+        result = await findFitmentProducts(toolArgs, shop, conversationId);
         break;
       default:
         throw new Error(`Unknown fitment tool: ${toolName}`);

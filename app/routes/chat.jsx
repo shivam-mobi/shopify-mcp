@@ -334,7 +334,7 @@ async function handleChatSession({
             try {
               if (isFitmentTool(toolName)) {
                 console.log("[chat] fitment tool invoke", { toolName, toolArgs, shop });
-                toolUseResponse = await callFitmentTool(toolName, toolArgs, { shop });
+                toolUseResponse = await callFitmentTool(toolName, toolArgs, { shop, conversationId });
                 console.log("[chat] fitment tool success", { toolName });
               } else if (isCartWrapperTool(toolName)) {
                 console.log("[chat] cart wrapper invoke", { toolName, toolArgs });
