@@ -25,6 +25,12 @@ import {
   getFitmentTools,
   isFitmentTool
 } from "../fitment/fitment-tools.server.js";
+import {
+  callCatalogBrowseTool,
+  getCatalogBrowseTools,
+  isCatalogBrowseTool,
+  buildCatalogBrowseHintMessage
+} from "../services/catalog-browse-tools.server.js";
 import { enrichProductsWithComparison } from "../services/product-compare.server.js";
 import { buildStoreHelpHintMessage } from "../services/store-help-hints.server.js";
 
@@ -212,12 +218,14 @@ async function handleChatSession({
     }
 
     const fitmentTools = isFitmentConfigured() ? getFitmentTools() : [];
+    const catalogBrowseTools = getCatalogBrowseTools();
     const cartWrapperTools = getCartWrapperTools();
     const mcpToolsForLlm = filterCartToolsForLlm(mcpClient.tools);
-    const allTools = [...mcpToolsForLlm, ...cartWrapperTools, ...fitmentTools];
+    const allTools = [...mcpToolsForLlm, ...cartWrapperTools, ...fitmentTools, ...catalogBrowseTools];
 
     console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length} (${mcpToolsForLlm.length} after cart filter)`);
     console.log(`Cart wrapper tools: ${cartWrapperTools.length}`);
+    console.log(`Catalog browse tools: ${catalogBrowseTools.length}`);
     if (fitmentTools.length) {
       console.log(`Fitment tools enabled: ${fitmentTools.length}`);
     }
@@ -273,6 +281,11 @@ async function handleChatSession({
     const storeHelpHint = buildStoreHelpHintMessage(userMessage);
     if (storeHelpHint) {
       conversationHistory.unshift(storeHelpHint);
+    }
+
+    const catalogBrowseHint = buildCatalogBrowseHintMessage(userMessage, conversationHistory);
+    if (catalogBrowseHint) {
+      conversationHistory.unshift(catalogBrowseHint);
     }
 
     // Execute the conversation stream
@@ -336,6 +349,15 @@ async function handleChatSession({
                 console.log("[chat] fitment tool invoke", { toolName, toolArgs, shop });
                 toolUseResponse = await callFitmentTool(toolName, toolArgs, { shop, conversationId });
                 console.log("[chat] fitment tool success", { toolName });
+              } else if (isCatalogBrowseTool(toolName)) {
+                console.log("[chat] catalog browse invoke", { toolName, toolArgs, shop });
+                toolUseResponse = await callCatalogBrowseTool(toolName, toolArgs, {
+                  shop,
+                  conversationId,
+                  messages: conversationHistory,
+                  currentUserMessage: userMessage
+                });
+                console.log("[chat] catalog browse success", { toolName });
               } else if (isCartWrapperTool(toolName)) {
                 console.log("[chat] cart wrapper invoke", { toolName, toolArgs });
                 toolUseResponse = await callCartWrapperTool(

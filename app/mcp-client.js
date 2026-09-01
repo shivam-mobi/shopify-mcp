@@ -5,6 +5,7 @@ import {
   getCatalogAccessToken,
   hasCatalogCredentials
 } from "./services/catalog-auth.server";
+import { warmProductTypesAtStartup } from "./services/shopify-products.server.js";
 
 /**
  * In-memory tools/list cache so we don't hit Shopify on every chat message.
@@ -170,16 +171,18 @@ class MCPClient {
   }
 
   async callTool(toolName, toolArgs) {
+    const normalizedArgs = this._normalizeUcpToolArgs(toolName, toolArgs);
+
     if (this.customerTools.some((tool) => tool.name === toolName)) {
-      return this.callCustomerTool(toolName, toolArgs);
+      return this.callCustomerTool(toolName, normalizedArgs);
     }
 
     if (this.ucpTools.some((tool) => tool.name === toolName)) {
-      return this.callUcpTool(toolName, toolArgs);
+      return this.callUcpTool(toolName, normalizedArgs);
     }
 
     if (this.storefrontTools.some((tool) => tool.name === toolName)) {
-      return this.callStorefrontTool(toolName, toolArgs);
+      return this.callStorefrontTool(toolName, normalizedArgs);
     }
 
     throw new Error(`Tool ${toolName} not found`);
@@ -338,6 +341,41 @@ class MCPClient {
         }
       }
     };
+  }
+
+  /**
+   * UCP catalog tools require { catalog: { query } }, but models often send { query }.
+   */
+  _normalizeUcpToolArgs(toolName, toolArgs = {}) {
+    const catalogSearchTools = new Set(["search_catalog", "search_shop_catalog"]);
+    if (!catalogSearchTools.has(toolName)) {
+      return toolArgs;
+    }
+
+    if (toolArgs?.catalog && typeof toolArgs.catalog === "object") {
+      return toolArgs;
+    }
+
+    const query = toolArgs?.query ?? toolArgs?.search ?? null;
+    if (!query) {
+      return toolArgs;
+    }
+
+    const { query: _query, search: _search, ...rest } = toolArgs;
+    const normalized = {
+      ...rest,
+      catalog: {
+        query: String(query)
+      }
+    };
+
+    console.log("[mcp] normalized catalog tool args", {
+      toolName,
+      from: toolArgs,
+      to: normalized
+    });
+
+    return normalized;
   }
 
   _mergeTools(newTools, { preferNew = false } = {}) {
@@ -601,11 +639,28 @@ export async function warmMcpToolsAtStartup({
       `[mcp] startup warmup ok — storefront:${storefrontTools.length} ucp:${ucpTools.length} customer:${customerCount}`
     );
 
+    let productTypesCount = 0;
+    try {
+      const productTypesResult = await warmProductTypesAtStartup();
+      productTypesCount = productTypesResult?.types?.length ?? 0;
+      if (productTypesResult?.skipped) {
+        console.log("[shopify] product types warmup skipped");
+      } else {
+        console.log(`[shopify] product types warmup ok — count:${productTypesCount}`);
+      }
+    } catch (productTypesError) {
+      console.warn(
+        "[shopify] product types warmup failed (non-fatal):",
+        productTypesError.message
+      );
+    }
+
     return {
       storefront: storefrontTools.length,
       ucp: ucpTools.length,
       customer: customerCount,
-      customerMcpUrl
+      customerMcpUrl,
+      productTypes: productTypesCount
     };
   } catch (error) {
     console.error("[mcp] startup tools warmup FAILED:", error.message);

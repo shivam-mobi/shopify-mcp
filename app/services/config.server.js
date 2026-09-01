@@ -76,6 +76,11 @@ export const AppConfig = {
     enabled: process.env.FITMENT_ENABLED === "true"
   },
 
+  shopify: {
+    /** Cache Admin API productTypes at startup (set PRODUCT_TYPES_WARMUP_ON_START=false to skip). */
+    productTypesWarmupOnStart: process.env.PRODUCT_TYPES_WARMUP_ON_START !== "false"
+  },
+
   chat: {
     /** localStorage = shared across tabs; sessionStorage = per tab only */
     conversationStorage:
@@ -88,6 +93,7 @@ export const AppConfig = {
     productSearchNames: [
       "search_catalog",
       "search_shop_catalog",
+      "browse_products_by_type",
       "find_fitment_products",
       "get_fitment_next_step"
     ],

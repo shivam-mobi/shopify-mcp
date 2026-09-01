@@ -1,5 +1,6 @@
 import { buildCompareAttributes } from "./product-compare.server.js";
 import { storeMcpCallLog } from "../db.server.js";
+import AppConfig from "./config.server.js";
 
 const VARIANTS_BY_IDS_QUERY = `#graphql
   query VariantsByIds($ids: [ID!]!) {
@@ -38,8 +39,74 @@ const VARIANTS_BY_IDS_QUERY = `#graphql
 `;
 
 const NODES_BATCH_SIZE = 50;
+const PRODUCT_TYPES_PAGE_SIZE = 250;
+const PRODUCTS_BY_TYPE_PAGE_SIZE = 20;
 const DEFAULT_API_VERSION = "2025-10";
 const ADMIN_OPERATION_VARIANTS_BY_IDS = "VariantsByIds";
+const ADMIN_OPERATION_PRODUCT_TYPES = "ProductTypes";
+const ADMIN_OPERATION_PRODUCTS_BY_TYPE = "ProductsByProductType";
+
+const PRODUCT_TYPES_QUERY = `#graphql
+  query ProductTypes($first: Int!, $after: String) {
+    productTypes(first: $first, after: $after) {
+      nodes
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+`;
+
+const PRODUCTS_BY_PRODUCT_TYPE_QUERY = `#graphql
+  query ProductsByProductType($first: Int!, $query: String!, $after: String) {
+    products(first: $first, query: $query, after: $after) {
+      nodes {
+        id
+        title
+        handle
+        productType
+        status
+        vendor
+        tags
+        descriptionHtml
+        onlineStoreUrl
+        featuredImage {
+          url
+        }
+        variants(first: 1) {
+          nodes {
+            id
+            title
+            price
+            compareAtPrice
+            sku
+            availableForSale
+            inventoryQuantity
+            inventoryPolicy
+            image {
+              url
+            }
+            inventoryItem {
+              tracked
+            }
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+`;
+
+/** In-memory product type cache (lives until process restart). */
+const productTypesCache = {
+  shop: null,
+  types: [],
+  loadedAt: null
+};
 
 function summarizeAdminGraphqlResponse(payload) {
   if (!payload || typeof payload !== "object") {
@@ -460,4 +527,264 @@ export async function fetchShopifyVariantsByIds(shop, variantIds = [], conversat
 
   console.log("[shopify] Resolved variants map size=", byGid.size);
   return byGid;
+}
+
+function normalizeProductType(value) {
+  const trimmed = String(value || "").trim();
+  return trimmed || null;
+}
+
+function buildProductTypeSearchQuery(productType, search = "") {
+  const value = normalizeProductType(productType);
+  if (!value) return "";
+
+  let typeQuery;
+  if (/[\s'"]/u.test(value)) {
+    const escaped = value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    typeQuery = `product_type:'${escaped}'`;
+  } else {
+    typeQuery = `product_type:${value}`;
+  }
+
+  const searchTerm = String(search || "").trim();
+  if (!searchTerm) {
+    return typeQuery;
+  }
+
+  return `${typeQuery} ${searchTerm}`;
+}
+
+async function openAdminSession(shopDomain) {
+  const token = getAdminAccessToken();
+  const authMode = token ? "access_token" : "offline_session";
+  let admin = null;
+
+  if (!token) {
+    const { unauthenticated } = await import("../shopify.server.js");
+    console.log("[shopify] Opening Admin API session for shop=", shopDomain);
+    ({ admin } = await unauthenticated.admin(shopDomain));
+  }
+
+  return { authMode, admin };
+}
+
+function normalizeProductNode(product) {
+  const variant = product?.variants?.nodes?.[0];
+  if (!variant?.id || !product?.id) {
+    return null;
+  }
+
+  return normalizeVariantNode({
+    ...variant,
+    product: {
+      id: product.id,
+      title: product.title,
+      handle: product.handle,
+      status: product.status,
+      vendor: product.vendor,
+      tags: product.tags,
+      descriptionHtml: product.descriptionHtml,
+      onlineStoreUrl: product.onlineStoreUrl,
+      featuredImage: product.featuredImage
+    }
+  });
+}
+
+/**
+ * Fetch all Shopify product types via Admin API (paginated).
+ */
+export async function fetchShopifyProductTypes(shop = null, conversationId = null) {
+  const shopDomain = resolveShopDomain(shop);
+
+  if (!shopDomain) {
+    throw new Error("Missing shop domain for Shopify Admin API product types");
+  }
+
+  if (!/\.myshopify\.com$/i.test(shopDomain)) {
+    throw new Error(
+      `Invalid shop for Admin API: "${shopDomain}". Expected *.myshopify.com`
+    );
+  }
+
+  const { authMode, admin } = await openAdminSession(shopDomain);
+  const types = [];
+  let cursor = null;
+  let page = 0;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    page += 1;
+    const payload = await callAdminGraphql({
+      shop: shopDomain,
+      query: PRODUCT_TYPES_QUERY,
+      variables: {
+        first: PRODUCT_TYPES_PAGE_SIZE,
+        after: cursor
+      },
+      operation: ADMIN_OPERATION_PRODUCT_TYPES,
+      authMode,
+      admin,
+      conversationId
+    });
+
+    const connection = payload.data?.productTypes;
+    const nodes = Array.isArray(connection?.nodes) ? connection.nodes : [];
+
+    for (const node of nodes) {
+      const normalized = normalizeProductType(node);
+      if (normalized) {
+        types.push(normalized);
+      }
+    }
+
+    const pageInfo = connection?.pageInfo;
+    console.log("[shopify] productTypes page", page, {
+      pageSize: nodes.length,
+      totalSoFar: types.length,
+      hasNextPage: Boolean(pageInfo?.hasNextPage)
+    });
+
+    hasNextPage = Boolean(pageInfo?.hasNextPage);
+    cursor = pageInfo?.endCursor || null;
+    if (!hasNextPage || !cursor) {
+      break;
+    }
+  }
+
+  const uniqueTypes = [...new Set(types)].sort((a, b) => a.localeCompare(b));
+  console.log("[shopify] productTypes loaded count=", uniqueTypes.length);
+  return { shop: shopDomain, types: uniqueTypes };
+}
+
+/**
+ * Fetch products for a Shopify product type via Admin API.
+ */
+export async function fetchShopifyProductsByProductType(
+  shop,
+  productType,
+  { conversationId = null, limit = PRODUCTS_BY_TYPE_PAGE_SIZE, search = "" } = {}
+) {
+  const shopDomain = resolveShopDomain(shop);
+  const normalizedType = normalizeProductType(productType);
+
+  if (!shopDomain) {
+    throw new Error("Missing shop domain for Shopify Admin API");
+  }
+
+  if (!normalizedType) {
+    throw new Error("product_type is required");
+  }
+
+  if (!/\.myshopify\.com$/i.test(shopDomain)) {
+    throw new Error(
+      `Invalid shop for Admin API: "${shopDomain}". Expected *.myshopify.com`
+    );
+  }
+
+  const searchQuery = buildProductTypeSearchQuery(normalizedType, search);
+  const { authMode, admin } = await openAdminSession(shopDomain);
+  const products = [];
+  let cursor = null;
+  let page = 0;
+  const pageSize = Math.min(Math.max(Number(limit) || PRODUCTS_BY_TYPE_PAGE_SIZE, 1), 50);
+
+  while (products.length < pageSize) {
+    page += 1;
+    const first = Math.min(pageSize - products.length, 50);
+
+    const payload = await callAdminGraphql({
+      shop: shopDomain,
+      query: PRODUCTS_BY_PRODUCT_TYPE_QUERY,
+      variables: {
+        first,
+        query: searchQuery,
+        after: cursor
+      },
+      operation: ADMIN_OPERATION_PRODUCTS_BY_TYPE,
+      authMode,
+      admin,
+      conversationId
+    });
+
+    const connection = payload.data?.products;
+    const nodes = Array.isArray(connection?.nodes) ? connection.nodes : [];
+
+    for (const node of nodes) {
+      const normalized = normalizeProductNode(node);
+      if (normalized) {
+        products.push(normalized);
+      }
+    }
+
+    const pageInfo = connection?.pageInfo;
+    console.log("[shopify] productsByType page", page, {
+      productType: normalizedType,
+      search,
+      searchQuery,
+      pageSize: nodes.length,
+      totalSoFar: products.length,
+      hasNextPage: Boolean(pageInfo?.hasNextPage)
+    });
+
+    if (!pageInfo?.hasNextPage || products.length >= pageSize) {
+      break;
+    }
+
+    cursor = pageInfo.endCursor || null;
+    if (!cursor) {
+      break;
+    }
+  }
+
+  return {
+    shop: shopDomain,
+    productType: normalizedType,
+    search: String(search || "").trim() || null,
+    searchQuery,
+    products
+  };
+}
+
+/**
+ * Warm product type cache at startup. Non-fatal on failure.
+ */
+export async function warmProductTypesAtStartup({ shop = null } = {}) {
+  if (!AppConfig.shopify.productTypesWarmupOnStart) {
+    console.log("[shopify] product types warmup skipped (PRODUCT_TYPES_WARMUP_ON_START=false)");
+    return { skipped: true, types: getCachedProductTypes() };
+  }
+
+  if (productTypesCache.loadedAt) {
+    return {
+      shop: productTypesCache.shop,
+      types: [...productTypesCache.types],
+      cached: true
+    };
+  }
+
+  const { shop: shopDomain, types } = await fetchShopifyProductTypes(shop);
+  productTypesCache.shop = shopDomain;
+  productTypesCache.types = types;
+  productTypesCache.loadedAt = Date.now();
+
+  return {
+    shop: shopDomain,
+    types: [...types]
+  };
+}
+
+/**
+ * Cached Shopify product types from the last successful startup fetch.
+ */
+export function getCachedProductTypes() {
+  return [...productTypesCache.types];
+}
+
+/**
+ * Whether a product type string exists in the startup cache (case-sensitive).
+ */
+export function hasCachedProductType(productType) {
+  const normalized = normalizeProductType(productType);
+  if (!normalized) return false;
+  return productTypesCache.types.includes(normalized);
 }
