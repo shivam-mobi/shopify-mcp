@@ -12,7 +12,9 @@ import { handleCartToolCall, isCartTool, buildActiveCartContextMessage } from ".
 import {
   getCartWrapperTools,
   isCartWrapperTool,
+  isCartMutationTool,
   callCartWrapperTool,
+  appendFinalCartSnapshot,
   filterCartToolsForLlm,
   buildShippingAddressHintMessage
 } from "../services/cart-tools.server";
@@ -271,6 +273,8 @@ async function handleChatSession({
     let finalMessage = { role: 'user', content: userMessage };
 
     while (finalMessage.stop_reason !== "end_turn") {
+      let cartMutatedThisTurn = false;
+
       finalMessage = await llmService.streamConversation(
         {
           messages: conversationHistory,
@@ -388,6 +392,10 @@ async function handleChatSession({
                   conversationId
                 );
 
+                if (isCartMutationTool(toolName) && !toolUseResponse?.error) {
+                  cartMutatedThisTurn = true;
+                }
+
                 const choiceOptions = toolService.extractFitmentChoiceOptions(toolUseResponse);
                 if (choiceOptions?.options?.length) {
                   fitmentOptionsToDisplay = choiceOptions;
@@ -425,6 +433,10 @@ async function handleChatSession({
           }
         }
       );
+
+      if (cartMutatedThisTurn) {
+        await appendFinalCartSnapshot(mcpClient, conversationId, conversationHistory);
+      }
     }
 
     // Signal end of turn

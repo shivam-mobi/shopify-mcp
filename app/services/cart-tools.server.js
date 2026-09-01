@@ -31,6 +31,16 @@ import AppConfig from "./config.server.js";
 
 const TOOL_FAILURE_USER_MESSAGE = AppConfig.errorMessages.toolFailure;
 
+export const CART_MUTATION_TOOL_NAMES = new Set([
+  "add_to_cart",
+  "remove_from_cart",
+  "clear_my_cart"
+]);
+
+export function isCartMutationTool(toolName) {
+  return CART_MUTATION_TOOL_NAMES.has(toolName);
+}
+
 const RATE_LIMIT_CUSTOMER_INSTRUCTION =
   `The customer was already shown: "${TOOL_FAILURE_USER_MESSAGE}" ` +
   "Do not add any other sentence. No follow-up questions, no 'let me know if you need something else', " +
@@ -448,6 +458,56 @@ async function removeFromCart(
     new_quantity: Math.max(0, nextQty),
     instruction: [qtyInstruction, summary.instruction].filter(Boolean).join(" ")
   });
+}
+
+/**
+ * After cart mutation tools finish in an assistant turn, inject one authoritative cart
+ * snapshot so the model does not reply from stale partial tool results.
+ */
+export async function appendFinalCartSnapshot(mcpClient, conversationId, conversationHistory) {
+  const cartResult = await callCartWrapperTool(mcpClient, conversationId, "get_my_cart", {});
+  const data = extractToolResultData(cartResult);
+  const snapshot = {
+    final_cart_snapshot: true,
+    empty: Boolean(data?.empty),
+    items: data?.items || [],
+    checkout_url: data?.checkout_url || null,
+    total: data?.total || null,
+    subtotal: data?.subtotal || null,
+    currency: data?.currency || null
+  };
+
+  const content =
+    "FINAL CART SNAPSHOT after cart updates in this turn. " +
+    "When replying to the customer, state EVERY product quantity ONLY from snapshot.items[].quantity below. " +
+    "Ignore items[] from earlier add_to_cart/remove_from_cart tool results in this same turn. " +
+    JSON.stringify(snapshot);
+
+  conversationHistory.push({ role: "system", content });
+  console.log("[cart-wrapper] final_cart_snapshot", {
+    conversationId,
+    itemCount: snapshot.items.length,
+    items: snapshot.items.map((item) => ({ title: item.title, quantity: item.quantity }))
+  });
+
+  return snapshot;
+}
+
+function extractToolResultData(toolResponse) {
+  if (toolResponse?.structuredContent) {
+    return toolResponse.structuredContent;
+  }
+
+  const text = toolResponse?.content?.find((block) => block.type === "text")?.text;
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 async function getMyCart(mcpClient, conversationId) {
@@ -2124,7 +2184,9 @@ function normalizeShippingAddress(input = {}, { userMessage, existingCart, saved
 export default {
   getCartWrapperTools,
   isCartWrapperTool,
+  isCartMutationTool,
   filterCartToolsForLlm,
   callCartWrapperTool,
+  appendFinalCartSnapshot,
   buildActiveCartWrapperContextMessage
 };
