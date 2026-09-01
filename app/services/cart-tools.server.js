@@ -52,6 +52,7 @@ export const CART_WRAPPER_TOOL_NAMES = [
   "remove_from_cart",
   "get_my_cart",
   "set_cart_shipping",
+  "remove_cart_shipping",
   "clear_my_cart"
 ];
 
@@ -79,9 +80,10 @@ export function getCartWrapperTools() {
     {
       name: "remove_from_cart",
       description:
-        "Reduce quantity or fully remove a cart product. DEFAULT reduces quantity by 1 (does NOT remove the whole line). " +
+        "Reduce quantity or remove ONE specific product line. Do NOT use for remove-all / empty-cart — use clear_my_cart instead. " +
+        "DEFAULT reduces quantity by 1 (does NOT remove the whole line). " +
         "For 'reduce 1 qty' / 'remove one' / 'decrease quantity': pass quantity:1 (or omit quantity — default is 1). " +
-        "ONLY to delete the product entirely (customer says remove this product / delete from cart), pass remove_all:true. " +
+        "ONLY to delete one product entirely (customer names one product), pass remove_all:true. " +
         "Use variant_id if known, otherwise product_title.",
       input_schema: {
         type: "object",
@@ -122,14 +124,15 @@ export function getCartWrapperTools() {
       name: "set_cart_shipping",
       description:
         "Set or update shipping address on checkout (replaces any previous address). Keeps all cart products. " +
-        "YOU must convert the customer's free-text address into Shopify fields before calling: " +
-        "split first/last name; use 2-letter state (New York/new yark → NY); use ISO country (USA → US). " +
-        "Phone: keep E.164 with + when the customer gives it (e.g. +13454656723). Do NOT strip the +. " +
-        "10-digit US numbers are also fine — the server will add +1. " +
-        "Prefer structured fields over address_text. Do NOT ask the customer to reformat — convert yourself. " +
-        "On success:false / shipping_saved:false: tell the customer the exact issues[] / shopify_errors content " +
-        "(e.g. \"Phone is invalid\"). Ask ONLY for the failed field(s). Never invent formatting rules like \"remove the +\". " +
-        "Never re-ask the full address list. Never claim it was saved.",
+        "YOU convert the customer's free-text into structured fields when you can (name, phone, street, city, state, ZIP, country). " +
+        "NEVER invent First/Last Name from street or building names (Cooper Square is NOT a person). NEVER invent or guess a phone number. " +
+        "If the customer only sent an address line, pass address fields only — leave name/phone blank if missing and the server will ask, OR reuse them when updating an address already on file. " +
+        "Use 2-letter US state (New York → NY) and ISO country (USA → US). Keep phone in E.164 with + when the customer gave it. " +
+        "Required before save: First Name, Last Name, Phone Number, Street Address, City, Postal Code, Country (State/Region too for US). " +
+        "The server validates ALL required fields before Shopify — never call with blank fields you can fill yourself. " +
+        "If success:false / shipping_saved:false, read issues[] and ask the customer ONLY for missing or invalid fields listed there. " +
+        "If empty_cart:true, ask the customer to add a product to their cart first — do NOT show a generic error. " +
+        "Never re-ask the full address form. Never claim it was saved.",
       input_schema: {
         type: "object",
         properties: {
@@ -138,32 +141,44 @@ export function getCartWrapperTools() {
             description:
               "Optional raw customer message. Prefer structured fields when you can convert the address yourself."
           },
-          first_name: { type: "string" },
-          last_name: { type: "string" },
+          first_name: { type: "string", description: "First Name (required)" },
+          last_name: { type: "string", description: "Last Name (required)" },
           phone_number: {
             type: "string",
             description:
-              "Buyer phone. Prefer E.164 with country code when provided (e.g. +13454656723). " +
-              "Keep the leading +. Also accept 10-digit US numbers (3454656723). Never strip +."
+              "Phone Number (required). Prefer E.164 with + when provided. 10-digit US numbers are also fine."
           },
-          street_address: { type: "string" },
+          street_address: { type: "string", description: "Street Address (required)" },
           extended_address: { type: "string" },
-          address_locality: { type: "string", description: "City" },
+          address_locality: { type: "string", description: "City (required)" },
           address_region: {
             type: "string",
-            description: "State/region. For US use 2-letter code (NY, CA). Convert full names yourself (New York → NY)."
+            description: "State/Region (required for US). Use 2-letter code (NY, CA)."
           },
-          postal_code: { type: "string" },
+          postal_code: { type: "string", description: "Postal Code / ZIP (required)" },
           address_country: {
             type: "string",
-            description: "ISO country code Shopify expects (US not USA). Convert yourself."
+            description: "Country (required). ISO 2-letter code (US not USA)."
           }
         }
       }
     },
     {
+      name: "remove_cart_shipping",
+      description:
+        "Remove the saved shipping address from checkout. Keeps cart products and the same checkout session. " +
+        "Use when the customer asks to remove, clear, or delete their shipping address. " +
+        "Do NOT call set_cart_shipping with empty fields.",
+      input_schema: {
+        type: "object",
+        properties: {}
+      }
+    },
+    {
       name: "clear_my_cart",
-      description: "Empty/cancel the current cart so the customer can start over.",
+      description:
+        "Empty the entire cart in one call. Use when the customer says remove all products, remove everything, " +
+        "empty cart, clear cart, delete all items, or start over. Do NOT call remove_from_cart repeatedly for this.",
       input_schema: {
         type: "object",
         properties: {}
@@ -197,6 +212,8 @@ export async function callCartWrapperTool(
       return getMyCart(mcpClient, conversationId);
     case "set_cart_shipping":
       return setCartShipping(mcpClient, conversationId, toolArgs, context);
+    case "remove_cart_shipping":
+      return removeCartShipping(mcpClient, conversationId);
     case "clear_my_cart":
       return clearMyCart(mcpClient, conversationId);
     default:
@@ -206,23 +223,34 @@ export async function callCartWrapperTool(
 
 /** Inject when the user's message looks like a shipping address. */
 export function buildShippingAddressHintMessage(userMessage) {
-  const parsed = parseAddressText(userMessage);
+  const text = extractAddressText(userMessage);
+  const parsed = parseAddressText(userMessage) || parseAddressLineOnly(text);
   if (!parsed) {
     return null;
   }
 
-  return {
-    role: "system",
-    content:
-      "The customer's latest message contains a shipping address. " +
-      "Call set_cart_shipping NOW with structured fields YOU convert for Shopify: " +
-      "first_name, last_name, phone_number, street_address, address_locality (city), " +
-      "address_region (2-letter US state — infer from city when clear, e.g. New York/new yark → NY), " +
-      "postal_code, address_country (US not USA). " +
-      "For phone_number: if the customer wrote +13454656723 (or any +country… number), pass it WITH the +. " +
-      "Do NOT strip +, and do NOT tell them to remove + or reformat the phone. " +
-      "Do NOT ask the customer to reformat or re-provide state/country when you can convert from their message."
-  };
+  const hasPhone = Boolean(extractPhoneFromText(text));
+  const hasName = Boolean(parseAddressText(userMessage)?.first_name || extractNamePartsFromText(text));
+  const addressOnly = Boolean(parseAddressLineOnly(text));
+
+  let content =
+    "The customer's latest message contains a shipping address. " +
+    "Call set_cart_shipping with structured fields YOU convert (street, city, state, ZIP, country). ";
+
+  if (addressOnly || (!hasName && !hasPhone)) {
+    content +=
+      "They did NOT give a person name or phone in this message — do NOT invent name from the street/building and do NOT guess a phone. " +
+      "Omit first_name, last_name, and phone_number (or leave blank). The server will ask ONLY for what is missing. ";
+  } else {
+    content +=
+      "Include first_name, last_name, and phone_number only if the customer provided them. ";
+  }
+
+  content +=
+    "Use 2-letter US state and ISO country (US). The server validates all fields before Shopify. " +
+    "If anything is missing or invalid, ask ONLY for those fields — never re-list the full form.";
+
+  return { role: "system", content };
 }
 
 export function buildActiveCartWrapperContextMessage(cartId) {
@@ -234,9 +262,10 @@ export function buildActiveCartWrapperContextMessage(cartId) {
     role: "system",
     content:
       "This conversation has an active cart. Use add_to_cart to add products or increase qty, " +
-      "remove_from_cart to reduce qty by 1 by default (pass remove_all:true only to delete the product), " +
-      "get_my_cart to show contents, set_cart_shipping for address, " +
-      "clear_my_cart to start over. Do NOT call create_cart, update_cart, or get_cart directly."
+      "remove_from_cart for one product or reduce qty (NOT for remove-all), " +
+      "clear_my_cart to remove all products / empty cart, " +
+      "get_my_cart to show contents, set_cart_shipping to save address, remove_cart_shipping to clear address. " +
+      "Do NOT call create_cart, update_cart, or get_cart directly."
   };
 }
 
@@ -439,52 +468,34 @@ async function getMyCart(mcpClient, conversationId) {
 async function setCartShipping(mcpClient, conversationId, address, context = {}) {
   const live = await fetchLiveCart(mcpClient, conversationId);
   if (!live?.cart?.line_items?.length) {
-    return toolError("Add products to the cart before setting a shipping address.");
+    return toolResult({
+      success: false,
+      shipping_saved: false,
+      empty_cart: true,
+      customer_message:
+        "Please add at least one product to your cart first — then I can save your shipping address.",
+      issues: ["Cart is empty. Add a product before setting a shipping address."],
+      instruction:
+        "The shipping address was NOT saved because the cart is empty. " +
+        "Ask the customer to add a product to their cart first, then call set_cart_shipping again. " +
+        "Do NOT show a generic tool failure message."
+    });
   }
+
+  const savedShipping = await getConversationShippingAddress(conversationId);
 
   const normalized = normalizeShippingAddress(address, {
     userMessage: context.userMessage,
-    existingCart: live.cart
+    existingCart: live.cart,
+    savedShipping
   });
 
-  if (normalized.missing.length > 0) {
-    const fieldLabels = {
-      first_name: "First Name",
-      last_name: "Last Name",
-      phone_number: "Phone Number",
-      street_address: "Street Address",
-      address_locality: "City",
-      address_region: "State/Region",
-      postal_code: "Postal Code",
-      address_country: "Country"
-    };
-    const missingLabels = normalized.missing.map((field) => fieldLabels[field] || field);
-    return toolResult({
-      success: false,
-      shipping_saved: false,
-      issues: missingLabels.map((label) => `${label} is required.`),
-      customer_message:
-        `I couldn't save your shipping address yet because some required details are missing: ${missingLabels.join(", ")}. ` +
-        "Please send those details and I'll update the address.",
-      instruction:
-        "The shipping address was NOT saved. Ask only for the missing fields listed in issues/customer_message. Never say the address was saved."
-    });
+  const validation = validateShippingAddressFields(normalized.address);
+  if (validation.issues.length > 0) {
+    return shippingValidationFailure(validation);
   }
 
   const resolved = normalized.address;
-
-  if (isUsLikeCountry(resolved.address_country) && !resolved.address_region) {
-    return toolResult({
-      success: false,
-      shipping_saved: false,
-      issues: ["State/Region is required."],
-      customer_message:
-        "I couldn't save your shipping address yet because the state is missing. " +
-        "Please tell me the state (for example FL or Florida) and I'll update it.",
-      instruction:
-        "The shipping address was NOT saved. Ask for state only. Never say the address was saved."
-    });
-  }
 
   resolved.phone_number = normalizePhoneNumber(
     resolved.phone_number,
@@ -494,26 +505,27 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
   const destination = buildShippingDestination(resolved);
   const cartLineItems = toWritableLineItems(live.cart.line_items);
 
-  await mcpClient.callTool("update_cart", buildPreservedCartUpdate({
-    cartId: live.cartId,
-    existingCart: live.cart,
-    incomingCart: {
-      context: {
-        address_country: resolved.address_country,
-        address_region: resolved.address_region,
-        postal_code: resolved.postal_code
+  try {
+    await mcpClient.callTool("update_cart", buildPreservedCartUpdate({
+      cartId: live.cartId,
+      existingCart: live.cart,
+      incomingCart: {
+        context: {
+          address_country: resolved.address_country,
+          address_region: resolved.address_region,
+          postal_code: resolved.postal_code
+        },
+        buyer: { phone_number: resolved.phone_number }
       },
-      buyer: { phone_number: resolved.phone_number }
-    },
-    incomingBuyer: { phone_number: resolved.phone_number },
-    lineItems: cartLineItems
-  }));
+      incomingBuyer: { phone_number: resolved.phone_number },
+      lineItems: cartLineItems
+    }));
 
-  const synced = await syncCheckoutWithCart(mcpClient, conversationId, live.cart, {
-    shipping: destination,
-    force: true,
-    allowCreate: true
-  });
+    const synced = await syncCheckoutWithCart(mcpClient, conversationId, live.cart, {
+      shipping: destination,
+      force: true,
+      allowCreate: true
+    });
 
   if (synced?.rate_limited || /rate limit|too many requests/i.test(String(synced?.error || ""))) {
     return toolResult({
@@ -643,6 +655,21 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
       }
     })
   );
+  } catch (error) {
+    console.warn("[cart-wrapper] set_cart_shipping failed", {
+      conversationId,
+      message: error.message
+    });
+    return toolResult({
+      success: false,
+      shipping_saved: false,
+      issues: [String(error.message || "Could not save shipping address.")],
+      customer_message:
+        "I couldn't save your shipping address right now. Please check the details and try again.",
+      instruction:
+        "Shipping was NOT saved. Tell the customer using issues if helpful. Never say it was saved."
+    });
+  }
 }
 
 /** Shopify MCP marks checkout as required even when cart_id is provided. */
@@ -1436,6 +1463,95 @@ async function summarizeCartWithShipping(
   });
 }
 
+async function stripCheckoutShipping(mcpClient, checkoutId, cart) {
+  try {
+    const getResponse = await mcpClient.callTool("get_checkout", { id: checkoutId });
+    const existing = extractCheckoutPayload(getResponse);
+    if (!existing?.id) {
+      return { error: "checkout not found" };
+    }
+
+    const lineItems = buildUpdateCheckoutLineItems(cart.line_items, existing.line_items);
+    const updateResponse = await mcpClient.callTool("update_checkout", {
+      id: checkoutId,
+      checkout: {
+        ...(lineItems.length ? { line_items: lineItems } : {}),
+        fulfillment: { methods: [] }
+      }
+    });
+
+    const checkout = extractCheckoutPayload(updateResponse) || existing;
+    const shippingAddress = extractShippingDestination(checkout);
+    const checkoutUrl = await fetchFreshCheckoutUrl(
+      mcpClient,
+      checkout.id || checkoutId,
+      extractContinueUrl(updateResponse) || checkout.continue_url || null
+    );
+
+    return {
+      checkout,
+      checkoutUrl,
+      shippingAddress,
+      validationErrors: extractCheckoutValidationErrors(updateResponse)
+    };
+  } catch (error) {
+    return { error: error.message, ...parseShopifyTransportError(error) };
+  }
+}
+
+async function removeCartShipping(mcpClient, conversationId) {
+  const savedShipping = await getConversationShippingAddress(conversationId);
+  const checkoutId = await getConversationCheckoutId(conversationId);
+
+  if (!savedShipping?.street_address && !checkoutId) {
+    return toolResult({
+      success: true,
+      shipping_removed: true,
+      message: "No shipping address was on file.",
+      instruction: "Confirm there was no saved shipping address. Cart items are unchanged."
+    });
+  }
+
+  await clearConversationShippingAddress(conversationId);
+
+  const live = await fetchLiveCart(mcpClient, conversationId);
+  let checkoutUrl = null;
+
+  if (checkoutId && live?.cart) {
+    const stripped = await stripCheckoutShipping(mcpClient, checkoutId, live.cart);
+    if (stripped?.checkout?.id) {
+      await setConversationCheckoutId(conversationId, stripped.checkout.id);
+      checkoutUrl = stripped.checkoutUrl;
+    } else {
+      console.warn("[cart-wrapper] strip checkout shipping failed", {
+        conversationId,
+        checkoutId,
+        error: stripped?.error
+      });
+    }
+  }
+
+  if (live?.cart) {
+    return toolResult({
+      ...formatCartSummary(live.cart, live.raw, { checkoutUrl }),
+      shipping_removed: true,
+      shipping_saved: false,
+      instruction: checkoutUrl
+        ? "Shipping address was removed from checkout. Cart items are unchanged. " +
+          "You may share checkout_url — the customer will enter their address on the Shopify checkout page."
+        : "Shipping address was removed. Cart items are unchanged. " +
+          "Do NOT share a checkout link until the customer sets a new shipping address."
+    });
+  }
+
+  return toolResult({
+    success: true,
+    shipping_removed: true,
+    message: "Shipping address removed.",
+    instruction: "Confirm shipping was removed. Cart items are unchanged if any remain."
+  });
+}
+
 async function clearMyCart(mcpClient, conversationId) {
   const cartId = await getConversationCartId(conversationId);
   const checkoutId = await getConversationCheckoutId(conversationId);
@@ -1530,6 +1646,17 @@ function resolveRemoveVariantId(lineItems, { variant_id, product_title }) {
   return best.line.item?.id || null;
 }
 
+const SHIPPING_FIELD_LABELS = {
+  first_name: "First Name",
+  last_name: "Last Name",
+  phone_number: "Phone Number",
+  street_address: "Street Address",
+  address_locality: "City",
+  address_region: "State/Region",
+  postal_code: "Postal Code",
+  address_country: "Country"
+};
+
 const SHIPPING_REQUIRED_FIELDS = [
   "first_name",
   "last_name",
@@ -1540,14 +1667,307 @@ const SHIPPING_REQUIRED_FIELDS = [
   "address_country"
 ];
 
+function isBlank(value) {
+  return !String(value ?? "").trim();
+}
+
+function isEmailLikeName(firstName, lastName) {
+  const first = String(firstName || "").trim().toLowerCase();
+  const last = String(lastName || "").trim().toLowerCase();
+  return first.includes("@") || last.includes("@") || /\.(com|net|org|io)$/i.test(last);
+}
+
+function hasValidPhoneDigits(phone) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  return digits.length >= 10 && digits.length <= 15;
+}
+
+function isPlaceholderPhone(phone) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (!digits) return false;
+  if (/^1?(234567890|1234567890|5555555555|9999999999|0000000000)$/.test(digits)) return true;
+  if (/^(\d)\1+$/.test(digits)) return true;
+  return false;
+}
+
+function extractPhoneFromText(text) {
+  const match = String(text || "").match(
+    /(\+\d{1,3}[\s\-().]*\d[\d\s\-().]{6,}\d|\b\d{3}[\s\-().]*\d{3}[\s\-().]*\d{4}\b)/
+  );
+  return match ? match[1].trim() : null;
+}
+
+function extractNamePartsFromText(text) {
+  const raw = extractAddressText(text);
+  if (!raw) return null;
+
+  const phoneMatch = raw.match(/(\+?\d[\d\s\-().]{8,}\d)/);
+  let nameSegment = phoneMatch ? raw.slice(0, phoneMatch.index) : raw;
+  nameSegment = nameSegment.replace(/[,\s]+$/, "").trim();
+
+  if (!nameSegment || /^\d+\s/.test(nameSegment)) return null;
+
+  const parts = nameSegment.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2 && parts.length <= 5 && /^[A-Za-z]/.test(parts[0])) {
+    return {
+      first_name: parts[0],
+      last_name: parts.slice(1).join(" ")
+    };
+  }
+
+  return null;
+}
+
+function isNameDerivedFromStreet(firstName, lastName, streetAddress) {
+  const street = String(streetAddress || "").toLowerCase();
+  const first = String(firstName || "").trim().toLowerCase();
+  const last = String(lastName || "").trim().toLowerCase();
+  if (!first || !last || !street) return false;
+  if (first.length < 2 || last.length < 2) return false;
+  return street.includes(first) && street.includes(last);
+}
+
+function sanitizeShippingFromContext(address = {}, userMessage = "", savedShipping = null) {
+  const merged = { ...address };
+  const text = extractAddressText(userMessage);
+  const phoneInText = extractPhoneFromText(text);
+  const nameFromText = extractNamePartsFromText(text);
+  const addressOnly = Boolean(parseAddressLineOnly(text));
+  const hasSavedContact = Boolean(
+    savedShipping?.phone_number || savedShipping?.first_name || savedShipping?.last_name
+  );
+
+  const addressFromLine = parseAddressLineOnly(text);
+  if (addressFromLine) {
+    for (const [key, value] of Object.entries(addressFromLine)) {
+      if (value && isBlank(merged[key])) {
+        merged[key] = value;
+      }
+    }
+  }
+
+  if (nameFromText) {
+    merged.first_name = nameFromText.first_name;
+    merged.last_name = nameFromText.last_name;
+  } else if (isNameDerivedFromStreet(merged.first_name, merged.last_name, merged.street_address)) {
+    merged.first_name = "";
+    merged.last_name = "";
+  }
+
+  if (phoneInText) {
+    merged.phone_number = phoneInText;
+  } else if (isPlaceholderPhone(merged.phone_number)) {
+    merged.phone_number = "";
+  } else if (addressOnly && !phoneInText && !hasSavedContact && !isBlank(merged.phone_number)) {
+    // First-time address-only message — do not trust a phone the model guessed.
+    merged.phone_number = "";
+  }
+
+  return merged;
+}
+
+function applySavedShippingDefaults(address = {}, savedShipping = null) {
+  if (!savedShipping) {
+    return address;
+  }
+
+  const merged = { ...address };
+  for (const field of ["first_name", "last_name", "phone_number"]) {
+    if (isBlank(merged[field]) && !isBlank(savedShipping[field])) {
+      merged[field] = savedShipping[field];
+    }
+  }
+
+  return merged;
+}
+
+function normalizeCountryCode(country) {
+  const raw = String(country || "").trim();
+  if (!raw) return raw;
+
+  const upper = raw.toUpperCase();
+  if (upper === "USA" || upper === "UNITED STATES" || upper === "U.S." || upper === "U.S.A.") {
+    return "US";
+  }
+
+  return upper.length === 2 ? upper : raw;
+}
+
+function validateShippingAddressFields(address = {}) {
+  const missing = SHIPPING_REQUIRED_FIELDS.filter((field) => isBlank(address[field]));
+  const missingLabels = missing.map((field) => SHIPPING_FIELD_LABELS[field] || field);
+  const issues = missingLabels.map((label) => `${label} is required.`);
+
+  if (!isBlank(address.first_name) && String(address.first_name).trim().length < 2) {
+    issues.push("First Name looks too short.");
+  }
+  if (!isBlank(address.last_name) && String(address.last_name).trim().length < 2) {
+    issues.push("Last Name looks too short.");
+  }
+  if (!isBlank(address.first_name) && !isBlank(address.last_name) && isEmailLikeName(address.first_name, address.last_name)) {
+    issues.push("First and last name look invalid — do not use an email address as the name.");
+  }
+
+  if (!isBlank(address.phone_number) && !hasValidPhoneDigits(address.phone_number)) {
+    issues.push("Phone Number looks invalid — include a valid number with area code.");
+  }
+  if (!isBlank(address.phone_number) && isPlaceholderPhone(address.phone_number)) {
+    issues.push("Phone Number looks invalid — do not use placeholder numbers.");
+  }
+
+  if (!isBlank(address.street_address) && String(address.street_address).trim().length < 3) {
+    issues.push("Street Address looks incomplete.");
+  }
+
+  if (!isBlank(address.address_locality) && String(address.address_locality).trim().length < 2) {
+    issues.push("City looks incomplete.");
+  }
+
+  if (!isBlank(address.postal_code) && String(address.postal_code).trim().length < 3) {
+    issues.push("Postal Code looks incomplete.");
+  }
+
+  if (!isBlank(address.address_country)) {
+    const country = normalizeCountryCode(address.address_country);
+    if (!/^[A-Z]{2}$/.test(country)) {
+      issues.push("Country looks invalid — use a 2-letter ISO code (for example US).");
+    }
+  }
+
+  if (isUsLikeCountry(address.address_country)) {
+    if (isBlank(address.address_region) && !missing.includes("address_region")) {
+      issues.push("State/Region is required.");
+    }
+    if (!isBlank(address.address_region) && !/^[A-Za-z]{2}$/.test(String(address.address_region).trim())) {
+      issues.push("State/Region looks invalid — use a 2-letter US code (for example NY).");
+    }
+    if (!isBlank(address.postal_code) && !/^\d{5}(?:-\d{4})?$/.test(String(address.postal_code).trim())) {
+      issues.push("Postal Code looks invalid for a US address.");
+    }
+  }
+
+  return {
+    missing,
+    missingLabels,
+    issues: [...new Set(issues)]
+  };
+}
+
+function shippingValidationFailure(validation) {
+  const failedLabels = validation.issues
+    .map((issue) => issue.replace(/ is required\.?$| looks .*$/i, "").trim())
+    .filter(Boolean);
+  const uniqueFailed = [...new Set(
+    validation.missingLabels.length
+      ? validation.missingLabels
+      : failedLabels
+  )];
+
+  const customerMessage = uniqueFailed.length
+    ? `I couldn't save your shipping address yet. Please provide: ${uniqueFailed.join(", ")}.`
+    : validation.issues[0] || "Some shipping details look invalid.";
+
+  return toolResult({
+    success: false,
+    shipping_saved: false,
+    issues: validation.issues,
+    missing_fields: validation.missingLabels,
+    customer_message: customerMessage,
+    instruction:
+      "The shipping address was NOT saved. Ask the customer ONLY for the fields in missing_fields or issues. " +
+      "Do NOT re-list the full address form. Never say the address was saved."
+  });
+}
+
 function extractAddressText(text) {
   const raw = String(text || "").trim();
   if (!raw) {
     return raw;
   }
 
-  const prefixPattern = /^(?:please\s+)?(?:add|set|update|change)(?:\s+this)?\s+(?:the\s+)?(?:shipping\s+)?address\s*:+\s*/i;
-  return raw.replace(prefixPattern, "").trim() || raw;
+  let cleaned = raw.replace(
+    /^(?:please\s+)?(?:could you\s+(?:pls\s+)?|pls\s+)?(?:add|set|update|change)(?:\s+this)?\s+(?:the\s+)?(?:shipping\s+)?address\s*:+\s*/i,
+    ""
+  ).trim();
+  cleaned = cleaned.replace(
+    /^(?:please\s+|could you\s+(?:pls\s+)?|pls\s+)?(?:update|change|set)\s+/i,
+    ""
+  ).trim();
+
+  return cleaned || raw;
+}
+
+/** Street/city/state/ZIP/country lines without a person name or phone. */
+export function parseAddressLineOnly(text) {
+  const raw = extractAddressText(text);
+  if (!raw || extractPhoneFromText(raw)) {
+    return null;
+  }
+
+  const parts = raw.split(",").map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 3) {
+    return null;
+  }
+
+  const zipOnlyPattern = /^\d{5}(?:-\d{4})?$/;
+  const stateZipPattern = /^([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$/;
+  const stateOnlyPattern = /^[A-Za-z]{2}$/;
+
+  let tail = [...parts];
+  let address_country = null;
+  const lastPart = tail[tail.length - 1];
+  if (
+    !zipOnlyPattern.test(lastPart) &&
+    !stateZipPattern.test(lastPart) &&
+    !stateOnlyPattern.test(lastPart)
+  ) {
+    address_country = normalizeCountryCode(lastPart);
+    tail = tail.slice(0, -1);
+  }
+
+  if (tail.length < 2) {
+    return null;
+  }
+
+  let postal_code = null;
+  let address_region = null;
+  let address_locality = null;
+  let streetParts = [];
+
+  const tailEnd = tail[tail.length - 1];
+  if (stateZipPattern.test(tailEnd)) {
+    const match = tailEnd.match(stateZipPattern);
+    address_region = match[1].toUpperCase();
+    postal_code = match[2];
+    tail = tail.slice(0, -1);
+  } else if (zipOnlyPattern.test(tailEnd)) {
+    postal_code = tailEnd;
+    tail = tail.slice(0, -1);
+    if (tail.length > 0 && stateOnlyPattern.test(tail[tail.length - 1])) {
+      address_region = tail[tail.length - 1].toUpperCase();
+      tail = tail.slice(0, -1);
+    }
+  } else {
+    return null;
+  }
+
+  if (tail.length < 1) {
+    return null;
+  }
+
+  address_locality = tail[tail.length - 1];
+  streetParts = tail.length === 1 ? [tail[0]] : tail.slice(0, -1);
+  if (!streetParts.length) {
+    return null;
+  }
+
+  return {
+    street_address: streetParts.join(", "),
+    address_locality,
+    address_region: address_region || null,
+    postal_code,
+    address_country: address_country || "US"
+  };
 }
 
 export function parseAddressText(text) {
@@ -1655,7 +2075,7 @@ function extractExistingShipping(cart) {
   };
 }
 
-function normalizeShippingAddress(input = {}, { userMessage, existingCart } = {}) {
+function normalizeShippingAddress(input = {}, { userMessage, existingCart, savedShipping = null } = {}) {
   const merged = { ...input };
   delete merged.address_text;
 
@@ -1663,34 +2083,39 @@ function normalizeShippingAddress(input = {}, { userMessage, existingCart } = {}
   let parsedFromText = false;
 
   for (const text of textSources) {
-    const parsed = parseAddressText(text);
-    if (!parsed) {
-      continue;
-    }
-
-    parsedFromText = true;
-    for (const [key, value] of Object.entries(parsed)) {
-      if (value && !merged[key]) {
-        merged[key] = value;
+    for (const parsed of [parseAddressText(text), parseAddressLineOnly(text)].filter(Boolean)) {
+      parsedFromText = true;
+      for (const [key, value] of Object.entries(parsed)) {
+        if (value && isBlank(merged[key])) {
+          merged[key] = value;
+        }
       }
     }
   }
 
   const existingShipping = extractExistingShipping(existingCart);
   for (const [key, value] of Object.entries(existingShipping)) {
-    if (value && !merged[key]) {
+    if (value && isBlank(merged[key])) {
       merged[key] = value;
     }
   }
 
-  if (merged.address_country) {
-    merged.address_country = String(merged.address_country).trim();
+  const primaryText = String(userMessage || input.address_text || "").trim();
+  let sanitized = sanitizeShippingFromContext(merged, primaryText, savedShipping);
+  sanitized = applySavedShippingDefaults(sanitized, savedShipping);
+
+  if (sanitized.address_country) {
+    sanitized.address_country = normalizeCountryCode(sanitized.address_country);
   }
 
-  const missing = SHIPPING_REQUIRED_FIELDS.filter((field) => !String(merged[field] || "").trim());
+  if (sanitized.address_region) {
+    sanitized.address_region = String(sanitized.address_region).trim().toUpperCase();
+  }
+
+  const missing = SHIPPING_REQUIRED_FIELDS.filter((field) => isBlank(sanitized[field]));
 
   return {
-    address: merged,
+    address: sanitized,
     missing,
     parsedFromText
   };
