@@ -4,7 +4,7 @@
  */
 import { saveMessage } from "../db.server";
 import AppConfig from "./config.server";
-import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId } from "./product-compare.server.js";
+import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId, resolveProductId } from "./product-compare.server.js";
 
 /**
  * Creates a tool service instance
@@ -148,7 +148,9 @@ export function createToolService() {
       source: toolName,
       count: products.length,
       best_pick_variant_id: listingMeta.best_pick_variant_id,
-      first_product_variant_id: listingMeta.first_product_variant_id
+      best_pick_product_id: listingMeta.best_pick_product_id,
+      first_product_variant_id: listingMeta.first_product_variant_id,
+      first_product_product_id: listingMeta.first_product_product_id
     });
 
     return [{
@@ -241,11 +243,14 @@ export function createToolService() {
       "";
 
     const normalizedVariantId = resolveProductVariantId({ variantId, variant_id: product.variant_id, id: variantId });
+    const normalizedProductId = resolveProductId(product);
 
     return {
       id: normalizedVariantId || product.product_id || product.id || product.partNumber || `product-${Math.random().toString(36).substring(7)}`,
       variantId: normalizedVariantId,
       variant_id: normalizedVariantId,
+      product_id: normalizedProductId,
+      productId: normalizedProductId,
       title: product.title || product.partTypeName || product.name || "Product",
       price,
       priceAmount: typeof product.priceAmount === "number" ? product.priceAmount : null,

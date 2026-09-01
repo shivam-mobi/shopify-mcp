@@ -162,6 +162,7 @@ export async function fetchProductList(
       compareAtPrice: live.compareAtPrice || null,
       handle: live.handle ?? "",
       variantId: live.variantId || gid,
+      productId: live.productId || null,
       url: live.url || "",
       availableForSale: live.availableForSale === true,
       inStock: live.inStock === true,

@@ -20,6 +20,7 @@ const VARIANTS_BY_IDS_QUERY = `#graphql
           tracked
         }
         product {
+          id
           title
           handle
           status
@@ -196,6 +197,31 @@ export function toVariantGid(variantId) {
   return null;
 }
 
+/**
+ * Normalize values to Shopify Product GIDs.
+ */
+export function toProductGid(productId) {
+  if (productId == null || productId === "") return null;
+
+  const value = String(productId).trim();
+  if (!value) return null;
+
+  if (value.startsWith("gid://shopify/Product/")) {
+    return value;
+  }
+
+  if (/^\d+$/.test(value)) {
+    return `gid://shopify/Product/${value}`;
+  }
+
+  const match = value.match(/Product\/(\d+)/);
+  if (match) {
+    return `gid://shopify/Product/${match[1]}`;
+  }
+
+  return null;
+}
+
 function getStorefrontBaseUrl() {
   const raw = (
     process.env.STOREFRONT_URL ||
@@ -276,6 +302,7 @@ function normalizeVariantNode(node) {
 
   return {
     variantId: String(node.id),
+    productId: product.id ? String(product.id) : null,
     sku,
     title,
     price: formatPrice(node.price),

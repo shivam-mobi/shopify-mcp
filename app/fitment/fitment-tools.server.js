@@ -50,6 +50,7 @@ function formatProducts(products, vehicle, qualifiers) {
     description: product.note,
     url: product.url,
     variantId: product.variantId,
+    productId: product.productId || null,
     partNumber: product.partNumber,
     sku: product.sku || product.partNumber,
     handle: product.handle,
