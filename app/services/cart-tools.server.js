@@ -710,6 +710,22 @@ function buildShippingDestination(resolved) {
   };
 }
 
+function buildCheckoutFulfillment(destination, lineItemIds = []) {
+  if (!destination?.street_address) {
+    return null;
+  }
+
+  return {
+    methods: [
+      {
+        type: "shipping",
+        ...(lineItemIds.length ? { line_item_ids: lineItemIds } : {}),
+        destinations: [destination]
+      }
+    ]
+  };
+}
+
 function normalizePhoneNumber(phone, country) {
   const raw = String(phone || "").trim();
   if (!raw) return raw;
@@ -818,6 +834,12 @@ async function fetchVerifiedCheckoutShipping(mcpClient, checkoutId) {
   }
 }
 
+/** Always read continue_url from the checkout we just synced — not stale cart URLs. */
+async function fetchFreshCheckoutUrl(mcpClient, checkoutId, fallbackUrl = null) {
+  const verified = await fetchVerifiedCheckoutShipping(mcpClient, checkoutId);
+  return verified?.checkoutUrl || fallbackUrl;
+}
+
 function isUsLikeCountry(country) {
   const value = String(country || "").trim().toUpperCase();
   return value === "US" || value === "USA" || value === "UNITED STATES";
@@ -885,16 +907,23 @@ async function syncCheckoutWithCart(
         );
       }
 
+      const checkoutUrl = await fetchFreshCheckoutUrl(
+        mcpClient,
+        updated.checkout.id,
+        updated.checkoutUrl
+      );
+
       console.log("[cart-wrapper] updated existing checkout", {
         conversationId,
         checkoutId: updated.checkout.id,
         hasShipping: Boolean(updated.shippingAddress?.street_address),
-        validationErrors
+        validationErrors,
+        checkoutUrl
       });
 
       return {
         checkoutId: updated.checkout.id,
-        checkoutUrl: updated.checkoutUrl,
+        checkoutUrl,
         shippingAddress: updated.shippingAddress || null,
         checkout: updated.checkout,
         validationErrors,
@@ -967,9 +996,15 @@ async function syncCheckoutWithCart(
     validationErrors
   });
 
+  const checkoutUrl = await fetchFreshCheckoutUrl(
+    mcpClient,
+    created.checkout.id,
+    created.checkoutUrl
+  );
+
   return {
     checkoutId: created.checkout.id,
-    checkoutUrl: created.checkoutUrl,
+    checkoutUrl,
     shippingAddress: created.shippingAddress || null,
     checkout: created.checkout,
     validationErrors,
@@ -1006,19 +1041,15 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
 
     if (destination) {
       const lineItemIds = lineItems.map((line) => line.id).filter(Boolean);
-      checkoutBody.fulfillment = {
-        methods: [
-          {
-            type: "shipping",
-            ...(lineItemIds.length ? { line_item_ids: lineItemIds } : {}),
-            destinations: [destination]
-          }
-        ]
-      };
+      checkoutBody.fulfillment = buildCheckoutFulfillment(destination, lineItemIds);
     } else if (existing.fulfillment) {
       // Preserve existing fulfillment when only items change.
       checkoutBody.fulfillment = existing.fulfillment;
     }
+
+    const initialFulfillmentLineIds = destination
+      ? lineItems.map((line) => line.id).filter(Boolean)
+      : [];
 
     const updateResponse = await mcpClient.callTool("update_checkout", {
       id: checkoutId,
@@ -1039,7 +1070,7 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
       };
     }
 
-    const checkout = checkoutFromUpdate || existing;
+    let checkout = checkoutFromUpdate || existing;
     if (!checkout?.id) {
       return {
         error: extractToolErrorText(updateResponse) || "update_checkout failed",
@@ -1047,48 +1078,46 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
       };
     }
 
-    // If we sent destination but response omitted it, run a second update with fresh line ids.
+    // New cart lines get checkout ids only after the first update — re-attach
+    // shipping to ALL line ids so the address is not dropped.
     let shippingAddress = extractShippingDestination(checkout);
     let validationErrors = [
       ...responseErrors,
       ...extractCheckoutValidationErrors(checkout)
     ];
 
-    if (destination && !shippingAddress?.street_address && responseErrors.length === 0) {
-      const lineItemIds = (checkout.line_items || [])
-        .map((line) => line.id)
-        .filter(Boolean);
-      const retryResponse = await mcpClient.callTool("update_checkout", {
-        id: checkout.id,
-        checkout: {
-          line_items: buildCheckoutLineItems(checkout.line_items),
-          buyer: { phone_number: destination.phone_number },
-          fulfillment: {
-            methods: [
-              {
-                type: "shipping",
-                line_item_ids: lineItemIds,
-                destinations: [destination]
-              }
-            ]
+    if (destination) {
+      const allLineItems = buildCheckoutLineItems(checkout.line_items);
+      const allLineIds = allLineItems.map((line) => line.id).filter(Boolean);
+      const needsFulfillmentRefresh =
+        allLineIds.length > initialFulfillmentLineIds.length ||
+        !shippingAddress?.street_address;
+
+      if (needsFulfillmentRefresh && allLineIds.length > 0) {
+        const retryResponse = await mcpClient.callTool("update_checkout", {
+          id: checkout.id,
+          checkout: {
+            line_items: allLineItems,
+            buyer: { phone_number: destination.phone_number },
+            fulfillment: buildCheckoutFulfillment(destination, allLineIds)
           }
-        }
-      });
-      const retryErrors = extractCheckoutValidationErrors(retryResponse);
-      const retried = extractCheckoutPayload(retryResponse) || checkout;
-      shippingAddress = extractShippingDestination(retried);
-      validationErrors = [
-        ...validationErrors,
-        ...retryErrors,
-        ...extractCheckoutValidationErrors(retried)
-      ];
-      return {
-        checkout: retried,
-        checkoutUrl: extractContinueUrl(retryResponse) || retried.continue_url,
-        shippingAddress: shippingAddress || null,
-        validationErrors,
-        error: retryErrors[0]?.readable || null
-      };
+        });
+        const retryErrors = extractCheckoutValidationErrors(retryResponse);
+        const retried = extractCheckoutPayload(retryResponse) || checkout;
+        shippingAddress = extractShippingDestination(retried);
+        validationErrors = [
+          ...validationErrors,
+          ...retryErrors,
+          ...extractCheckoutValidationErrors(retried)
+        ];
+        return {
+          checkout: retried,
+          checkoutUrl: extractContinueUrl(retryResponse) || retried.continue_url,
+          shippingAddress: shippingAddress || null,
+          validationErrors,
+          error: retryErrors[0]?.readable || null
+        };
+      }
     }
 
     return {
@@ -1108,8 +1137,15 @@ async function createCheckoutFromCart(mcpClient, cart, destination) {
     if (destination?.phone_number) {
       overrides.buyer = { phone_number: destination.phone_number };
     }
-    // Do not attach fulfillment on create_checkout — destinations stick reliably
-    // only after update_checkout with checkout line_item_ids.
+    if (cart?.context) {
+      overrides.context = cart.context;
+    }
+    // Include shipping destination on create when available so Shopify does not
+    // return delivery_address_required for phone-only checkout. update_checkout
+    // below still binds line_item_ids once checkout line ids exist.
+    if (destination?.street_address) {
+      overrides.fulfillment = buildCheckoutFulfillment(destination);
+    }
 
     const response = await mcpClient.callTool(
       "create_checkout",
@@ -1138,19 +1174,11 @@ async function createCheckoutFromCart(mcpClient, cart, destination) {
       const updateResponse = await mcpClient.callTool("update_checkout", {
         id: checkout.id,
         checkout: {
-          line_items: lineItems,
+          ...(lineItems.length ? { line_items: lineItems } : {}),
           buyer: destination.phone_number
             ? { phone_number: destination.phone_number }
             : undefined,
-          fulfillment: {
-            methods: [
-              {
-                type: "shipping",
-                ...(lineItemIds.length ? { line_item_ids: lineItemIds } : {}),
-                destinations: [destination]
-              }
-            ]
-          }
+          fulfillment: buildCheckoutFulfillment(destination, lineItemIds)
         }
       });
       const updateErrors = extractCheckoutValidationErrors(updateResponse);

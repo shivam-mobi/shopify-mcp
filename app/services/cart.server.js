@@ -1036,11 +1036,7 @@ export function formatCartSummary(
   const totalEntry = cart.totals?.find((t) => t.type === "total");
   const subtotalEntry = cart.totals?.find((t) => t.type === "subtotal");
 
-  const resolvedCheckoutUrl =
-    checkoutUrl ||
-    rawResponse?.structuredContent?.checkout_url ||
-    rawResponse?.checkout_url ||
-    null;
+  const resolvedCheckoutUrl = checkoutUrl || null;
 
   const summary = {
     success: true,
@@ -1050,17 +1046,21 @@ export function formatCartSummary(
     currency: cart.currency || "USD",
     subtotal: formatMoney(subtotalEntry?.amount, cart.currency),
     total: formatMoney(totalEntry?.amount, cart.currency),
-    continue_url: cart.continue_url || null,
     checkout_url: resolvedCheckoutUrl,
     instruction:
       "Base your reply ONLY on this summary. Do not claim items were added/removed unless they appear here."
   };
 
+  // Cart continue_url can point to an older checkout session — never use it when checkout_url exists.
+  if (!resolvedCheckoutUrl && cart.continue_url) {
+    summary.continue_url = cart.continue_url;
+  }
+
   if (shippingAddress) {
     summary.shipping_saved = true;
     summary.shipping_address = shippingAddress;
     summary.instruction = resolvedCheckoutUrl
-      ? "Shipping was saved successfully ONLY because shipping_saved is true. Confirm shipping_address and share checkout_url. Do not say there was an error."
+      ? "Shipping was saved successfully ONLY because shipping_saved is true. Confirm shipping_address and share checkout_url ONLY — never use continue_url. Do not say there was an error."
       : "Shipping address is on file (shipping_saved is true) but checkout_url is not available. Confirm cart items/totals only — do NOT invent a checkout link and do NOT use continue_url as a checkout/payment link.";
   }
 
