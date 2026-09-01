@@ -5,24 +5,30 @@
 import { toVariantGid } from "./shopify-products.server.js";
 
 export const PRODUCT_LISTING_CART_INSTRUCTION =
-  "When the customer asks to add the best pick, best product, first product, #1, or top recommendation, " +
-  "call add_to_cart with best_pick_variant_id (same as first_product_variant_id) from THIS tool result only. " +
+  "When the customer asks to add the best pick, best product, or top recommendation, " +
+  "call add_to_cart with best_pick_variant_id from THIS tool result only (the product where is_best_pick is true — may differ from position 1). " +
+  "For 'first product' or '#1', use first_product_variant_id (position 1 in the list). " +
   "For 'add product #2' or 'second one', use the product where position=2 and pass its variant_id. " +
   "Never use variant_ids from older product searches earlier in this conversation.";
 
-/** Vendors preferred for best pick when multiple products are in stock. */
-const PREFERRED_BEST_PICK_VENDORS = ["FEBREZE"];
+/** Vendors shown first in the product list (display order only — not used for best pick). */
+const PREFERRED_DISPLAY_FIRST_VENDORS = ["FEBREZE"];
 
 export function normalizeVendorName(vendor = "") {
   return String(vendor || "").trim().toUpperCase();
 }
 
-export function isPreferredBestPickVendor(vendor = "") {
+export function isPreferredDisplayFirstVendor(vendor = "") {
   const normalized = normalizeVendorName(vendor);
   if (!normalized) return false;
-  return PREFERRED_BEST_PICK_VENDORS.some(
+  return PREFERRED_DISPLAY_FIRST_VENDORS.some(
     (preferred) => normalized === preferred || normalized.includes(preferred)
   );
+}
+
+/** @deprecated Use isPreferredDisplayFirstVendor — kept for callers that only need display ordering. */
+export function isPreferredBestPickVendor(vendor = "") {
+  return isPreferredDisplayFirstVendor(vendor);
 }
 
 function normalizeTagList(tags) {
@@ -121,7 +127,6 @@ export function scoreProductForComparison(product = {}) {
   let score = 0;
 
   if (product.inStock === true && product.availableForSale !== false) score += 40;
-  if (isPreferredBestPickVendor(product.vendor)) score += 50;
   if (product.isHepa === true) score += 30;
   if (product.hasAntibacterial === true) score += 15;
   if (product.hasCharcoal === true) score += 10;
@@ -138,7 +143,6 @@ export function scoreProductForComparison(product = {}) {
 
 function buildBestReason(product) {
   const reasons = [];
-  if (isPreferredBestPickVendor(product.vendor)) reasons.push("Febreze");
   if (product.isHepa) reasons.push("HEPA");
   if (product.hasAntibacterial) reasons.push("antibacterial");
   if (product.hasCharcoal) reasons.push("odor control");
@@ -147,8 +151,41 @@ function buildBestReason(product) {
   return `Best pick: ${reasons.join(" · ")}`;
 }
 
+function productIdentityKey(product = {}) {
+  return resolveProductVariantId(product) || product.partNumber || product.sku || product.id || null;
+}
+
+function pickBestProduct(products = []) {
+  if (!products.length) return null;
+
+  const inStock = products.filter(
+    (product) => product.inStock === true && product.availableForSale !== false
+  );
+  const pool = inStock.length ? inStock : products;
+
+  return pool.reduce((best, product) => {
+    const bestScore = best?.compareScore || 0;
+    const productScore = product?.compareScore || 0;
+    return productScore > bestScore ? product : best;
+  }, pool[0]);
+}
+
+function sortProductsForDisplay(products = []) {
+  return [...products].sort((a, b) => {
+    const displayFirstDiff =
+      Number(isPreferredDisplayFirstVendor(b.vendor)) -
+      Number(isPreferredDisplayFirstVendor(a.vendor));
+    if (displayFirstDiff !== 0) return displayFirstDiff;
+
+    const stockDiff = Number(b.inStock === true) - Number(a.inStock === true);
+    if (stockDiff !== 0) return stockDiff;
+
+    return (b.compareScore || 0) - (a.compareScore || 0);
+  });
+}
+
 /**
- * Enrich products with compare fields, sort (best first among in-stock), mark isBest.
+ * Enrich products with compare fields, sort for display (Febreze first), mark isBest by neutral score.
  */
 export function enrichProductsWithComparison(products = []) {
   if (!Array.isArray(products) || products.length === 0) {
@@ -194,18 +231,20 @@ export function enrichProductsWithComparison(products = []) {
     return merged;
   });
 
-  enriched.sort((a, b) => {
-    const stockDiff = Number(b.inStock === true) - Number(a.inStock === true);
-    if (stockDiff !== 0) return stockDiff;
-    return (b.compareScore || 0) - (a.compareScore || 0);
+  const bestProduct = pickBestProduct(enriched);
+  const bestKey = bestProduct ? productIdentityKey(bestProduct) : null;
+  const sorted = sortProductsForDisplay(enriched);
+
+  return sorted.map((product) => {
+    const key = productIdentityKey(product);
+    const isBest = Boolean(bestKey && key && key === bestKey);
+
+    return {
+      ...product,
+      isBest,
+      bestReason: isBest ? buildBestReason(product) : null
+    };
   });
-
-  if (enriched.length > 0) {
-    enriched[0].isBest = true;
-    enriched[0].bestReason = buildBestReason(enriched[0]);
-  }
-
-  return enriched;
 }
 
 /**
@@ -271,6 +310,7 @@ export default {
   buildLlmProductSummary,
   buildProductListingMetadata,
   normalizeVendorName,
+  isPreferredDisplayFirstVendor,
   isPreferredBestPickVendor,
   PRODUCT_LISTING_CART_INSTRUCTION
 };
