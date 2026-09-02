@@ -311,9 +311,15 @@ export async function setConversationShippingAddress(conversationId, address) {
 
   try {
     await createOrUpdateConversation(conversationId);
+    const data = { shippingAddress: JSON.stringify(address) };
+    const firstName = String(address.first_name || "").trim();
+    const lastName = String(address.last_name || "").trim();
+    if (firstName) data.customerFirstName = firstName;
+    if (lastName) data.customerLastName = lastName;
+
     return await prisma.conversation.update({
       where: { id: conversationId },
-      data: { shippingAddress: JSON.stringify(address) }
+      data
     });
   } catch (error) {
     console.error("Error storing conversation shipping address:", error);
@@ -336,6 +342,74 @@ export async function clearConversationShippingAddress(conversationId) {
     });
   } catch (error) {
     console.error("Error clearing conversation shipping address:", error);
+    return null;
+  }
+}
+
+/**
+ * Get stored customer profile for LLM context (storefront login / shipping).
+ */
+export async function getConversationCustomerProfile(conversationId) {
+  if (!conversationId) {
+    return null;
+  }
+
+  try {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: {
+        customerFirstName: true,
+        customerLastName: true,
+        customerLoggedIn: true
+      }
+    });
+
+    if (!conversation) {
+      return null;
+    }
+
+    return {
+      firstName: conversation.customerFirstName || null,
+      lastName: conversation.customerLastName || null,
+      loggedIn: Boolean(conversation.customerLoggedIn)
+    };
+  } catch (error) {
+    console.error("Error retrieving conversation customer profile:", error);
+    return null;
+  }
+}
+
+/**
+ * Persist customer profile fields for a conversation.
+ */
+export async function setConversationCustomerProfile(
+  conversationId,
+  { firstName = null, lastName = null, loggedIn = false } = {}
+) {
+  if (!conversationId) {
+    return null;
+  }
+
+  try {
+    await createOrUpdateConversation(conversationId);
+    const data = {};
+    const normalizedFirst = String(firstName || "").trim();
+    const normalizedLast = String(lastName || "").trim();
+
+    if (normalizedFirst) data.customerFirstName = normalizedFirst;
+    if (normalizedLast) data.customerLastName = normalizedLast;
+    if (loggedIn) data.customerLoggedIn = true;
+
+    if (Object.keys(data).length === 0) {
+      return null;
+    }
+
+    return await prisma.conversation.update({
+      where: { id: conversationId },
+      data
+    });
+  } catch (error) {
+    console.error("Error storing conversation customer profile:", error);
     return null;
   }
 }

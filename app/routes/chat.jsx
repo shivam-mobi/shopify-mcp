@@ -27,6 +27,14 @@ import {
 } from "../fitment/fitment-tools.server.js";
 import { enrichProductsWithComparison } from "../services/product-compare.server.js";
 import { buildStoreHelpHintMessage } from "../services/store-help-hints.server.js";
+import {
+  syncCustomerContextFromRequest,
+  buildCustomerContextHintMessage,
+  buildWelcomePromptMessages,
+  getFallbackWelcomeMessage,
+  buildGreetingHintMessage,
+  extractAssistantText
+} from "../services/customer-context.server.js";
 
 
 /**
@@ -99,9 +107,10 @@ async function handleChatRequest(request) {
     // Get message data from request body
     const body = await request.json();
     const userMessage = body.message;
+    const isWelcomeInit = body.init === true;
 
-    // Validate required message
-    if (!userMessage) {
+    // Validate required message (welcome init uses init flag instead)
+    if (!userMessage && !isWelcomeInit) {
       return new Response(
         JSON.stringify({ error: AppConfig.errorMessages.missingMessage }),
         { status: 400, headers: getSseHeaders(request) }
@@ -114,9 +123,20 @@ async function handleChatRequest(request) {
 
     // Create a stream for the response
     const responseStream = createSseStream(async (stream) => {
+      if (isWelcomeInit) {
+        await handleWelcomeSession({
+          body,
+          conversationId,
+          promptType,
+          stream
+        });
+        return;
+      }
+
       await handleChatSession({
         request,
         userMessage,
+        body,
         conversationId,
         promptType,
         stream
@@ -136,10 +156,78 @@ async function handleChatRequest(request) {
 }
 
 /**
+ * Generate and persist LLM welcome message for a new chat session.
+ */
+async function handleWelcomeSession({
+  body,
+  conversationId,
+  promptType,
+  stream
+}) {
+  const llmService = createLlmService();
+
+  try {
+    stream.sendMessage({ type: "id", conversation_id: conversationId });
+
+    const existingMessages = await getConversationHistory(conversationId);
+    if (existingMessages.length > 0) {
+      stream.sendMessage({ type: "welcome_skipped", reason: "history_exists" });
+      stream.sendMessage({ type: "end_turn" });
+      return;
+    }
+
+    const customerProfile = await syncCustomerContextFromRequest(conversationId, body);
+    const welcomeMessages = buildWelcomePromptMessages(customerProfile, {
+      welcomeTemplate: body.welcome_template
+    });
+
+    let welcomeText = "";
+    try {
+      const finalMessage = await llmService.streamConversation(
+        {
+          messages: welcomeMessages,
+          promptType,
+          tools: []
+        },
+        {
+          onText: (textDelta) => {
+            welcomeText += textDelta;
+            stream.sendMessage({
+              type: "chunk",
+              chunk: textDelta
+            });
+          }
+        }
+      );
+
+      welcomeText = extractAssistantText(finalMessage) || welcomeText.trim();
+    } catch (error) {
+      console.error("[chat] welcome LLM failed, using fallback:", error.message);
+    }
+
+    if (!welcomeText) {
+      welcomeText = getFallbackWelcomeMessage(customerProfile);
+      stream.sendMessage({
+        type: "chunk",
+        chunk: welcomeText
+      });
+    }
+
+    await saveMessage(conversationId, "assistant", welcomeText);
+    stream.sendMessage({ type: "message_complete" });
+    stream.sendMessage({ type: "end_turn" });
+  } catch (error) {
+    console.error("[chat] welcome session failed:", error);
+    throw error;
+  }
+}
+
+/**
  * Handle a complete chat session
  * @param {Object} params - Session parameters
  * @param {Request} params.request - The request object
  * @param {string} params.userMessage - The user's message
+ * @param {Object} params.body - The full request body
  * @param {string} params.conversationId - The conversation ID
  * @param {string} params.promptType - The prompt type
  * @param {Object} params.stream - Stream manager for sending responses
@@ -147,6 +235,7 @@ async function handleChatRequest(request) {
 async function handleChatSession({
   request,
   userMessage,
+  body = {},
   conversationId,
   promptType,
   stream
@@ -232,6 +321,8 @@ async function handleChatSession({
     let productsToDisplay = [];
     let fitmentOptionsToDisplay = null;
 
+    const customerProfile = await syncCustomerContextFromRequest(conversationId, body);
+
     // Save user message to the database
     await saveMessage(conversationId, 'user', userMessage);
 
@@ -273,6 +364,16 @@ async function handleChatSession({
     const storeHelpHint = buildStoreHelpHintMessage(userMessage);
     if (storeHelpHint) {
       conversationHistory.unshift(storeHelpHint);
+    }
+
+    const customerContextHint = buildCustomerContextHintMessage(customerProfile);
+    if (customerContextHint) {
+      conversationHistory.unshift(customerContextHint);
+    }
+
+    const greetingHint = buildGreetingHintMessage(userMessage, customerProfile);
+    if (greetingHint) {
+      conversationHistory.unshift(greetingHint);
     }
 
     // Execute the conversation stream

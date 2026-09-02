@@ -31,14 +31,9 @@
     };
   }
 
-  function getApiHeaders(extraHeaders = {}) {
-    return {
-      'ngrok-skip-browser-warning': 'true',
-      ...extraHeaders
-    };
-  }
-
   const CONVERSATION_ID_KEY = 'shopAiConversationId';
+  const CHAT_EXPANDED_KEY = 'shopAiChatExpanded';
+  const SESSIONS_INDEX_KEY = 'shopAiSessionsIndex';
   let conversationStorageMode = 'localStorage';
 
   function resolveConversationStorageMode(mode) {
@@ -77,6 +72,129 @@
     getConversationStorage().removeItem(CONVERSATION_ID_KEY);
     sessionStorage.removeItem(CONVERSATION_ID_KEY);
   }
+
+  function getCustomerContextPayload() {
+    const config = window.shopChatConfig || {};
+    const firstName = String(config.customerFirstName || '').trim();
+    const lastName = String(config.customerLastName || '').trim();
+    const payload = {};
+
+    if (config.customerLoggedIn === true) {
+      payload.customer_logged_in = true;
+    }
+    if (firstName) {
+      payload.customer_first_name = firstName;
+    }
+    if (lastName) {
+      payload.customer_last_name = lastName;
+    }
+
+    return payload;
+  }
+
+  function getStaticWelcomeFallback() {
+    return window.shopChatConfig?.welcomeMessage || "I'm your AI-powered shopping assistant. I can help you with cabin air filters for your vehicle.";
+  }
+
+  function getAssistantName() {
+    return String(window.shopChatConfig?.assistantName || 'AIRA').trim() || 'AIRA';
+  }
+
+  function decodeHtmlEntities(text) {
+    const el = document.createElement('textarea');
+    el.innerHTML = String(text || '');
+    return el.value;
+  }
+
+  function formatGreetingTemplate(template) {
+    return decodeHtmlEntities(String(template || '')).replace(/\{name\}/g, getAssistantName());
+  }
+
+  function getTimeBasedGreeting() {
+    const hour = new Date().getHours();
+    const config = window.shopChatConfig || {};
+    if (hour < 12) {
+      return formatGreetingTemplate(config.greetingMorning || "Good morning, I'm {name}!");
+    }
+    if (hour < 17) {
+      return formatGreetingTemplate(config.greetingAfternoon || "Good afternoon, I'm {name}!");
+    }
+    return formatGreetingTemplate(config.greetingEvening || "Good evening, I'm {name}!");
+  }
+
+  function readSessionsIndex() {
+    try {
+      const raw = localStorage.getItem(SESSIONS_INDEX_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeSessionsIndex(sessions) {
+    localStorage.setItem(SESSIONS_INDEX_KEY, JSON.stringify(sessions.slice(0, 20)));
+  }
+
+  function formatSessionDate(timestamp) {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const isYesterday = date.toDateString() === yesterday.toDateString();
+
+    const time = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    if (isToday) return `Today · ${time}`;
+    if (isYesterday) return `Yesterday · ${time}`;
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+
+  const Sessions = {
+    upsert: function(conversationId, patch = {}) {
+      if (!conversationId) return;
+      const sessions = readSessionsIndex();
+      const index = sessions.findIndex((s) => s.id === conversationId);
+      const existing = index >= 0 ? sessions[index] : { id: conversationId, title: 'New chat', preview: '', updatedAt: Date.now() };
+      const next = {
+        ...existing,
+        ...patch,
+        id: conversationId,
+        updatedAt: patch.updatedAt || Date.now()
+      };
+
+      if (index >= 0) {
+        sessions.splice(index, 1);
+      }
+      sessions.unshift(next);
+      writeSessionsIndex(sessions);
+      return next;
+    },
+
+    touchFromMessage: function(conversationId, userMessage) {
+      const text = String(userMessage || '').trim();
+      if (!conversationId || !text) return;
+      const sessions = readSessionsIndex();
+      const existing = sessions.find((s) => s.id === conversationId);
+      const title = existing?.title && existing.title !== 'New chat'
+        ? existing.title
+        : text.slice(0, 48) + (text.length > 48 ? '…' : '');
+
+      this.upsert(conversationId, {
+        title,
+        preview: text.slice(0, 80),
+        updatedAt: Date.now()
+      });
+    },
+
+    list: function() {
+      return readSessionsIndex().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    },
+
+    remove: function(conversationId) {
+      writeSessionsIndex(readSessionsIndex().filter((s) => s.id !== conversationId));
+    }
+  };
 
   const ShopAIChat = {
     Config: {
@@ -122,17 +240,39 @@
           container: container,
           chatBubble: container.querySelector('.shop-ai-chat-bubble'),
           chatWindow: container.querySelector('.shop-ai-chat-window'),
+          homeButton: container.querySelector('.shop-ai-home-btn'),
+          homeView: container.querySelector('.shop-ai-home-view'),
+          chatView: container.querySelector('.shop-ai-chat-view'),
+          greetingEl: container.querySelector('[data-greeting-target]'),
+          sessionsList: container.querySelector('.shop-ai-sessions-list'),
+          suggestionChips: container.querySelectorAll('.shop-ai-suggestion-chip'),
+          expandButton: container.querySelector('.shop-ai-chat-expand'),
           closeButton: container.querySelector('.shop-ai-chat-close'),
-          chatInput: container.querySelector('.shop-ai-chat-input input'),
+          chatInput: container.querySelector('.shop-ai-chat-input-field'),
+          inputWrap: container.querySelector('.shop-ai-input-wrap'),
+          voiceButton: container.querySelector('.shop-ai-voice-btn'),
+          voiceStatus: container.querySelector('.shop-ai-voice-status'),
           sendButton: container.querySelector('.shop-ai-chat-send'),
           messagesContainer: container.querySelector('.shop-ai-chat-messages')
         };
+
+        this.currentView = 'home';
+        this.pendingNewChat = true;
+        this.updateGreeting();
+        this.renderSessionsList();
+
+        this.syncChatOpenState();
+        this.restoreExpandedState();
 
         // Detect mobile device
         this.isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
         // Set up event listeners
         this.setupEventListeners();
+        ShopAIChat.Voice.init(this.elements, this);
+        requestAnimationFrame(() => {
+          this.autoResizeChatInput(this.elements.chatInput);
+        });
 
         // Fix for iOS Safari viewport height issues
         if (this.isMobile) {
@@ -144,20 +284,51 @@
        * Set up all event listeners for UI interactions
        */
       setupEventListeners: function() {
-        const { chatBubble, closeButton, chatInput, sendButton, messagesContainer } = this.elements;
+        const {
+          chatBubble,
+          homeButton,
+          suggestionChips,
+          expandButton,
+          closeButton,
+          chatInput,
+          sendButton,
+          messagesContainer
+        } = this.elements;
 
         // Toggle chat window visibility
         chatBubble.addEventListener('click', () => this.toggleChatWindow());
 
+        if (homeButton) {
+          homeButton.addEventListener('click', () => this.showHomeView());
+        }
+
+        suggestionChips.forEach((chip) => {
+          chip.addEventListener('click', () => {
+            const suggestion = chip.dataset.suggestion || chip.textContent.trim();
+            if (!suggestion) return;
+            this.showChatView();
+            ShopAIChat.Message.sendText(suggestion, messagesContainer);
+          });
+        });
+
+        // Expand / collapse chat window (desktop)
+        if (expandButton) {
+          expandButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            this.toggleExpanded();
+          });
+        }
+
         // Close chat window
         closeButton.addEventListener('click', () => this.closeChatWindow());
 
-        // Send message when pressing Enter in input
-        chatInput.addEventListener('keypress', (e) => {
-          if (e.key === 'Enter' && chatInput.value.trim() !== '') {
+        // Send on Enter; Shift+Enter adds a new line
+        chatInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && !e.shiftKey && chatInput.value.trim() !== '') {
+            e.preventDefault();
+            this.showChatView();
             ShopAIChat.Message.send(chatInput, messagesContainer);
 
-            // On mobile, handle keyboard
             if (this.isMobile) {
               chatInput.blur();
               setTimeout(() => chatInput.focus(), 300);
@@ -165,9 +336,14 @@
           }
         });
 
+        chatInput.addEventListener('input', () => {
+          this.autoResizeChatInput(chatInput);
+        });
+
         // Send message when clicking send button
         sendButton.addEventListener('click', () => {
           if (chatInput.value.trim() !== '') {
+            this.showChatView();
             ShopAIChat.Message.send(chatInput, messagesContainer);
 
             // On mobile, focus input after sending
@@ -176,6 +352,13 @@
             }
           }
         });
+
+        // After keyboard closes, restore full viewport height (iOS)
+        if (this.isMobile && chatInput) {
+          chatInput.addEventListener('blur', () => {
+            this.scheduleViewportHeightRefresh();
+          });
+        }
 
         // Handle window resize to adjust scrolling
         window.addEventListener('resize', () => this.scrollToBottom());
@@ -192,14 +375,146 @@
       },
 
       /**
+       * Real-world chat pattern: collapse to 0, measure scrollHeight, clamp to line range.
+       */
+      autoResizeChatInput: function(chatInput) {
+        if (!chatInput) return;
+
+        const lineHeight = 20;
+        const singleLineHeight = lineHeight;
+        const maxHeight = lineHeight * 6;
+        const prevHeight = parseInt(chatInput.style.height, 10) || singleLineHeight;
+
+        if (!chatInput.value.trim()) {
+          chatInput.style.height = `${singleLineHeight}px`;
+          chatInput.style.overflowY = 'hidden';
+          if (prevHeight !== singleLineHeight) {
+            this.scrollContentForInput();
+          }
+          return;
+        }
+
+        chatInput.style.height = `${singleLineHeight}px`;
+        const contentHeight = chatInput.scrollHeight;
+        const nextHeight = Math.max(singleLineHeight, Math.min(contentHeight, maxHeight));
+
+        chatInput.style.height = `${nextHeight}px`;
+        if (contentHeight > maxHeight) {
+          chatInput.style.overflowY = 'auto';
+        } else {
+          chatInput.style.overflowY = 'hidden';
+        }
+
+        const voiceActive = Boolean(
+          ShopAIChat.Voice?.isListening || ShopAIChat.Voice?.keepListening
+        );
+
+        if (voiceActive || contentHeight > maxHeight) {
+          chatInput.scrollTop = chatInput.scrollHeight;
+        }
+
+        if (nextHeight !== prevHeight) {
+          this.scrollContentForInput();
+        }
+      },
+
+      /**
+       * Keep caret at the end of dictated text and scroll the input to show it.
+       */
+      syncInputCaretToEnd: function(chatInput, options = {}) {
+        if (!chatInput) return;
+
+        const end = chatInput.value.length;
+        const shouldFocus = options.focus !== false;
+
+        if (shouldFocus && document.activeElement !== chatInput) {
+          chatInput.focus({ preventScroll: false });
+        }
+
+        try {
+          chatInput.setSelectionRange(end, end);
+        } catch (error) {
+          // Ignore if the field is not focusable yet.
+        }
+
+        this.autoResizeChatInput(chatInput);
+
+        requestAnimationFrame(() => {
+          chatInput.scrollTop = chatInput.scrollHeight;
+          this.scrollContentForInput();
+        });
+      },
+
+      /**
+       * Keep chat/home content visible when the input bar grows (e.g. voice dictation).
+       */
+      scrollContentForInput: function() {
+        if (this._scrollInputRaf) return;
+
+        this._scrollInputRaf = requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            this._scrollInputRaf = null;
+
+            const { messagesContainer, homeView, chatView } = this.elements;
+            const voiceActive = Boolean(
+              ShopAIChat.Voice?.isListening || ShopAIChat.Voice?.keepListening
+            );
+
+            let scrollEl = null;
+            if (chatView && !chatView.hidden && messagesContainer) {
+              scrollEl = messagesContainer;
+            } else if (homeView && !homeView.hidden) {
+              scrollEl = homeView;
+            }
+
+            if (!scrollEl) return;
+
+            const nearBottom =
+              scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <= 96;
+
+            if (voiceActive || nearBottom) {
+              scrollEl.scrollTop = scrollEl.scrollHeight;
+            }
+          });
+        });
+      },
+
+      /**
        * Setup mobile-specific viewport adjustments
        */
       setupMobileViewport: function() {
-        const setViewportHeight = () => {
-          document.documentElement.style.setProperty('--viewport-height', `${window.innerHeight}px`);
+        this.updateViewportHeight = function() {
+          const height = window.visualViewport
+            ? window.visualViewport.height
+            : window.innerHeight;
+          document.documentElement.style.setProperty('--viewport-height', `${height}px`);
         };
-        window.addEventListener('resize', setViewportHeight);
-        setViewportHeight();
+
+        this.updateViewportHeight();
+        window.addEventListener('resize', this.updateViewportHeight);
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener('resize', this.updateViewportHeight);
+        }
+      },
+
+      /**
+       * Keep launcher bubble from covering the input bar on mobile.
+       */
+      syncChatOpenState: function() {
+        const { container, chatWindow } = this.elements;
+        if (!container || !chatWindow) return;
+
+        const isOpen = chatWindow.classList.contains('active');
+        container.classList.toggle('shop-ai-chat-window-open', isOpen);
+      },
+
+      scheduleViewportHeightRefresh: function() {
+        if (!this.isMobile || typeof this.updateViewportHeight !== 'function') return;
+
+        const refresh = this.updateViewportHeight;
+        refresh();
+        setTimeout(refresh, 120);
+        setTimeout(refresh, 350);
       },
 
       /**
@@ -218,12 +533,18 @@
           } else {
             chatInput.focus();
           }
+          this.updateGreeting();
+          this.renderSessionsList();
           // Always scroll messages to bottom when opening
           this.scrollToBottom();
         } else {
           // Remove body class when closing
           document.body.classList.remove('shop-ai-chat-open');
+          this.scheduleViewportHeightRefresh();
+          ShopAIChat.Voice.stop();
         }
+
+        this.syncChatOpenState();
       },
 
       /**
@@ -234,11 +555,155 @@
 
         chatWindow.classList.remove('active');
 
+        ShopAIChat.Voice.stop();
+
         // On mobile, blur input to hide keyboard and enable body scrolling
         if (this.isMobile) {
           chatInput.blur();
           document.body.classList.remove('shop-ai-chat-open');
+          this.scheduleViewportHeightRefresh();
         }
+
+        this.syncChatOpenState();
+      },
+
+      /**
+       * Toggle expanded popup size (desktop only).
+       */
+      toggleExpanded: function(forceExpanded) {
+        const { chatWindow, expandButton } = this.elements;
+        if (!chatWindow || this.isMobile) return;
+
+        const shouldExpand =
+          typeof forceExpanded === 'boolean'
+            ? forceExpanded
+            : !chatWindow.classList.contains('expanded');
+
+        chatWindow.classList.toggle('expanded', shouldExpand);
+        sessionStorage.setItem(CHAT_EXPANDED_KEY, shouldExpand ? '1' : '0');
+        this.updateExpandButtonLabels(shouldExpand);
+
+        this.scrollToBottom();
+      },
+
+      restoreExpandedState: function() {
+        const { chatWindow } = this.elements;
+        if (!chatWindow || this.isMobile) return;
+
+        const saved = sessionStorage.getItem(CHAT_EXPANDED_KEY);
+        if (saved === '1') {
+          chatWindow.classList.add('expanded');
+          this.updateExpandButtonLabels(true);
+        }
+      },
+
+      updateExpandButtonLabels: function(isExpanded) {
+        const { expandButton } = this.elements;
+        if (!expandButton) return;
+
+        const expandLabel =
+          window.shopChatConfig?.expandButtonLabel || 'Expand chat';
+        const collapseLabel =
+          window.shopChatConfig?.collapseButtonLabel || 'Collapse chat';
+        const label = isExpanded ? collapseLabel : expandLabel;
+        expandButton.setAttribute('aria-label', label);
+        expandButton.setAttribute('title', label);
+        const labelEl = expandButton.querySelector('.shop-ai-expand-label');
+        if (labelEl) {
+          labelEl.textContent = label;
+        }
+      },
+
+      updateGreeting: function() {
+        const { greetingEl } = this.elements;
+        if (greetingEl) {
+          greetingEl.textContent = getTimeBasedGreeting();
+        }
+      },
+
+      showHomeView: function() {
+        const { homeView, chatView } = this.elements;
+        if (!homeView || !chatView) return;
+
+        this.currentView = 'home';
+        homeView.hidden = false;
+        chatView.hidden = true;
+        this.pendingNewChat = true;
+        this.updateGreeting();
+        this.renderSessionsList();
+      },
+
+      showChatView: function() {
+        const { homeView, chatView } = this.elements;
+        if (!homeView || !chatView) return;
+
+        this.currentView = 'chat';
+        homeView.hidden = true;
+        chatView.hidden = false;
+      },
+
+      clearMessages: function() {
+        const { messagesContainer } = this.elements;
+        if (messagesContainer) {
+          messagesContainer.innerHTML = '';
+        }
+      },
+
+      renderSessionsList: function() {
+        const { sessionsList } = this.elements;
+        if (!sessionsList) return;
+
+        const sessions = Sessions.list();
+        const currentId = getConversationId();
+        sessionsList.innerHTML = '';
+
+        if (!sessions.length) {
+          const empty = document.createElement('p');
+          empty.classList.add('shop-ai-sessions-empty');
+          empty.textContent = window.shopChatConfig?.noSessionsLabel || 'No previous chats yet.';
+          sessionsList.appendChild(empty);
+          return;
+        }
+
+        sessions.forEach((session) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.classList.add('shop-ai-session-item');
+          if (session.id === currentId) {
+            button.classList.add('is-active');
+          }
+
+          button.innerHTML =
+            '<svg class="shop-ai-session-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+            '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>' +
+            '<span class="shop-ai-session-body">' +
+            `<span class="shop-ai-session-title">${this.escapeHtml(session.title || 'Chat')}</span>` +
+            `<span class="shop-ai-session-meta">${formatSessionDate(session.updatedAt || Date.now())}</span>` +
+            '</span>';
+
+          button.addEventListener('click', () => {
+            this.loadSession(session.id);
+          });
+
+          sessionsList.appendChild(button);
+        });
+      },
+
+      escapeHtml: function(text) {
+        const div = document.createElement('div');
+        div.textContent = String(text || '');
+        return div.innerHTML;
+      },
+
+      loadSession: async function(conversationId) {
+        if (!conversationId) return;
+
+        this.pendingNewChat = false;
+        setConversationId(conversationId);
+        this.clearMessages();
+        this.showChatView();
+        await ShopAIChat.API.fetchChatHistory(conversationId, this.elements.messagesContainer);
+        this.renderSessionsList();
       },
 
       /**
@@ -320,6 +785,7 @@
             });
 
             if (chatInput) chatInput.value = '';
+            ShopAIChat.UI.showChatView();
             ShopAIChat.Message.sendText(value, messagesContainer);
           });
           list.appendChild(button);
@@ -522,6 +988,10 @@
         // Clear input
         chatInput.value = '';
 
+        if (ShopAIChat.UI?.elements?.chatInput) {
+          ShopAIChat.UI.autoResizeChatInput(ShopAIChat.UI.elements.chatInput);
+        }
+
         await this.sendText(userMessage, messagesContainer);
       },
 
@@ -532,7 +1002,23 @@
         const text = String(userMessage || '').trim();
         if (!text) return;
 
-        const conversationId = getConversationId();
+        let conversationId = getConversationId();
+        const startingFromHome =
+          ShopAIChat.UI.currentView === 'home' || ShopAIChat.UI.pendingNewChat;
+
+        if (startingFromHome) {
+          conversationId = Date.now().toString();
+          setConversationId(conversationId);
+          ShopAIChat.UI.clearMessages();
+          ShopAIChat.UI.pendingNewChat = false;
+        } else if (!conversationId) {
+          conversationId = Date.now().toString();
+          setConversationId(conversationId);
+        }
+
+        ShopAIChat.UI.showChatView();
+        Sessions.touchFromMessage(conversationId, text);
+        ShopAIChat.UI.renderSessionsList();
 
         // Add user message to chat
         this.add(text, 'user', messagesContainer);
@@ -911,15 +1397,21 @@
        * @param {string} conversationId - Conversation ID for context
        * @param {HTMLElement} messagesContainer - The messages container
        */
-      streamResponse: async function(userMessage, conversationId, messagesContainer) {
+      streamResponse: async function(userMessage, conversationId, messagesContainer, options) {
+        const opts = options || {};
+        const isInit = opts.init === true;
         let currentMessageElement = null;
 
         try {
           const promptType = window.shopChatConfig?.promptType || "standardAssistant";
           const requestBody = JSON.stringify({
-            message: userMessage,
+            ...(isInit ? { init: true } : { message: userMessage }),
             conversation_id: conversationId,
-            prompt_type: promptType
+            prompt_type: promptType,
+            ...(isInit && window.shopChatConfig?.welcomeMessage
+              ? { welcome_template: window.shopChatConfig.welcomeMessage }
+              : {}),
+            ...getCustomerContextPayload()
           });
 
           const apiBaseUrl = getApiBaseUrl();
@@ -985,6 +1477,25 @@
       },
 
       /**
+       * Request LLM-generated welcome for a new session (saved to chat history).
+       */
+      requestWelcome: async function(messagesContainer, conversationId) {
+        const id = conversationId || Date.now().toString();
+        setConversationId(id);
+        Sessions.upsert(id, { title: 'New chat', updatedAt: Date.now() });
+        ShopAIChat.UI.showChatView();
+        ShopAIChat.UI.showTypingIndicator();
+
+        try {
+          await ShopAIChat.API.streamResponse(null, id, messagesContainer, { init: true });
+        } catch (error) {
+          console.error('Error requesting welcome message:', error);
+          ShopAIChat.UI.removeTypingIndicator();
+          ShopAIChat.Message.add(getStaticWelcomeFallback(), 'assistant', messagesContainer);
+        }
+      },
+
+      /**
        * Handle stream events from the API
        * @param {Object} data - Event data
        * @param {HTMLElement} currentMessageElement - Current message element being updated
@@ -997,6 +1508,8 @@
           case 'id':
             if (data.conversation_id) {
               setConversationId(data.conversation_id);
+              Sessions.upsert(data.conversation_id, { updatedAt: Date.now() });
+              ShopAIChat.UI.renderSessionsList();
             }
             break;
 
@@ -1097,6 +1610,32 @@
       },
 
       /**
+       * Check if a conversation has saved messages (without rendering).
+       */
+      sessionHasHistory: async function(conversationId) {
+        if (!conversationId) return false;
+
+        try {
+          const apiBaseUrl = getApiBaseUrl();
+          const historyUrl = `${apiBaseUrl}/chat?history=true&conversation_id=${encodeURIComponent(conversationId)}`;
+          const response = await fetch(historyUrl, {
+            method: 'GET',
+            headers: getApiHeaders({
+              Accept: 'application/json',
+              'Content-Type': 'application/json'
+            }),
+            mode: 'cors'
+          });
+
+          if (!response.ok) return false;
+          const data = await response.json();
+          return Array.isArray(data.messages) && data.messages.length > 0;
+        } catch {
+          return false;
+        }
+      },
+
+      /**
        * Fetch chat history from the server
        * @param {string} conversationId - Conversation ID
        * @param {HTMLElement} messagesContainer - The messages container
@@ -1133,10 +1672,9 @@
           // Remove loading message
           messagesContainer.removeChild(loadingMessage);
 
-          // No messages, show welcome message
+          // No messages — generate welcome via LLM and persist to history
           if (!data.messages || data.messages.length === 0) {
-            const welcomeMessage = window.shopChatConfig?.welcomeMessage || "👋 Hi there! How can I help you today?";
-            ShopAIChat.Message.add(welcomeMessage, 'assistant', messagesContainer);
+            await ShopAIChat.API.requestWelcome(messagesContainer, conversationId);
             return;
           }
 
@@ -1158,8 +1696,7 @@
           }
 
           // Show error and welcome message
-          const welcomeMessage = window.shopChatConfig?.welcomeMessage || "👋 Hi there! How can I help you today?";
-          ShopAIChat.Message.add(welcomeMessage, 'assistant', messagesContainer);
+          ShopAIChat.Message.add(getStaticWelcomeFallback(), 'assistant', messagesContainer);
 
           // Clear the conversation ID since we couldn't fetch this conversation
           clearConversationId();
@@ -1294,6 +1831,404 @@
     },
 
     /**
+     * Web Speech API voice input
+     */
+    Voice: {
+      recognition: null,
+      isListening: false,
+      keepListening: false,
+      manualStop: false,
+      ui: null,
+      elements: null,
+      messagesContainer: null,
+      statusTimer: null,
+      restartTimer: null,
+      inputEditTimer: null,
+      isRestarting: false,
+      sessionPrefix: '',
+
+      getLabel: function(key, fallback) {
+        return window.shopChatConfig?.[key] || fallback;
+      },
+
+      isSupported: function() {
+        return Boolean(
+          typeof window !== 'undefined' &&
+          (window.SpeechRecognition || window.webkitSpeechRecognition)
+        );
+      },
+
+      createRecognition: function() {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) return null;
+
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.maxAlternatives = 1;
+        recognition.lang = document.documentElement.lang || navigator.language || 'en-US';
+        return recognition;
+      },
+
+      init: function(elements, ui) {
+        this.ui = ui;
+        this.elements = elements;
+        this.messagesContainer = elements.messagesContainer;
+
+        const { voiceButton, chatInput } = elements;
+        if (!voiceButton || !chatInput) return;
+
+        if (!this.isSupported()) {
+          voiceButton.hidden = true;
+          return;
+        }
+
+        voiceButton.hidden = false;
+        this.recognition = this.createRecognition();
+        if (!this.recognition) {
+          voiceButton.hidden = true;
+          return;
+        }
+
+        voiceButton.addEventListener('click', () => {
+          if (this.isListening) {
+            this.stop();
+          } else {
+            this.start(elements);
+          }
+        });
+
+        chatInput.addEventListener('input', () => {
+          if (this.isListening || (this.keepListening && !this.manualStop)) {
+            this.handleInputDuringListening(elements, chatInput);
+          } else {
+            this.hideStatus(elements);
+          }
+          if (this.ui) {
+            this.ui.autoResizeChatInput(chatInput);
+          }
+        });
+
+        this.recognition.onstart = () => {
+          this.isListening = true;
+          this.isRestarting = false;
+          this.syncSessionPrefix(chatInput);
+          this.setListeningState(elements, true);
+          this.showStatus(
+            elements,
+            this.getLabel('voiceListeningLabel', 'Listening…')
+          );
+          if (this.ui) {
+            this.ui.scrollContentForInput();
+          }
+        };
+
+        this.recognition.onend = () => {
+          this.isListening = false;
+
+          if (this.isRestarting) {
+            this.scheduleRestart(80);
+            return;
+          }
+
+          if (this.keepListening && !this.manualStop) {
+            this.syncSessionPrefix(chatInput);
+            this.scheduleRestart();
+            return;
+          }
+
+          this.setListeningState(elements, false);
+          this.finalizeInput(elements);
+          this.sessionPrefix = '';
+          this.manualStop = false;
+        };
+
+        this.recognition.onerror = (event) => {
+          const error = event?.error || 'unknown';
+
+          if (error === 'aborted' && this.isRestarting) {
+            return;
+          }
+
+          if (error === 'no-speech' && this.keepListening && !this.manualStop) {
+            this.syncSessionPrefix(chatInput);
+            this.scheduleRestart();
+            return;
+          }
+
+          if (error === 'aborted') {
+            this.hideStatus(elements);
+            return;
+          }
+
+          this.keepListening = false;
+          this.manualStop = false;
+          this.isRestarting = false;
+
+          let message = this.getLabel('voiceErrorLabel', 'Voice input failed. Please try again.');
+
+          if (error === 'not-allowed' || error === 'service-not-allowed') {
+            message = this.getLabel('voiceDeniedLabel', 'Microphone access denied.');
+          } else if (error === 'no-speech') {
+            message = this.getLabel('voiceNoSpeechLabel', 'No speech detected. Try again.');
+          }
+
+          this.setListeningState(elements, false);
+          this.showStatus(elements, message, true);
+        };
+
+        this.recognition.onresult = (event) => {
+          const { chatInput: input } = elements;
+          if (!input || this.isRestarting) return;
+
+          let finalTranscript = '';
+          let interimTranscript = '';
+
+          for (let i = 0; i < event.results.length; i += 1) {
+            const transcript = event.results[i][0]?.transcript || '';
+            if (event.results[i].isFinal) {
+              finalTranscript += transcript;
+            } else {
+              interimTranscript += transcript;
+            }
+          }
+
+          const spoken = `${finalTranscript}${interimTranscript}`.trim();
+          const prefix = this.sessionPrefix || '';
+          input.value = spoken ? `${prefix}${spoken}`.trim() : prefix.trim();
+
+          if (this.ui) {
+            this.ui.syncInputCaretToEnd(input);
+          }
+        };
+      },
+
+      syncSessionPrefix: function(chatInput) {
+        if (!chatInput) return;
+        const trimmed = chatInput.value.trim();
+        this.sessionPrefix = trimmed ? `${trimmed} ` : '';
+      },
+
+      handleInputDuringListening: function(elements, chatInput) {
+        this.syncSessionPrefix(chatInput);
+
+        clearTimeout(this.inputEditTimer);
+        this.inputEditTimer = setTimeout(() => {
+          if (this.keepListening && !this.manualStop) {
+            this.restartRecognitionSession(elements);
+          }
+        }, 200);
+      },
+
+      restartRecognitionSession: function(elements) {
+        if (!this.recognition || !this.keepListening || this.manualStop) return;
+
+        const { chatInput } = elements;
+        this.syncSessionPrefix(chatInput);
+        this.clearRestartTimer();
+        this.isRestarting = true;
+
+        try {
+          if (this.isListening) {
+            this.recognition.stop();
+          } else {
+            this.isRestarting = false;
+            this.scheduleRestart(80);
+          }
+        } catch (error) {
+          this.isRestarting = false;
+          this.scheduleRestart(80);
+        }
+      },
+
+      finalizeInput: function(elements) {
+        const { chatInput: input } = elements;
+        if (!input) return;
+
+        const text = input.value.trim();
+        if (!text) {
+          this.hideStatus(elements);
+          return;
+        }
+
+        input.focus();
+        if (this.ui) {
+          this.ui.syncInputCaretToEnd(input, { focus: false });
+        } else {
+          const length = input.value.length;
+          input.setSelectionRange(length, length);
+        }
+
+        this.showStatus(
+          elements,
+          this.getLabel(
+            'voiceReviewLabel',
+            'Review your message, edit if needed, then tap send.'
+          ),
+          false,
+          6000
+        );
+      },
+
+      start: function(elements) {
+        if (!this.recognition || this.isListening) return;
+
+        this.elements = elements;
+        this.manualStop = false;
+        this.keepListening = true;
+        this.clearRestartTimer();
+
+        const { chatInput } = elements;
+        if (chatInput) {
+          chatInput.focus();
+        }
+
+        try {
+          this.recognition.start();
+        } catch (error) {
+          if (String(error?.message || '').includes('already started')) {
+            this.stop();
+            setTimeout(() => {
+              try {
+                this.recognition.start();
+              } catch (retryError) {
+                this.showStatus(
+                  elements,
+                  this.getLabel('voiceErrorLabel', 'Voice input failed. Please try again.'),
+                  true
+                );
+              }
+            }, 120);
+            return;
+          }
+
+          this.showStatus(
+            elements,
+            this.getLabel('voiceErrorLabel', 'Voice input failed. Please try again.'),
+            true
+          );
+        }
+      },
+
+      stop: function() {
+        if (!this.recognition) return;
+
+        this.manualStop = true;
+        this.keepListening = false;
+        this.isRestarting = false;
+        this.clearRestartTimer();
+        clearTimeout(this.inputEditTimer);
+        this.inputEditTimer = null;
+
+        try {
+          if (this.isListening) {
+            this.recognition.stop();
+          }
+        } catch (error) {
+          // ignore stop errors when recognition is idle
+        }
+
+        if (!this.isListening && this.ui?.elements) {
+          this.setListeningState(this.ui.elements, false);
+          this.finalizeInput(this.ui.elements);
+          this.sessionPrefix = '';
+          this.manualStop = false;
+        }
+      },
+
+      scheduleRestart: function(delay) {
+        this.clearRestartTimer();
+        const waitMs = typeof delay === 'number' ? delay : 200;
+
+        this.restartTimer = setTimeout(() => {
+          if (!this.keepListening || this.manualStop || !this.recognition) return;
+
+          try {
+            this.recognition.start();
+          } catch (error) {
+            if (String(error?.message || '').includes('already started')) {
+              return;
+            }
+            this.keepListening = false;
+            this.isRestarting = false;
+            if (this.elements) {
+              this.setListeningState(this.elements, false);
+              this.showStatus(
+                this.elements,
+                this.getLabel('voiceErrorLabel', 'Voice input failed. Please try again.'),
+                true
+              );
+            }
+          }
+        }, waitMs);
+      },
+
+      clearRestartTimer: function() {
+        if (this.restartTimer) {
+          clearTimeout(this.restartTimer);
+          this.restartTimer = null;
+        }
+      },
+
+      setListeningState: function(elements, listening) {
+        const { voiceButton, inputWrap, chatInput } = elements;
+        if (voiceButton) {
+          voiceButton.classList.toggle('is-listening', listening);
+          const startLabel = this.getLabel('voiceStartLabel', 'Start voice input');
+          const stopLabel = this.getLabel('voiceStopLabel', 'Stop voice input');
+          voiceButton.setAttribute('aria-label', listening ? stopLabel : startLabel);
+          voiceButton.setAttribute('title', listening ? stopLabel : startLabel);
+        }
+        if (inputWrap) {
+          inputWrap.classList.toggle('is-listening', listening);
+        }
+        if (chatInput && listening) {
+          chatInput.placeholder = this.getLabel('voiceListeningLabel', 'Listening…');
+        } else if (chatInput) {
+          chatInput.placeholder =
+            window.shopChatConfig?.inputPlaceholder || 'Ask anything you need';
+        }
+      },
+
+      showStatus: function(elements, message, isError, autoHideMs) {
+        const { voiceStatus } = elements;
+        if (!voiceStatus) return;
+
+        voiceStatus.textContent = decodeHtmlEntities(message);
+        voiceStatus.hidden = false;
+        voiceStatus.classList.toggle('is-error', Boolean(isError));
+
+        if (this.ui) {
+          this.ui.scrollContentForInput();
+        }
+
+        this.clearStatusTimer();
+        if (!this.isListening) {
+          const delay = typeof autoHideMs === 'number' ? autoHideMs : (isError ? 4000 : 2500);
+          this.statusTimer = setTimeout(() => {
+            this.hideStatus(elements);
+          }, delay);
+        }
+      },
+
+      hideStatus: function(elements) {
+        const { voiceStatus } = elements;
+        if (!voiceStatus) return;
+
+        voiceStatus.hidden = true;
+        voiceStatus.textContent = '';
+        voiceStatus.classList.remove('is-error');
+      },
+
+      clearStatusTimer: function() {
+        if (this.statusTimer) {
+          clearTimeout(this.statusTimer);
+          this.statusTimer = null;
+        }
+      }
+    },
+
+    /**
      * Product-related functionality
      */
     Product: {
@@ -1406,7 +2341,9 @@
           button.textContent = 'Add to Cart';
           button.dataset.productId = product.id;
           button.addEventListener('click', function() {
-            const input = document.querySelector('.shop-ai-chat-input input');
+            const input = document.querySelector('.shop-ai-chat-input-field');
+            const messagesContainer = document.querySelector('.shop-ai-chat-messages');
+            ShopAIChat.UI.showChatView();
             if (input) {
               input.value = `Add ${product.title} to my cart`;
               const sendButton = document.querySelector('.shop-ai-chat-send');
@@ -1435,7 +2372,14 @@
         const table = document.createElement('table');
         table.classList.add('shop-ai-compare-table');
 
-        const productName = (product) => String(product.title || product.sku || product.partNumber || 'Product');
+        const productName = (product) => {
+          const full = String(product.title || product.sku || product.partNumber || 'Product').trim();
+          if (full.length <= 42) return full;
+          return `${full.slice(0, 39).trim()}…`;
+        };
+
+        const productNameFull = (product) =>
+          String(product.title || product.sku || product.partNumber || 'Product').trim();
 
         const yesNo = (value) => (value ? 'Yes' : 'No');
 
@@ -1445,8 +2389,11 @@
         headerRow.appendChild(featureHeader);
         products.forEach((product) => {
           const th = document.createElement('th');
-          th.textContent = productName(product);
-          th.title = product.title || '';
+          const label = document.createElement('span');
+          label.classList.add('shop-ai-compare-product-head');
+          label.textContent = productName(product);
+          th.appendChild(label);
+          th.title = productNameFull(product);
           if (product.isBest) th.classList.add('is-best');
           headerRow.appendChild(th);
         });
@@ -1535,7 +2482,9 @@
 
         const title = document.createElement('h3');
         title.classList.add('shop-ai-best-highlight-title');
-        title.textContent = product.title || '';
+        const fullTitle = product.title || '';
+        title.textContent = fullTitle.length <= 72 ? fullTitle : `${fullTitle.slice(0, 69).trim()}…`;
+        title.title = fullTitle;
         if (productHref) {
           title.classList.add('shop-ai-best-highlight-title--link');
           title.addEventListener('click', function(event) {
@@ -1546,18 +2495,17 @@
         }
         info.appendChild(title);
 
-        const price = document.createElement('p');
-        price.classList.add('shop-ai-product-price');
-        price.textContent = product.price || '';
-        info.appendChild(price);
-
         const qty = typeof product.inventoryQuantity === 'number' ? product.inventoryQuantity : null;
         const inStock =
           product.inStock === true &&
           product.availableForSale !== false &&
           qty !== 0;
 
-        const stock = document.createElement('p');
+        const price = document.createElement('span');
+        price.classList.add('shop-ai-product-price');
+        price.textContent = product.price || '';
+
+        const stock = document.createElement('span');
         stock.classList.add('shop-ai-product-stock');
         if (inStock) {
           stock.classList.add('in-stock');
@@ -1566,7 +2514,12 @@
           stock.classList.add('out-of-stock');
           stock.textContent = 'Out of stock';
         }
-        info.appendChild(stock);
+
+        const meta = document.createElement('div');
+        meta.classList.add('shop-ai-best-highlight-meta');
+        meta.appendChild(price);
+        meta.appendChild(stock);
+        info.appendChild(meta);
 
         if (inStock) {
           const actions = document.createElement('div');
@@ -1575,7 +2528,8 @@
           button.classList.add('shop-ai-add-to-cart');
           button.textContent = 'Add to Cart';
           button.addEventListener('click', function() {
-            const input = document.querySelector('.shop-ai-chat-input input');
+            const input = document.querySelector('.shop-ai-chat-input-field');
+            ShopAIChat.UI.showChatView();
             if (input) {
               input.value = `Add ${product.title} to my cart`;
               const sendButton = document.querySelector('.shop-ai-chat-send');
@@ -1602,17 +2556,29 @@
       this.UI.init(container);
       await this.Config.load();
 
-      // Check for existing conversation
       const conversationId = getConversationId();
+      const sessions = Sessions.list();
+
+      // Register current session in index if missing
+      if (conversationId && !sessions.some((s) => s.id === conversationId)) {
+        Sessions.upsert(conversationId, { title: 'Chat', updatedAt: Date.now() });
+      }
 
       if (conversationId) {
-        // Fetch conversation history
-        this.API.fetchChatHistory(conversationId, this.UI.elements.messagesContainer);
+        // Load history in background; show home until user picks a session or sends a message
+        const hasMessages = await this.API.sessionHasHistory(conversationId);
+        if (hasMessages) {
+          this.UI.pendingNewChat = false;
+          this.UI.showChatView();
+          await this.API.fetchChatHistory(conversationId, this.UI.elements.messagesContainer);
+        } else {
+          this.UI.showHomeView();
+        }
       } else {
-        // No previous conversation, show welcome message
-        const welcomeMessage = window.shopChatConfig?.welcomeMessage || "👋 Hi there! How can I help you today?";
-        this.Message.add(welcomeMessage, 'assistant', this.UI.elements.messagesContainer);
+        this.UI.showHomeView();
       }
+
+      this.UI.renderSessionsList();
     }
   };
 

@@ -1,8 +1,27 @@
 {
   "chat": {
     "title": "AIRA",
-    "inputPlaceholder": "Type your message here...",
+    "openButton": "Open chat",
+    "inputPlaceholder": "Ask anything you need",
     "sendButton": "Send",
-    "closeButton": "Close"
+    "closeButton": "Close",
+    "expandButton": "Expand",
+    "collapseButton": "Minimize",
+    "homeButton": "Home",
+    "cartButton": "View cart",
+    "newChat": "New chat",
+    "recentChats": "Recent chats",
+    "noSessions": "No previous chats yet. Start a conversation above!",
+    "greetingMorning": "Good morning, I'm {name}!",
+    "greetingAfternoon": "Good afternoon, I'm {name}!",
+    "greetingEvening": "Good evening, I'm {name}!",
+    "voiceStart": "Start voice input",
+    "voiceStop": "Stop voice input",
+    "voiceListening": "Listening… Tap the mic when you're done.",
+    "voiceUnsupported": "Voice input is not supported in this browser.",
+    "voiceError": "Voice input failed. Please try again.",
+    "voiceNoSpeech": "No speech detected. Try again.",
+    "voiceDenied": "Microphone access denied. Allow mic permission in browser settings.",
+    "voiceReview": "Review your message, edit if needed, then tap send."
   }
 }

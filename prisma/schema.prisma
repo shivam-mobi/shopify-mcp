@@ -54,13 +54,16 @@ model CodeVerifier {
 }
 
 model Conversation {
-  id              String    @id
-  activeCartId    String?
+  id               String    @id
+  activeCartId     String?
   activeCheckoutId String?
-  shippingAddress String?   // JSON string of last saved Shopify shipping destination
-  messages        Message[]
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  shippingAddress  String?   // JSON string of last saved Shopify shipping destination
+  customerFirstName String?
+  customerLastName  String?
+  customerLoggedIn  Boolean   @default(false)
+  messages         Message[]
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 }
 
 model Message {
