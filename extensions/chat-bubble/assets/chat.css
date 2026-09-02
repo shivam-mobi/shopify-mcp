@@ -12,6 +12,9 @@
   --shop-ai-radius-lg: 24px;
   --shop-ai-radius-md: 16px;
   --shop-ai-radius-pill: 999px;
+  --shop-ai-tip-bg: var(--shop-ai-brand);
+  --shop-ai-tip-text: #fff;
+  --shop-ai-tip-shadow: 0 6px 16px rgba(0, 188, 242, 0.28);
 }
 
 /* ── Container & launcher ── */
@@ -73,7 +76,7 @@
   box-shadow: var(--shop-ai-shadow);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   opacity: 0;
   pointer-events: none;
   transform: translateY(16px) scale(0.98);
@@ -88,13 +91,27 @@
 
 /* ── Header ── */
 .shop-ai-chat-header {
-  padding: 14px 16px 8px;
+  padding: 12px 16px 10px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   flex-shrink: 0;
   background: #fff;
+  position: relative;
+  z-index: 5;
+  overflow: visible;
+  border-radius: var(--shop-ai-radius-lg) var(--shop-ai-radius-lg) 0 0;
+}
+
+.shop-ai-chat-header-brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.shop-ai-has-tip {
+  position: relative;
 }
 
 .shop-ai-home-btn {
@@ -116,20 +133,28 @@
   background: var(--shop-ai-surface-hover);
 }
 
+.shop-ai-chat-window.is-home-view .shop-ai-home-btn {
+  display: none;
+}
+
 .shop-ai-chat-header-actions {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  margin-left: auto;
+  overflow: visible;
 }
 
 .shop-ai-chat-expand {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 6px 10px;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
   border: none;
-  border-radius: var(--shop-ai-radius-pill);
+  border-radius: 10px;
   background: var(--shop-ai-surface);
   color: #374151;
   cursor: pointer;
@@ -172,6 +197,45 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 
+.shop-ai-has-tip .shop-ai-tip {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--shop-ai-tip-bg);
+  color: var(--shop-ai-tip-text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s ease;
+  box-shadow: var(--shop-ai-tip-shadow);
+  z-index: 30;
+}
+
+.shop-ai-has-tip .shop-ai-tip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--shop-ai-tip-bg);
+}
+
+.shop-ai-has-tip:hover .shop-ai-tip,
+.shop-ai-has-tip:focus-visible .shop-ai-tip,
+.shop-ai-has-tip.is-tip-visible .shop-ai-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
 .shop-ai-chat-close:hover {
   background: var(--shop-ai-surface);
   color: #111;
@@ -195,7 +259,7 @@
 }
 
 .shop-ai-home-hero {
-  padding-top: 4px;
+  padding-top: 8px;
 }
 
 .shop-ai-avatar {
@@ -206,8 +270,17 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 14px;
   box-shadow: 0 4px 12px rgba(0, 188, 242, 0.25);
+}
+
+.shop-ai-avatar--header {
+  width: 40px;
+  height: 40px;
+  box-shadow: 0 2px 8px rgba(0, 188, 242, 0.2);
+}
+
+.shop-ai-avatar--header .shop-ai-avatar-letter {
+  font-size: 18px;
 }
 
 .shop-ai-avatar-letter {
@@ -448,6 +521,8 @@
   gap: 4px;
   flex-shrink: 0;
   background: #fff;
+  border-radius: 0 0 var(--shop-ai-radius-lg) var(--shop-ai-radius-lg);
+  overflow: hidden;
 }
 
 .shop-ai-input-row {
@@ -586,6 +661,29 @@
 
 .shop-ai-chat-send:active {
   transform: scale(0.97);
+}
+
+.shop-ai-chat-send:disabled,
+.shop-ai-chat-send.is-disabled {
+  background: #B8C0CC;
+  cursor: not-allowed;
+  opacity: 0.85;
+  transform: none;
+}
+
+.shop-ai-chat-send:disabled:hover,
+.shop-ai-chat-send.is-disabled:hover {
+  background: #B8C0CC;
+  transform: none;
+}
+
+.shop-ai-chat-input-field.is-responding {
+  cursor: wait;
+}
+
+.shop-ai-chat-window.is-responding .shop-ai-suggestion-chip {
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 /* ── Typing indicator ── */

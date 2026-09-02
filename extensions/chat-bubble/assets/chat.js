@@ -258,6 +258,7 @@
 
         this.currentView = 'home';
         this.pendingNewChat = true;
+        this.isResponding = false;
         this.updateGreeting();
         this.renderSessionsList();
 
@@ -269,6 +270,7 @@
 
         // Set up event listeners
         this.setupEventListeners();
+        this.setupHeaderTooltips();
         ShopAIChat.Voice.init(this.elements, this);
         requestAnimationFrame(() => {
           this.autoResizeChatInput(this.elements.chatInput);
@@ -304,6 +306,7 @@
 
         suggestionChips.forEach((chip) => {
           chip.addEventListener('click', () => {
+            if (this.isResponding) return;
             const suggestion = chip.dataset.suggestion || chip.textContent.trim();
             if (!suggestion) return;
             this.showChatView();
@@ -326,6 +329,7 @@
         chatInput.addEventListener('keydown', (e) => {
           if (e.key === 'Enter' && !e.shiftKey && chatInput.value.trim() !== '') {
             e.preventDefault();
+            if (this.isResponding) return;
             this.showChatView();
             ShopAIChat.Message.send(chatInput, messagesContainer);
 
@@ -342,6 +346,7 @@
 
         // Send message when clicking send button
         sendButton.addEventListener('click', () => {
+          if (this.isResponding) return;
           if (chatInput.value.trim() !== '') {
             this.showChatView();
             ShopAIChat.Message.send(chatInput, messagesContainer);
@@ -602,16 +607,35 @@
         if (!expandButton) return;
 
         const expandLabel =
-          window.shopChatConfig?.expandButtonLabel || 'Expand chat';
+          window.shopChatConfig?.expandButtonLabel || 'Expand';
         const collapseLabel =
-          window.shopChatConfig?.collapseButtonLabel || 'Collapse chat';
+          window.shopChatConfig?.collapseButtonLabel || 'Minimize';
         const label = isExpanded ? collapseLabel : expandLabel;
         expandButton.setAttribute('aria-label', label);
-        expandButton.setAttribute('title', label);
-        const labelEl = expandButton.querySelector('.shop-ai-expand-label');
-        if (labelEl) {
-          labelEl.textContent = label;
+        const tipEl = expandButton.querySelector('.shop-ai-tip');
+        if (tipEl) {
+          tipEl.textContent = label;
         }
+      },
+
+      setupHeaderTooltips: function() {
+        const tipButtons = this.elements.container?.querySelectorAll('.shop-ai-has-tip');
+        if (!tipButtons) return;
+
+        tipButtons.forEach((button) => {
+          button.addEventListener('mouseenter', () => {
+            button.classList.add('is-tip-visible');
+          });
+          button.addEventListener('mouseleave', () => {
+            button.classList.remove('is-tip-visible');
+          });
+          button.addEventListener('focus', () => {
+            button.classList.add('is-tip-visible');
+          });
+          button.addEventListener('blur', () => {
+            button.classList.remove('is-tip-visible');
+          });
+        });
       },
 
       updateGreeting: function() {
@@ -622,24 +646,30 @@
       },
 
       showHomeView: function() {
-        const { homeView, chatView } = this.elements;
+        const { homeView, chatView, chatWindow } = this.elements;
         if (!homeView || !chatView) return;
 
         this.currentView = 'home';
         homeView.hidden = false;
         chatView.hidden = true;
+        if (chatWindow) {
+          chatWindow.classList.add('is-home-view');
+        }
         this.pendingNewChat = true;
         this.updateGreeting();
         this.renderSessionsList();
       },
 
       showChatView: function() {
-        const { homeView, chatView } = this.elements;
+        const { homeView, chatView, chatWindow } = this.elements;
         if (!homeView || !chatView) return;
 
         this.currentView = 'chat';
         homeView.hidden = true;
         chatView.hidden = false;
+        if (chatWindow) {
+          chatWindow.classList.remove('is-home-view');
+        }
       },
 
       clearMessages: function() {
@@ -704,6 +734,44 @@
         this.showChatView();
         await ShopAIChat.API.fetchChatHistory(conversationId, this.elements.messagesContainer);
         this.renderSessionsList();
+      },
+
+      /**
+       * Lock/unlock sending while the assistant is responding.
+       */
+      setSendingState: function(isResponding) {
+        this.isResponding = Boolean(isResponding);
+
+        const { sendButton, chatInput, voiceButton, suggestionChips, chatWindow } = this.elements;
+
+        if (sendButton) {
+          sendButton.disabled = this.isResponding;
+          sendButton.classList.toggle('is-disabled', this.isResponding);
+          sendButton.setAttribute('aria-disabled', this.isResponding ? 'true' : 'false');
+        }
+
+        if (chatInput) {
+          chatInput.readOnly = this.isResponding;
+          chatInput.classList.toggle('is-responding', this.isResponding);
+        }
+
+        if (voiceButton) {
+          voiceButton.disabled = this.isResponding;
+        }
+
+        if (suggestionChips) {
+          suggestionChips.forEach((chip) => {
+            chip.disabled = this.isResponding;
+          });
+        }
+
+        if (chatWindow) {
+          chatWindow.classList.toggle('is-responding', this.isResponding);
+        }
+
+        if (this.isResponding) {
+          ShopAIChat.Voice.stop();
+        }
       },
 
       /**
@@ -983,7 +1051,7 @@
        */
       send: async function(chatInput, messagesContainer) {
         const userMessage = chatInput.value.trim();
-        if (!userMessage) return;
+        if (!userMessage || ShopAIChat.UI?.isResponding) return;
 
         // Clear input
         chatInput.value = '';
@@ -1000,34 +1068,36 @@
        */
       sendText: async function(userMessage, messagesContainer) {
         const text = String(userMessage || '').trim();
-        if (!text) return;
+        if (!text || ShopAIChat.UI?.isResponding) return;
 
-        let conversationId = getConversationId();
-        const startingFromHome =
-          ShopAIChat.UI.currentView === 'home' || ShopAIChat.UI.pendingNewChat;
-
-        if (startingFromHome) {
-          conversationId = Date.now().toString();
-          setConversationId(conversationId);
-          ShopAIChat.UI.clearMessages();
-          ShopAIChat.UI.pendingNewChat = false;
-        } else if (!conversationId) {
-          conversationId = Date.now().toString();
-          setConversationId(conversationId);
-        }
-
-        ShopAIChat.UI.showChatView();
-        Sessions.touchFromMessage(conversationId, text);
-        ShopAIChat.UI.renderSessionsList();
-
-        // Add user message to chat
-        this.add(text, 'user', messagesContainer);
-
-        // Show typing indicator
-        ShopAIChat.UI.showTypingIndicator();
+        ShopAIChat.UI.setSendingState(true);
 
         try {
-          ShopAIChat.API.streamResponse(text, conversationId, messagesContainer);
+          let conversationId = getConversationId();
+          const startingFromHome =
+            ShopAIChat.UI.currentView === 'home' || ShopAIChat.UI.pendingNewChat;
+
+          if (startingFromHome) {
+            conversationId = Date.now().toString();
+            setConversationId(conversationId);
+            ShopAIChat.UI.clearMessages();
+            ShopAIChat.UI.pendingNewChat = false;
+          } else if (!conversationId) {
+            conversationId = Date.now().toString();
+            setConversationId(conversationId);
+          }
+
+          ShopAIChat.UI.showChatView();
+          Sessions.touchFromMessage(conversationId, text);
+          ShopAIChat.UI.renderSessionsList();
+
+          // Add user message to chat
+          this.add(text, 'user', messagesContainer);
+
+          // Show typing indicator
+          ShopAIChat.UI.showTypingIndicator();
+
+          await ShopAIChat.API.streamResponse(text, conversationId, messagesContainer);
         } catch (error) {
           console.error('Error communicating with the LLM API:', error);
           ShopAIChat.UI.removeTypingIndicator();
@@ -1036,6 +1106,8 @@
             'assistant',
             messagesContainer
           );
+        } finally {
+          ShopAIChat.UI.setSendingState(false);
         }
       },
 
@@ -1401,6 +1473,11 @@
         const opts = options || {};
         const isInit = opts.init === true;
         let currentMessageElement = null;
+        const ownsSendingState = !ShopAIChat.UI.isResponding;
+
+        if (ownsSendingState) {
+          ShopAIChat.UI.setSendingState(true);
+        }
 
         try {
           const promptType = window.shopChatConfig?.promptType || "standardAssistant";
@@ -1473,6 +1550,10 @@
             'assistant',
             messagesContainer
           );
+        } finally {
+          if (ownsSendingState) {
+            ShopAIChat.UI.setSendingState(false);
+          }
         }
       },
 
@@ -1480,6 +1561,8 @@
        * Request LLM-generated welcome for a new session (saved to chat history).
        */
       requestWelcome: async function(messagesContainer, conversationId) {
+        if (ShopAIChat.UI.isResponding) return;
+
         const id = conversationId || Date.now().toString();
         setConversationId(id);
         Sessions.upsert(id, { title: 'New chat', updatedAt: Date.now() });

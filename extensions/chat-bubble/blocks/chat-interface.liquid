@@ -1,4 +1,4 @@
-<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=product-ui-fix-2">
+<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=header-tooltips-2">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
 {% assign brand_color = block.settings.chat_bubble_color | default: '#00BCF2' %}
@@ -24,50 +24,52 @@
   <div class="shop-ai-chat-window">
     <!-- Header -->
     <div class="shop-ai-chat-header">
-      <button type="button" class="shop-ai-home-btn" aria-label="{{ 'chat.homeButton' | t }}" title="{{ 'chat.homeButton' | t }}">
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="3" y="3" width="7" height="7" rx="1"/>
-          <rect x="14" y="3" width="7" height="7" rx="1"/>
-          <rect x="3" y="14" width="7" height="7" rx="1"/>
-          <rect x="14" y="14" width="7" height="7" rx="1"/>
-        </svg>
-      </button>
+      <div class="shop-ai-chat-header-brand">
+        <div class="shop-ai-avatar shop-ai-avatar--header" aria-hidden="true">
+          <span class="shop-ai-avatar-letter">{{ assistant_name | slice: 0, 1 | upcase }}</span>
+        </div>
+      </div>
       <div class="shop-ai-chat-header-actions">
+        <button type="button" class="shop-ai-home-btn shop-ai-has-tip" aria-label="{{ 'chat.newChat' | t }}">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+            <path d="M18.375 2.625a1 1 0 0 1 1.414 0l2.586 2.586a1 1 0 0 1 0 1.414L13 15.414 9 16l.586-4L18.375 2.625z"/>
+          </svg>
+          <span class="shop-ai-tip" role="tooltip">{{ 'chat.newChat' | t }}</span>
+        </button>
         <button
           type="button"
-          class="shop-ai-chat-expand"
+          class="shop-ai-chat-expand shop-ai-has-tip"
           aria-label="{{ 'chat.expandButton' | t }}"
-          title="{{ 'chat.expandButton' | t }}"
         >
-          <svg class="shop-ai-chat-expand-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg class="shop-ai-chat-expand-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="15 3 21 3 21 9"></polyline>
             <polyline points="9 21 3 21 3 15"></polyline>
             <line x1="21" y1="3" x2="14" y2="10"></line>
             <line x1="3" y1="21" x2="10" y2="14"></line>
           </svg>
-          <svg class="shop-ai-chat-collapse-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg class="shop-ai-chat-collapse-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="4 14 10 14 10 20"></polyline>
             <polyline points="20 10 14 10 14 4"></polyline>
             <line x1="14" y1="10" x2="21" y2="3"></line>
             <line x1="3" y1="21" x2="10" y2="14"></line>
           </svg>
-          <span class="shop-ai-expand-label">{{ 'chat.expandButton' | t }}</span>
+          <span class="shop-ai-tip" role="tooltip">{{ 'chat.expandButton' | t }}</span>
         </button>
         <button
           type="button"
-          class="shop-ai-chat-close"
+          class="shop-ai-chat-close shop-ai-has-tip"
           aria-label="{{ 'chat.closeButton' | t }}"
-          title="{{ 'chat.closeButton' | t }}"
-        >✕</button>
+        >
+          ✕
+          <span class="shop-ai-tip" role="tooltip">{{ 'chat.closeButton' | t }}</span>
+        </button>
       </div>
     </div>
 
     <!-- Home view -->
     <div class="shop-ai-home-view">
       <div class="shop-ai-home-hero">
-        <div class="shop-ai-avatar" aria-hidden="true">
-          <span class="shop-ai-avatar-letter">{{ assistant_name | slice: 0, 1 | upcase }}</span>
-        </div>
         <h2 class="shop-ai-greeting" data-greeting-target></h2>
       </div>
 
@@ -145,7 +147,7 @@
   </div>
 </div>
 
-<script src="{{ 'chat.js' | asset_url }}?v=voice-input-9" defer></script>
+<script src="{{ 'chat.js' | asset_url }}?v=header-tooltips-1" defer></script>
 <script>
   window.shopChatConfig = {
     apiUrl: "https://struggle-throwing-recycled.ngrok-free.dev",
