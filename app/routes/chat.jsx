@@ -378,6 +378,9 @@ async function handleChatSession({
 
     // Execute the conversation stream
     let finalMessage = { role: 'user', content: userMessage };
+    // When a tool already showed the apology via tool_error SSE, stop the turn
+    // so the LLM does not repeat the same message as a second assistant bubble.
+    let stopAfterToolError = false;
 
     while (finalMessage.stop_reason !== "end_turn") {
       let cartMutatedThisTurn = false;
@@ -489,6 +492,9 @@ async function handleChatSession({
                   stream.sendMessage,
                   conversationId
                 );
+                if (toolUseResponse.error?.type !== "auth_required") {
+                  stopAfterToolError = true;
+                }
               } else {
                 await toolService.handleToolSuccess(
                   toolUseResponse,
@@ -523,6 +529,7 @@ async function handleChatSession({
                 stream.sendMessage,
                 conversationId
               );
+              stopAfterToolError = true;
             }
 
             // Signal new message to client
@@ -543,6 +550,10 @@ async function handleChatSession({
 
       if (cartMutatedThisTurn) {
         await appendFinalCartSnapshot(mcpClient, conversationId, conversationHistory);
+      }
+
+      if (stopAfterToolError) {
+        break;
       }
     }
 

@@ -1879,14 +1879,31 @@ function extractNamePartsFromText(text) {
   const raw = extractAddressText(text);
   if (!raw) return null;
 
-  const phoneMatch = raw.match(/(\+?\d[\d\s\-().]{8,}\d)/);
-  let nameSegment = phoneMatch ? raw.slice(0, phoneMatch.index) : raw;
-  nameSegment = nameSegment.replace(/[,\s]+$/, "").trim();
+  // Strip emails first so "Jane Doe, jane@x.com, +1..." never becomes last_name.
+  const withoutEmail = raw.replace(
+    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
+    " "
+  );
+
+  const phoneMatch = withoutEmail.match(/(\+?\d[\d\s\-().]{8,}\d)/);
+  let nameSegment = phoneMatch
+    ? withoutEmail.slice(0, phoneMatch.index)
+    : withoutEmail;
+  // Name is the first comma-separated segment only (before email/phone/street).
+  nameSegment = nameSegment.split(",")[0].replace(/[,\s]+$/g, "").trim();
 
   if (!nameSegment || /^\d+\s/.test(nameSegment)) return null;
 
-  const parts = nameSegment.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2 && parts.length <= 5 && /^[A-Za-z]/.test(parts[0])) {
+  const parts = nameSegment
+    .split(/\s+/)
+    .map((part) => part.replace(/^[,;]+|[,;]+$/g, "").trim())
+    .filter(Boolean);
+  if (
+    parts.length >= 2 &&
+    parts.length <= 5 &&
+    /^[A-Za-z]/.test(parts[0]) &&
+    parts.every((part) => !part.includes("@"))
+  ) {
     return {
       first_name: parts[0],
       last_name: parts.slice(1).join(" ")
@@ -1896,24 +1913,13 @@ function extractNamePartsFromText(text) {
   return null;
 }
 
-function isNameDerivedFromStreet(firstName, lastName, streetAddress) {
-  const street = String(streetAddress || "").toLowerCase();
-  const first = String(firstName || "").trim().toLowerCase();
-  const last = String(lastName || "").trim().toLowerCase();
-  if (!first || !last || !street) return false;
-  if (first.length < 2 || last.length < 2) return false;
-  return street.includes(first) && street.includes(last);
-}
-
-function sanitizeShippingFromContext(address = {}, userMessage = "", savedShipping = null) {
+/**
+ * Prefer LLM-structured shipping fields. Only fill blanks from the customer
+ * message — never overwrite values the model already passed.
+ */
+function sanitizeShippingFromContext(address = {}, userMessage = "") {
   const merged = { ...address };
   const text = extractAddressText(userMessage);
-  const phoneInText = extractPhoneFromText(text);
-  const nameFromText = extractNamePartsFromText(text);
-  const addressOnly = Boolean(parseAddressLineOnly(text));
-  const hasSavedContact = Boolean(
-    savedShipping?.phone_number || savedShipping?.first_name || savedShipping?.last_name
-  );
 
   const addressFromLine = parseAddressLineOnly(text);
   if (addressFromLine) {
@@ -1924,26 +1930,28 @@ function sanitizeShippingFromContext(address = {}, userMessage = "", savedShippi
     }
   }
 
+  const nameFromText = extractNamePartsFromText(text);
   if (nameFromText) {
-    merged.first_name = nameFromText.first_name;
-    merged.last_name = nameFromText.last_name;
-  } else if (isNameDerivedFromStreet(merged.first_name, merged.last_name, merged.street_address)) {
-    merged.first_name = "";
-    merged.last_name = "";
+    if (isBlank(merged.first_name)) {
+      merged.first_name = nameFromText.first_name;
+    }
+    if (isBlank(merged.last_name)) {
+      merged.last_name = nameFromText.last_name;
+    }
   }
 
-  if (phoneInText) {
-    merged.phone_number = phoneInText;
-  } else if (isPlaceholderPhone(merged.phone_number)) {
-    merged.phone_number = "";
-  } else if (addressOnly && !phoneInText && !hasSavedContact && !isBlank(merged.phone_number)) {
-    // First-time address-only message — do not trust a phone the model guessed.
-    merged.phone_number = "";
+  if (isBlank(merged.phone_number)) {
+    const phoneInText = extractPhoneFromText(text);
+    if (phoneInText) {
+      merged.phone_number = phoneInText;
+    }
   }
 
-  const emailInText = extractEmailFromText(text);
-  if (emailInText && isBlank(merged.email)) {
-    merged.email = emailInText;
+  if (isBlank(merged.email)) {
+    const emailInText = extractEmailFromText(text);
+    if (emailInText) {
+      merged.email = emailInText;
+    }
   }
 
   return merged;
@@ -2358,7 +2366,7 @@ function normalizeShippingAddress(input = {}, { userMessage, existingCart, saved
   }
 
   const primaryText = String(userMessage || input.address_text || "").trim();
-  let sanitized = sanitizeShippingFromContext(merged, primaryText, savedShipping);
+  let sanitized = sanitizeShippingFromContext(merged, primaryText);
   sanitized = applySavedShippingDefaults(sanitized, savedShipping);
 
   if (sanitized.address_country) {

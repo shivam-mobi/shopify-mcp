@@ -1,6 +1,7 @@
 {
   "chat": {
     "title": "AIRA",
+    "headerTagline": "AI-powered shopping assistant",
     "openButton": "Open chat",
     "inputPlaceholder": "Ask anything you need",
     "sendButton": "Send",
@@ -12,16 +13,17 @@
     "newChat": "New chat",
     "recentChats": "Recent chats",
     "noSessions": "No previous chats yet. Start a conversation above!",
-    "greetingMorning": "Good morning, I'm {name}!",
-    "greetingAfternoon": "Good afternoon, I'm {name}!",
-    "greetingEvening": "Good evening, I'm {name}!",
+    "greetingWithName": "Hi {customer}, I'm {name}!",
+    "greetingAnonymous": "Hi, I'm {name}!",
+    "greetingSubtitle": "Here to help you find the right cabin air filter and vehicle fitment. How can I assist you today?",
+    "calloutDismiss": "Dismiss",
     "voiceStart": "Start voice input",
     "voiceStop": "Stop voice input",
-    "voiceListening": "Listening… Tap the mic when you're done.",
+    "voiceListening": "Listening… Speak, then pause to send.",
     "voiceUnsupported": "Voice input is not supported in this browser.",
     "voiceError": "Voice input failed. Please try again.",
     "voiceNoSpeech": "No speech detected. Try again.",
     "voiceDenied": "Microphone access denied. Allow mic permission in browser settings.",
-    "voiceReview": "Review your message, edit if needed, then tap send."
+    "voiceReview": "Sending your message…"
   }
 }

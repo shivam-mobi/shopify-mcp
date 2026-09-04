@@ -34,6 +34,7 @@
   const CONVERSATION_ID_KEY = 'shopAiConversationId';
   const CHAT_EXPANDED_KEY = 'shopAiChatExpanded';
   const SESSIONS_INDEX_KEY = 'shopAiSessionsIndex';
+  const BUBBLE_CALLOUT_KEY = 'shopAiBubbleCalloutSeen';
   let conversationStorageMode = 'localStorage';
 
   function resolveConversationStorageMode(mode) {
@@ -93,11 +94,27 @@
   }
 
   function getStaticWelcomeFallback() {
-    return window.shopChatConfig?.welcomeMessage || "I'm your AI-powered shopping assistant. I can help you with cabin air filters for your vehicle.";
+    return window.shopChatConfig?.welcomeMessage || "I can help you with cabin air filters for your vehicle. Tell me your year, make, and model.";
   }
 
   function getAssistantName() {
     return String(window.shopChatConfig?.assistantName || 'AIRA').trim() || 'AIRA';
+  }
+
+  /** Display name: "AIRA" / "aira" → "Aira" */
+  function getAssistantDisplayName() {
+    const raw = getAssistantName();
+    if (!raw) return 'Aira';
+    return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+  }
+
+  function escapeHtml(text) {
+    return String(text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function decodeHtmlEntities(text) {
@@ -106,20 +123,36 @@
     return el.value;
   }
 
-  function formatGreetingTemplate(template) {
-    return decodeHtmlEntities(String(template || '')).replace(/\{name\}/g, getAssistantName());
+  function getCustomerFirstName() {
+    const config = window.shopChatConfig || {};
+    const raw = String(config.customerFirstName || '').trim();
+    if (!raw) return '';
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
   }
 
-  function getTimeBasedGreeting() {
-    const hour = new Date().getHours();
+  /**
+   * Home greeting: "Hi Ayush, I'm Aira!" when named, else "Hi, I'm Aira!"
+   * Returns safe HTML with assistant name bolded.
+   */
+  function getHomeGreetingHtml() {
     const config = window.shopChatConfig || {};
-    if (hour < 12) {
-      return formatGreetingTemplate(config.greetingMorning || "Good morning, I'm {name}!");
+    const assistant = getAssistantDisplayName();
+    const customer = getCustomerFirstName();
+    const boldName = `<strong class="shop-ai-greeting-name">${escapeHtml(assistant)}</strong>`;
+
+    if (customer) {
+      const template = decodeHtmlEntities(
+        config.greetingWithName || "Hi {customer}, I'm {name}!"
+      );
+      return template
+        .replace(/\{customer\}/g, escapeHtml(customer))
+        .replace(/\{name\}/g, boldName);
     }
-    if (hour < 17) {
-      return formatGreetingTemplate(config.greetingAfternoon || "Good afternoon, I'm {name}!");
-    }
-    return formatGreetingTemplate(config.greetingEvening || "Good evening, I'm {name}!");
+
+    const template = decodeHtmlEntities(
+      config.greetingAnonymous || "Hi, I'm {name}!"
+    );
+    return template.replace(/\{name\}/g, boldName);
   }
 
   function readSessionsIndex() {
@@ -244,6 +277,7 @@
           homeView: container.querySelector('.shop-ai-home-view'),
           chatView: container.querySelector('.shop-ai-chat-view'),
           greetingEl: container.querySelector('[data-greeting-target]'),
+          greetingSubEl: container.querySelector('[data-greeting-sub-target]'),
           sessionsList: container.querySelector('.shop-ai-sessions-list'),
           suggestionChips: container.querySelectorAll('.shop-ai-suggestion-chip'),
           expandButton: container.querySelector('.shop-ai-chat-expand'),
@@ -253,7 +287,11 @@
           voiceButton: container.querySelector('.shop-ai-voice-btn'),
           voiceStatus: container.querySelector('.shop-ai-voice-status'),
           sendButton: container.querySelector('.shop-ai-chat-send'),
-          messagesContainer: container.querySelector('.shop-ai-chat-messages')
+          messagesContainer: container.querySelector('.shop-ai-chat-messages'),
+          bubbleCallout: container.querySelector('.shop-ai-bubble-callout'),
+          bubbleCalloutText: container.querySelector('[data-callout-text]'),
+          bubbleCalloutBody: container.querySelector('.shop-ai-bubble-callout-body'),
+          bubbleCalloutDismiss: container.querySelector('.shop-ai-bubble-callout-dismiss')
         };
 
         this.currentView = 'home';
@@ -271,6 +309,7 @@
         // Set up event listeners
         this.setupEventListeners();
         this.setupHeaderTooltips();
+        this.setupBubbleCallout();
         ShopAIChat.Voice.init(this.elements, this);
         requestAnimationFrame(() => {
           this.autoResizeChatInput(this.elements.chatInput);
@@ -531,6 +570,7 @@
         chatWindow.classList.toggle('active');
 
         if (chatWindow.classList.contains('active')) {
+          this.dismissBubbleCallout();
           // On mobile, prevent body scrolling and delay focus
           if (this.isMobile) {
             document.body.classList.add('shop-ai-chat-open');
@@ -638,10 +678,87 @@
         });
       },
 
+      /**
+       * Launcher tip on each page load: "Hi Shivam, I'm Aira!" with wave.
+       * Hides after dismiss or opening chat (this page visit only).
+       */
+      setupBubbleCallout: function() {
+        const {
+          bubbleCallout,
+          bubbleCalloutText,
+          bubbleCalloutBody,
+          bubbleCalloutDismiss,
+          chatWindow
+        } = this.elements;
+
+        if (!bubbleCallout || !bubbleCalloutText) return;
+
+        bubbleCalloutText.innerHTML = getHomeGreetingHtml();
+
+        if (bubbleCalloutBody) {
+          bubbleCalloutBody.addEventListener('click', () => {
+            this.dismissBubbleCallout();
+            if (chatWindow && !chatWindow.classList.contains('active')) {
+              this.toggleChatWindow();
+            }
+          });
+        }
+
+        if (bubbleCalloutDismiss) {
+          bubbleCalloutDismiss.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.dismissBubbleCallout();
+          });
+        }
+
+        // Clear old forever-flag so refresh can show the tip again
+        try {
+          localStorage.removeItem(BUBBLE_CALLOUT_KEY);
+        } catch {
+          // ignore
+        }
+
+        if (chatWindow?.classList.contains('active')) return;
+
+        bubbleCallout.hidden = false;
+        // Double rAF so the enter transition runs after paint
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            bubbleCallout.classList.add('is-visible');
+          });
+        });
+      },
+
+      dismissBubbleCallout: function() {
+        const { bubbleCallout } = this.elements;
+        if (this._calloutTimer) {
+          clearTimeout(this._calloutTimer);
+          this._calloutTimer = null;
+        }
+        if (!bubbleCallout) return;
+
+        bubbleCallout.classList.remove('is-visible');
+        setTimeout(() => {
+          bubbleCallout.hidden = true;
+        }, 280);
+      },
+
       updateGreeting: function() {
-        const { greetingEl } = this.elements;
+        const { greetingEl, greetingSubEl } = this.elements;
         if (greetingEl) {
-          greetingEl.textContent = getTimeBasedGreeting();
+          greetingEl.innerHTML = getHomeGreetingHtml();
+        }
+        if (greetingSubEl) {
+          const sub =
+            window.shopChatConfig?.greetingSubtitle ||
+            'Here to help you find the right cabin air filter and vehicle fitment. How can I assist you today?';
+          greetingSubEl.textContent = decodeHtmlEntities(sub);
+        }
+
+        const { bubbleCalloutText } = this.elements;
+        if (bubbleCalloutText) {
+          bubbleCalloutText.innerHTML = getHomeGreetingHtml();
         }
       },
 
@@ -1927,8 +2044,14 @@
       statusTimer: null,
       restartTimer: null,
       inputEditTimer: null,
+      autoSubmitTimer: null,
       isRestarting: false,
+      isAutoSubmitting: false,
+      /** Ignore late Safari onresult events that rewrite the input after send */
+      suppressResults: false,
       sessionPrefix: '',
+      /** Pause after last speech before auto-send (ms) */
+      silenceSubmitMs: 1400,
 
       getLabel: function(key, fallback) {
         return window.shopChatConfig?.[key] || fallback;
@@ -1999,7 +2122,7 @@
           this.setListeningState(elements, true);
           this.showStatus(
             elements,
-            this.getLabel('voiceListeningLabel', 'Listening…')
+            this.getLabel('voiceListeningLabel', 'Listening… Speak, then pause to send.')
           );
           if (this.ui) {
             this.ui.scrollContentForInput();
@@ -2021,6 +2144,19 @@
           }
 
           this.setListeningState(elements, false);
+
+          // Safari often fires final onresult after stop — keep suppressing briefly
+          if (this.isAutoSubmitting || this.suppressResults) {
+            this.clearInputSafely(elements.chatInput);
+            setTimeout(() => {
+              this.suppressResults = false;
+              this.isAutoSubmitting = false;
+              this.manualStop = false;
+              this.sessionPrefix = '';
+            }, 400);
+            return;
+          }
+
           this.finalizeInput(elements);
           this.sessionPrefix = '';
           this.manualStop = false;
@@ -2029,11 +2165,17 @@
         this.recognition.onerror = (event) => {
           const error = event?.error || 'unknown';
 
-          if (error === 'aborted' && this.isRestarting) {
+          if (error === 'aborted' && (this.isRestarting || this.isAutoSubmitting)) {
             return;
           }
 
+          // Silence while listening: if we already have text, send it; otherwise keep listening
           if (error === 'no-speech' && this.keepListening && !this.manualStop) {
+            const text = String(elements.chatInput?.value || '').trim();
+            if (text) {
+              this.submitVoiceMessage(elements);
+              return;
+            }
             this.syncSessionPrefix(chatInput);
             this.scheduleRestart();
             return;
@@ -2047,6 +2189,7 @@
           this.keepListening = false;
           this.manualStop = false;
           this.isRestarting = false;
+          this.clearAutoSubmitTimer();
 
           let message = this.getLabel('voiceErrorLabel', 'Voice input failed. Please try again.');
 
@@ -2062,7 +2205,9 @@
 
         this.recognition.onresult = (event) => {
           const { chatInput: input } = elements;
-          if (!input || this.isRestarting) return;
+          if (!input || this.isRestarting || this.isAutoSubmitting || this.suppressResults) {
+            return;
+          }
 
           let finalTranscript = '';
           let interimTranscript = '';
@@ -2083,7 +2228,20 @@
           if (this.ui) {
             this.ui.syncInputCaretToEnd(input);
           }
+
+          // After you pause speaking, auto-send the message
+          if (input.value.trim()) {
+            this.scheduleAutoSubmit(elements);
+          }
         };
+      },
+
+      clearInputSafely: function(chatInput) {
+        if (!chatInput) return;
+        chatInput.value = '';
+        if (this.ui) {
+          this.ui.autoResizeChatInput(chatInput);
+        }
       },
 
       syncSessionPrefix: function(chatInput) {
@@ -2125,32 +2283,97 @@
       },
 
       finalizeInput: function(elements) {
-        const { chatInput: input } = elements;
-        if (!input) return;
+        // Mic stopped with text → send automatically (no review step)
+        this.submitVoiceMessage(elements);
+      },
 
-        const text = input.value.trim();
+      scheduleAutoSubmit: function(elements) {
+        this.clearAutoSubmitTimer();
+        this.autoSubmitTimer = setTimeout(() => {
+          this.autoSubmitTimer = null;
+          this.submitVoiceMessage(elements);
+        }, this.silenceSubmitMs);
+      },
+
+      clearAutoSubmitTimer: function() {
+        if (this.autoSubmitTimer) {
+          clearTimeout(this.autoSubmitTimer);
+          this.autoSubmitTimer = null;
+        }
+      },
+
+      /**
+       * Stop mic and send the dictated message.
+       */
+      submitVoiceMessage: function(elements) {
+        const els = elements || this.elements || this.ui?.elements;
+        if (!els || this.isAutoSubmitting) return;
+
+        const input = els.chatInput;
+        const messagesContainer = els.messagesContainer;
+        const text = String(input?.value || '').trim();
+
+        this.clearAutoSubmitTimer();
+        clearTimeout(this.inputEditTimer);
+        this.inputEditTimer = null;
+        this.clearRestartTimer();
+
         if (!text) {
-          this.hideStatus(elements);
+          this.hideStatus(els);
+          this.setListeningState(els, false);
+          this.keepListening = false;
+          this.manualStop = false;
+          this.isAutoSubmitting = false;
+          this.suppressResults = false;
+          this.sessionPrefix = '';
           return;
         }
 
-        input.focus();
-        if (this.ui) {
-          this.ui.syncInputCaretToEnd(input, { focus: false });
-        } else {
-          const length = input.value.length;
-          input.setSelectionRange(length, length);
+        if (ShopAIChat.UI?.isResponding) {
+          this.setListeningState(els, false);
+          this.keepListening = false;
+          this.suppressResults = true;
+          this.clearInputSafely(input);
+          return;
         }
 
-        this.showStatus(
-          elements,
-          this.getLabel(
-            'voiceReviewLabel',
-            'Review your message, edit if needed, then tap send.'
-          ),
-          false,
-          6000
-        );
+        // Lock before stop() — Safari may emit late onresult and refill the textarea
+        this.isAutoSubmitting = true;
+        this.suppressResults = true;
+        this.manualStop = true;
+        this.keepListening = false;
+        this.isRestarting = false;
+        this.sessionPrefix = '';
+
+        try {
+          if (this.isListening && this.recognition) {
+            this.recognition.stop();
+          }
+        } catch (error) {
+          // ignore
+        }
+
+        this.setListeningState(els, false);
+        this.hideStatus(els);
+
+        // Clear immediately, then send the captured text (not live input)
+        this.clearInputSafely(input);
+
+        if (this.ui) {
+          this.ui.showChatView();
+        }
+
+        ShopAIChat.Message.sendText(text, messagesContainer);
+
+        // Keep suppressResults until onend / short fallback for Safari
+        setTimeout(() => {
+          this.clearInputSafely(input);
+          if (!this.isListening) {
+            this.suppressResults = false;
+            this.isAutoSubmitting = false;
+            this.manualStop = false;
+          }
+        }, 500);
       },
 
       start: function(elements) {
@@ -2159,7 +2382,10 @@
         this.elements = elements;
         this.manualStop = false;
         this.keepListening = true;
+        this.isAutoSubmitting = false;
+        this.suppressResults = false;
         this.clearRestartTimer();
+        this.clearAutoSubmitTimer();
 
         const { chatInput } = elements;
         if (chatInput) {
@@ -2170,7 +2396,7 @@
           this.recognition.start();
         } catch (error) {
           if (String(error?.message || '').includes('already started')) {
-            this.stop();
+            this.stop({ skipSubmit: true });
             setTimeout(() => {
               try {
                 this.recognition.start();
@@ -2193,15 +2419,19 @@
         }
       },
 
-      stop: function() {
+      stop: function(options = {}) {
         if (!this.recognition) return;
 
+        const skipSubmit = options.skipSubmit === true;
         this.manualStop = true;
         this.keepListening = false;
         this.isRestarting = false;
         this.clearRestartTimer();
+        this.clearAutoSubmitTimer();
         clearTimeout(this.inputEditTimer);
         this.inputEditTimer = null;
+
+        const hadText = Boolean(String(this.ui?.elements?.chatInput?.value || '').trim());
 
         try {
           if (this.isListening) {
@@ -2213,9 +2443,13 @@
 
         if (!this.isListening && this.ui?.elements) {
           this.setListeningState(this.ui.elements, false);
-          this.finalizeInput(this.ui.elements);
-          this.sessionPrefix = '';
-          this.manualStop = false;
+          if (!skipSubmit && hadText) {
+            this.submitVoiceMessage(this.ui.elements);
+          } else {
+            this.hideStatus(this.ui.elements);
+            this.sessionPrefix = '';
+            this.manualStop = false;
+          }
         }
       },
 

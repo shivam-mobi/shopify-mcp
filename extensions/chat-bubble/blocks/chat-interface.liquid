@@ -1,4 +1,4 @@
-<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=header-tooltips-2">
+<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=bubble-callout-3">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
 {% assign brand_color = block.settings.chat_bubble_color | default: '#00BCF2' %}
@@ -6,6 +6,10 @@
   {% assign brand_color = '#00BCF2' %}
 {% endif %}
 {% assign assistant_name = block.settings.assistant_name | default: 'AIRA' %}
+{% assign assistant_display = assistant_name | downcase | capitalize %}
+{% if assistant_display == blank %}
+  {% assign assistant_display = 'Aira' %}
+{% endif %}
 
 <div
   class="shop-ai-chat-container"
@@ -21,12 +25,25 @@
     </svg>
   </button>
 
+  <div class="shop-ai-bubble-callout" hidden>
+    <button
+      type="button"
+      class="shop-ai-bubble-callout-dismiss"
+      aria-label="{{ 'chat.calloutDismiss' | t }}"
+    >×</button>
+    <button type="button" class="shop-ai-bubble-callout-body">
+      <span class="shop-ai-bubble-callout-wave" aria-hidden="true">👋</span>
+      <span class="shop-ai-bubble-callout-text" data-callout-text></span>
+    </button>
+  </div>
+
   <div class="shop-ai-chat-window">
     <!-- Header -->
     <div class="shop-ai-chat-header">
       <div class="shop-ai-chat-header-brand">
-        <div class="shop-ai-avatar shop-ai-avatar--header" aria-hidden="true">
-          <span class="shop-ai-avatar-letter">{{ assistant_name | slice: 0, 1 | upcase }}</span>
+        <div class="shop-ai-header-identity">
+          <strong class="shop-ai-header-name">{{ assistant_display }}</strong>
+          <span class="shop-ai-header-tagline">{{ 'chat.headerTagline' | t }}</span>
         </div>
       </div>
       <div class="shop-ai-chat-header-actions">
@@ -71,6 +88,7 @@
     <div class="shop-ai-home-view">
       <div class="shop-ai-home-hero">
         <h2 class="shop-ai-greeting" data-greeting-target></h2>
+        <p class="shop-ai-greeting-sub" data-greeting-sub-target>{{ 'chat.greetingSubtitle' | t }}</p>
       </div>
 
       <div class="shop-ai-suggestions">
@@ -147,7 +165,7 @@
   </div>
 </div>
 
-<script src="{{ 'chat.js' | asset_url }}?v=header-tooltips-1" defer></script>
+<script src="{{ 'chat.js' | asset_url }}?v=voice-safari-clear-1" defer></script>
 <script>
   window.shopChatConfig = {
     apiUrl: "https://struggle-throwing-recycled.ngrok-free.dev",
@@ -158,9 +176,9 @@
     inputPlaceholder: {{ 'chat.inputPlaceholder' | t | json }},
     expandButtonLabel: {{ 'chat.expandButton' | t | json }},
     collapseButtonLabel: {{ 'chat.collapseButton' | t | json }},
-    greetingMorning: {{ 'chat.greetingMorning' | t | json }},
-    greetingAfternoon: {{ 'chat.greetingAfternoon' | t | json }},
-    greetingEvening: {{ 'chat.greetingEvening' | t | json }},
+    greetingWithName: {{ 'chat.greetingWithName' | t | json }},
+    greetingAnonymous: {{ 'chat.greetingAnonymous' | t | json }},
+    greetingSubtitle: {{ 'chat.greetingSubtitle' | t | json }},
     noSessionsLabel: {{ 'chat.noSessions' | t | json }},
     voiceStartLabel: {{ 'chat.voiceStart' | t | json }},
     voiceStopLabel: {{ 'chat.voiceStop' | t | json }},
@@ -199,7 +217,7 @@
       "type": "text",
       "id": "welcome_message",
       "label": "Welcome Message",
-      "default": "I'm your AI-powered shopping assistant. I can help you with cabin air filters for your vehicle."
+      "default": "I can help you with cabin air filters for your vehicle. Tell me your year, make, and model."
     },
     {
       "type": "textarea",
