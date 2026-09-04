@@ -10,6 +10,11 @@ import {
   getConversationCartId,
   setConversationCartId
 } from "../db.server";
+import {
+  appendAiraUtmParams,
+  mergeAiraAttribution,
+  withAiraAttribution
+} from "./aira-attribution.server.js";
 
 const CART_TOOLS = new Set(["create_cart", "get_cart", "update_cart", "cancel_cart"]);
 
@@ -31,7 +36,11 @@ export async function handleCartToolCall(
       return appendToExistingCart(mcpClient, conversationId, storedCartId, toolArgs);
     }
 
-    const response = await mcpClient.callTool("create_cart", toolArgs);
+    const createArgs = {
+      ...toolArgs,
+      cart: withAiraAttribution(toolArgs.cart || {}, conversationId)
+    };
+    const response = await mcpClient.callTool("create_cart", createArgs);
     await persistCartFromResponse(conversationId, response);
     return response;
   }
@@ -86,7 +95,10 @@ async function appendToExistingCart(mcpClient, conversationId, cartId, createArg
   if (isCartNotFound(getResponse, existingCart)) {
     console.log("[cart] stored cart expired, creating new cart", { conversationId, cartId });
     await clearConversationCartId(conversationId);
-    const response = await mcpClient.callTool("create_cart", createArgs);
+    const response = await mcpClient.callTool("create_cart", {
+      ...createArgs,
+      cart: withAiraAttribution(createArgs.cart || {}, conversationId)
+    });
     await persistCartFromResponse(conversationId, response);
     return annotateCartSession(response, "created_new_after_expired");
   }
@@ -99,7 +111,8 @@ async function appendToExistingCart(mcpClient, conversationId, cartId, createArg
     incomingCart: createArgs.cart,
     incomingBuyer: createArgs.buyer,
     lineItems: mergedLineItems,
-    meta: createArgs.meta
+    meta: createArgs.meta,
+    conversationId
   });
 
   console.log("[cart] merging create_cart into existing cart", {
@@ -130,6 +143,7 @@ async function applyUpdateToExistingCart(mcpClient, conversationId, cartId, tool
     });
     await clearConversationCartId(conversationId);
     const createArgs = normalizeCreateArgsFromUpdate(toolArgs);
+    createArgs.cart = withAiraAttribution(createArgs.cart || {}, conversationId);
     const response = await mcpClient.callTool("create_cart", createArgs);
     await persistCartFromResponse(conversationId, response);
     return annotateCartSession(response, "created_new_after_expired");
@@ -220,7 +234,8 @@ async function applyUpdateToExistingCart(mcpClient, conversationId, cartId, tool
     incomingCart,
     incomingBuyer: toolArgs.buyer,
     lineItems,
-    meta: toolArgs.meta
+    meta: toolArgs.meta,
+    conversationId
   });
 
   console.log("[cart] applying update_cart with preserve/merge", {
@@ -243,7 +258,7 @@ async function applyUpdateToExistingCart(mcpClient, conversationId, cartId, tool
     mergeMode === "preserve_line_items" ||
     mergeMode === "preserve_line_items_fallback"
   ) {
-    response = await maybeAttachCheckoutUrl(mcpClient, cartId, response);
+    response = await maybeAttachCheckoutUrl(mcpClient, cartId, response, conversationId);
   }
 
   return annotateCartSession(
@@ -258,7 +273,8 @@ function buildPreservedCartUpdate({
   incomingCart = {},
   incomingBuyer,
   lineItems,
-  meta
+  meta,
+  conversationId = null
 }) {
   const cart = {
     line_items: lineItems
@@ -269,10 +285,10 @@ function buildPreservedCartUpdate({
     cart.context = context;
   }
 
-  const attribution = pickNonEmptyObject(incomingCart.attribution, existingCart?.attribution);
-  if (attribution) {
-    cart.attribution = attribution;
-  }
+  cart.attribution = mergeAiraAttribution(
+    pickNonEmptyObject(incomingCart.attribution, existingCart?.attribution),
+    conversationId
+  );
 
   const buyer = pickNonEmptyObject(
     incomingBuyer,
@@ -561,7 +577,7 @@ function normalizeDestinations(destinations = []) {
   return destinations;
 }
 
-async function maybeAttachCheckoutUrl(mcpClient, cartId, cartResponse) {
+async function maybeAttachCheckoutUrl(mcpClient, cartId, cartResponse, conversationId = null) {
   const cart = extractCartPayload(cartResponse);
   if (!cart?.line_items?.length) {
     return cartResponse;
@@ -569,10 +585,13 @@ async function maybeAttachCheckoutUrl(mcpClient, cartId, cartResponse) {
 
   try {
     const lineItems = toWritableLineItems(cart.line_items || []);
-    const checkout = {
-      currency: cart.currency || "USD",
-      line_items: lineItems
-    };
+    const checkout = withAiraAttribution(
+      {
+        currency: cart.currency || "USD",
+        line_items: lineItems
+      },
+      conversationId
+    );
 
     if (cart.buyer && (cart.buyer.phone_number || cart.buyer.email)) {
       checkout.buyer = cart.buyer;
@@ -590,7 +609,10 @@ async function maybeAttachCheckoutUrl(mcpClient, cartId, cartResponse) {
       cart_id: cartId,
       checkout
     });
-    const checkoutUrl = extractContinueUrl(checkoutResponse);
+    const checkoutUrl = appendAiraUtmParams(
+      extractContinueUrl(checkoutResponse),
+      conversationId
+    );
 
     if (!checkoutUrl) {
       return cartResponse;
@@ -1009,7 +1031,8 @@ export async function updateCartLineItems(
     incomingCart,
     incomingBuyer,
     lineItems,
-    meta
+    meta,
+    conversationId
   });
 
   const response = await mcpClient.callTool("update_cart", updateArgs);
@@ -1020,7 +1043,7 @@ export async function updateCartLineItems(
 export function formatCartSummary(
   cart,
   rawResponse = null,
-  { checkoutUrl = null, shippingAddress = null } = {}
+  { checkoutUrl = null, shippingAddress = null, conversationId = null } = {}
 ) {
   if (!cart) {
     return { success: false, empty: true, message: "Cart is empty." };
@@ -1036,7 +1059,7 @@ export function formatCartSummary(
   const totalEntry = cart.totals?.find((t) => t.type === "total");
   const subtotalEntry = cart.totals?.find((t) => t.type === "subtotal");
 
-  const resolvedCheckoutUrl = checkoutUrl || null;
+  const resolvedCheckoutUrl = appendAiraUtmParams(checkoutUrl || null, conversationId);
 
   const summary = {
     success: true,
@@ -1051,9 +1074,13 @@ export function formatCartSummary(
       "Base your reply ONLY on this summary. Do not claim items were added/removed unless they appear here."
   };
 
-  // Cart continue_url can point to an older checkout session — never use it when checkout_url exists.
+  // Cart continue_url is what the model often pastes when checkout_url is null —
+  // always tag it with AIRA UTMs so attributes exist before the LLM turn.
   if (!resolvedCheckoutUrl && cart.continue_url) {
-    summary.continue_url = cart.continue_url;
+    summary.continue_url = appendAiraUtmParams(cart.continue_url, conversationId);
+    summary.instruction =
+      "checkout_url is null. If the customer wants to checkout, share continue_url EXACTLY as given " +
+      "(including all utm_* query params). Do not strip or rewrite the URL.";
   }
 
   if (shippingAddress) {

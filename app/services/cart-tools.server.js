@@ -27,6 +27,10 @@ import {
   toolError,
   updateCartLineItems
 } from "./cart.server";
+import {
+  appendAiraUtmParams,
+  withAiraAttribution
+} from "./aira-attribution.server.js";
 import AppConfig from "./config.server.js";
 
 const TOOL_FAILURE_USER_MESSAGE = AppConfig.errorMessages.toolFailure;
@@ -346,7 +350,7 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
 
   if (!live) {
     const response = await mcpClient.callTool("create_cart", {
-      cart: { line_items: [newItem] }
+      cart: withAiraAttribution({ line_items: [newItem] }, conversationId)
     });
     await persistCartFromResponse(conversationId, response);
     return toolResult(
@@ -634,7 +638,8 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
         ...(buyer ? { buyer } : {})
       },
       incomingBuyer: buyer,
-      lineItems: cartLineItems
+      lineItems: cartLineItems,
+      conversationId
     }));
 
     const synced = await syncCheckoutWithCart(mcpClient, conversationId, live.cart, {
@@ -778,7 +783,8 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
           verification?.buyerEmail ||
           resolved.email ||
           undefined
-      }
+      },
+      conversationId
     })
   );
   } catch (error) {
@@ -799,7 +805,7 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
 }
 
 /** Shopify MCP marks checkout as required even when cart_id is provided. */
-function buildCreateCheckoutArgs(cartId, cart, overrides = {}) {
+function buildCreateCheckoutArgs(cartId, cart, overrides = {}, conversationId = null) {
   const lineItems = toWritableLineItems(cart?.line_items || []);
   const currency = cart?.currency || "USD";
   const buyer = overrides.buyer || cart?.buyer || null;
@@ -823,7 +829,7 @@ function buildCreateCheckoutArgs(cartId, cart, overrides = {}) {
 
   return {
     cart_id: cartId,
-    checkout
+    checkout: withAiraAttribution(checkout, conversationId)
   };
 }
 
@@ -1030,9 +1036,17 @@ async function fetchVerifiedCheckoutShipping(mcpClient, checkoutId) {
 }
 
 /** Always read continue_url from the checkout we just synced — not stale cart URLs. */
-async function fetchFreshCheckoutUrl(mcpClient, checkoutId, fallbackUrl = null) {
+async function fetchFreshCheckoutUrl(
+  mcpClient,
+  checkoutId,
+  fallbackUrl = null,
+  conversationId = null
+) {
   const verified = await fetchVerifiedCheckoutShipping(mcpClient, checkoutId);
-  return verified?.checkoutUrl || fallbackUrl;
+  return appendAiraUtmParams(
+    verified?.checkoutUrl || fallbackUrl,
+    conversationId
+  );
 }
 
 function isUsLikeCountry(country) {
@@ -1087,7 +1101,8 @@ async function syncCheckoutWithCart(
       mcpClient,
       checkoutId,
       cart,
-      destination
+      destination,
+      conversationId
     );
 
     if (updated?.checkout?.id) {
@@ -1112,7 +1127,8 @@ async function syncCheckoutWithCart(
       const checkoutUrl = await fetchFreshCheckoutUrl(
         mcpClient,
         updated.checkout.id,
-        updated.checkoutUrl
+        updated.checkoutUrl,
+        conversationId
       );
 
       console.log("[cart-wrapper] updated existing checkout", {
@@ -1139,7 +1155,7 @@ async function syncCheckoutWithCart(
     if ((updated?.validationErrors || []).length > 0 || updated?.rate_limited) {
       return {
         checkoutId,
-        checkoutUrl: updated.checkoutUrl || null,
+        checkoutUrl: appendAiraUtmParams(updated.checkoutUrl || null, conversationId),
         shippingAddress: null,
         checkout: updated.checkout || null,
         validationErrors: updated.validationErrors || [],
@@ -1168,7 +1184,12 @@ async function syncCheckoutWithCart(
     };
   }
 
-  const created = await createCheckoutFromCart(mcpClient, cart, destination);
+  const created = await createCheckoutFromCart(
+    mcpClient,
+    cart,
+    destination,
+    conversationId
+  );
   if (!created?.checkout?.id) {
     return {
       error: created?.error || "create_checkout failed",
@@ -1207,7 +1228,8 @@ async function syncCheckoutWithCart(
   const checkoutUrl = await fetchFreshCheckoutUrl(
     mcpClient,
     created.checkout.id,
-    created.checkoutUrl
+    created.checkoutUrl,
+    conversationId
   );
 
   return {
@@ -1221,7 +1243,13 @@ async function syncCheckoutWithCart(
   };
 }
 
-async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) {
+async function updateExistingCheckout(
+  mcpClient,
+  checkoutId,
+  cart,
+  destination,
+  conversationId = null
+) {
   try {
     const getResponse = await mcpClient.callTool("get_checkout", { id: checkoutId });
     const existing = extractCheckoutPayload(getResponse);
@@ -1240,10 +1268,13 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
         hasCheckoutLineId: Boolean(line?.id)
       }))
     });
-    const checkoutBody = {
-      line_items: lineItems,
-      buyer: buildCheckoutBuyer(destination, existing.buyer)
-    };
+    const checkoutBody = withAiraAttribution(
+      {
+        line_items: lineItems,
+        buyer: buildCheckoutBuyer(destination, existing.buyer)
+      },
+      conversationId
+    );
 
     if (destination) {
       const lineItemIds = lineItems.map((line) => line.id).filter(Boolean);
@@ -1269,7 +1300,10 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
     if (!checkoutFromUpdate?.id && responseErrors.length > 0) {
       return {
         checkout: existing,
-        checkoutUrl: extractContinueUrl(getResponse) || existing.continue_url || null,
+        checkoutUrl: appendAiraUtmParams(
+          extractContinueUrl(getResponse) || existing.continue_url || null,
+          conversationId
+        ),
         shippingAddress: null,
         validationErrors: responseErrors,
         error: responseErrors[0]?.readable || extractToolErrorText(updateResponse)
@@ -1302,11 +1336,14 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
       if (needsFulfillmentRefresh && allLineIds.length > 0) {
         const retryResponse = await mcpClient.callTool("update_checkout", {
           id: checkout.id,
-          checkout: {
-            line_items: allLineItems,
-            buyer: buildCheckoutBuyer(destination, existing.buyer),
-            fulfillment: buildCheckoutFulfillment(destination, allLineIds)
-          }
+          checkout: withAiraAttribution(
+            {
+              line_items: allLineItems,
+              buyer: buildCheckoutBuyer(destination, existing.buyer),
+              fulfillment: buildCheckoutFulfillment(destination, allLineIds)
+            },
+            conversationId
+          )
         });
         const retryErrors = extractCheckoutValidationErrors(retryResponse);
         const retried = extractCheckoutPayload(retryResponse) || checkout;
@@ -1318,7 +1355,10 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
         ];
         return {
           checkout: retried,
-          checkoutUrl: extractContinueUrl(retryResponse) || retried.continue_url,
+          checkoutUrl: appendAiraUtmParams(
+            extractContinueUrl(retryResponse) || retried.continue_url,
+            conversationId
+          ),
           shippingAddress: shippingAddress || null,
           validationErrors,
           error: retryErrors[0]?.readable || null
@@ -1328,7 +1368,10 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
 
     return {
       checkout,
-      checkoutUrl: extractContinueUrl(updateResponse) || checkout.continue_url,
+      checkoutUrl: appendAiraUtmParams(
+        extractContinueUrl(updateResponse) || checkout.continue_url,
+        conversationId
+      ),
       shippingAddress: shippingAddress || null,
       validationErrors
     };
@@ -1337,7 +1380,12 @@ async function updateExistingCheckout(mcpClient, checkoutId, cart, destination) 
   }
 }
 
-async function createCheckoutFromCart(mcpClient, cart, destination) {
+async function createCheckoutFromCart(
+  mcpClient,
+  cart,
+  destination,
+  conversationId = null
+) {
   try {
     const overrides = {};
     if (destination?.phone_number || destination?.email) {
@@ -1355,7 +1403,7 @@ async function createCheckoutFromCart(mcpClient, cart, destination) {
 
     const response = await mcpClient.callTool(
       "create_checkout",
-      buildCreateCheckoutArgs(cart.id, cart, overrides)
+      buildCreateCheckoutArgs(cart.id, cart, overrides, conversationId)
     );
     let checkout = extractCheckoutPayload(response);
     const createErrors = extractCheckoutValidationErrors(response);
@@ -1368,7 +1416,10 @@ async function createCheckoutFromCart(mcpClient, cart, destination) {
     }
 
     let shippingAddress = extractShippingDestination(checkout);
-    let checkoutUrl = extractContinueUrl(response) || checkout.continue_url;
+    let checkoutUrl = appendAiraUtmParams(
+      extractContinueUrl(response) || checkout.continue_url,
+      conversationId
+    );
     let validationErrors = [
       ...createErrors,
       ...extractCheckoutValidationErrors(checkout)
@@ -1379,18 +1430,24 @@ async function createCheckoutFromCart(mcpClient, cart, destination) {
       const lineItemIds = lineItems.map((line) => line.id).filter(Boolean);
       const updateResponse = await mcpClient.callTool("update_checkout", {
         id: checkout.id,
-        checkout: {
-          ...(lineItems.length ? { line_items: lineItems } : {}),
-          buyer: buildCheckoutBuyer(destination, checkout.buyer),
-          fulfillment: buildCheckoutFulfillment(destination, lineItemIds)
-        }
+        checkout: withAiraAttribution(
+          {
+            ...(lineItems.length ? { line_items: lineItems } : {}),
+            buyer: buildCheckoutBuyer(destination, checkout.buyer),
+            fulfillment: buildCheckoutFulfillment(destination, lineItemIds)
+          },
+          conversationId
+        )
       });
       const updateErrors = extractCheckoutValidationErrors(updateResponse);
       const updatedCheckout = extractCheckoutPayload(updateResponse);
       if (updatedCheckout?.id) {
         checkout = updatedCheckout;
         shippingAddress = extractShippingDestination(checkout);
-        checkoutUrl = extractContinueUrl(updateResponse) || checkout.continue_url || checkoutUrl;
+        checkoutUrl = appendAiraUtmParams(
+          extractContinueUrl(updateResponse) || checkout.continue_url || checkoutUrl,
+          conversationId
+        );
       } else {
         shippingAddress = null;
       }
@@ -1452,7 +1509,7 @@ function parseShopifyTransportError(error) {
   };
 }
 
-function buildCartSummaryWithCheckoutIssue(cart, rawResponse, synced, savedShipping) {
+function buildCartSummaryWithCheckoutIssue(cart, rawResponse, synced, savedShipping, conversationId = null) {
   const transport = parseShopifyTransportError(synced?.error || synced?.shopify_error || "");
   const rateLimited = Boolean(synced?.rate_limited || transport.rate_limited);
   const retryAfter =
@@ -1478,7 +1535,8 @@ function buildCartSummaryWithCheckoutIssue(cart, rawResponse, synced, savedShipp
   const checkoutUrl = synced?.checkoutUrl || null;
   const summary = formatCartSummary(cart, rawResponse, {
     checkoutUrl,
-    shippingAddress: checkoutUrl ? synced?.shippingAddress || savedShipping : null
+    shippingAddress: checkoutUrl ? synced?.shippingAddress || savedShipping : null,
+    conversationId
   });
 
   if (checkoutUrl && !rateLimited) {
@@ -1486,7 +1544,7 @@ function buildCartSummaryWithCheckoutIssue(cart, rawResponse, synced, savedShipp
       ...summary,
       success: true,
       cart_updated: true,
-      checkout_url: checkoutUrl,
+      checkout_url: summary.checkout_url || checkoutUrl,
       issues,
       instruction:
         "Cart updated. checkout_url is available — share it as: You can [click here to proceed to checkout](URL). " +
@@ -1557,7 +1615,7 @@ async function summarizeCartWithShipping(
   const checkoutId = await getConversationCheckoutId(conversationId);
 
   if (!savedShipping?.street_address && !checkoutId) {
-    return formatCartSummary(cart, rawResponse);
+    return formatCartSummary(cart, rawResponse, { conversationId });
   }
 
   // Rare: caller opted out of create (should not hide URL when checkout already exists).
@@ -1565,7 +1623,8 @@ async function summarizeCartWithShipping(
     return {
       ...formatCartSummary(cart, rawResponse, {
         checkoutUrl: null,
-        shippingAddress: savedShipping
+        shippingAddress: savedShipping,
+        conversationId
       }),
       checkout_url: null,
       needs_checkout_link: true,
@@ -1585,7 +1644,8 @@ async function summarizeCartWithShipping(
   if (!synced) {
     return formatCartSummary(cart, rawResponse, {
       checkoutUrl: null,
-      shippingAddress: savedShipping
+      shippingAddress: savedShipping,
+      conversationId
     });
   }
 
@@ -1598,7 +1658,8 @@ async function summarizeCartWithShipping(
       cart,
       rawResponse,
       synced,
-      savedShipping
+      savedShipping,
+      conversationId
     );
   }
 
@@ -1607,7 +1668,8 @@ async function summarizeCartWithShipping(
   if (synced.checkoutUrl) {
     return formatCartSummary(cart, rawResponse, {
       checkoutUrl: synced.checkoutUrl,
-      shippingAddress: synced.shippingAddress || savedShipping
+      shippingAddress: synced.shippingAddress || savedShipping,
+      conversationId
     });
   }
 
@@ -1616,7 +1678,8 @@ async function summarizeCartWithShipping(
       cart,
       rawResponse,
       synced,
-      savedShipping
+      savedShipping,
+      conversationId
     );
   }
 
@@ -1624,7 +1687,8 @@ async function summarizeCartWithShipping(
     return {
       ...formatCartSummary(cart, rawResponse, {
         checkoutUrl: null,
-        shippingAddress: savedShipping
+        shippingAddress: savedShipping,
+        conversationId
       }),
       checkout_url: null,
       needs_checkout_link: true,
@@ -1636,11 +1700,12 @@ async function summarizeCartWithShipping(
 
   return formatCartSummary(cart, rawResponse, {
     checkoutUrl: synced.checkoutUrl || null,
-    shippingAddress: synced.shippingAddress || savedShipping
+    shippingAddress: synced.shippingAddress || savedShipping,
+    conversationId
   });
 }
 
-async function stripCheckoutShipping(mcpClient, checkoutId, cart) {
+async function stripCheckoutShipping(mcpClient, checkoutId, cart, conversationId = null) {
   try {
     const getResponse = await mcpClient.callTool("get_checkout", { id: checkoutId });
     const existing = extractCheckoutPayload(getResponse);
@@ -1651,10 +1716,13 @@ async function stripCheckoutShipping(mcpClient, checkoutId, cart) {
     const lineItems = buildUpdateCheckoutLineItems(cart.line_items, existing.line_items);
     const updateResponse = await mcpClient.callTool("update_checkout", {
       id: checkoutId,
-      checkout: {
-        ...(lineItems.length ? { line_items: lineItems } : {}),
-        fulfillment: { methods: [] }
-      }
+      checkout: withAiraAttribution(
+        {
+          ...(lineItems.length ? { line_items: lineItems } : {}),
+          fulfillment: { methods: [] }
+        },
+        conversationId
+      )
     });
 
     const checkout = extractCheckoutPayload(updateResponse) || existing;
@@ -1662,7 +1730,8 @@ async function stripCheckoutShipping(mcpClient, checkoutId, cart) {
     const checkoutUrl = await fetchFreshCheckoutUrl(
       mcpClient,
       checkout.id || checkoutId,
-      extractContinueUrl(updateResponse) || checkout.continue_url || null
+      extractContinueUrl(updateResponse) || checkout.continue_url || null,
+      conversationId
     );
 
     return {
@@ -1695,7 +1764,7 @@ async function removeCartShipping(mcpClient, conversationId) {
   let checkoutUrl = null;
 
   if (checkoutId && live?.cart) {
-    const stripped = await stripCheckoutShipping(mcpClient, checkoutId, live.cart);
+    const stripped = await stripCheckoutShipping(mcpClient, checkoutId, live.cart, conversationId);
     if (stripped?.checkout?.id) {
       await setConversationCheckoutId(conversationId, stripped.checkout.id);
       checkoutUrl = stripped.checkoutUrl;
@@ -1710,7 +1779,7 @@ async function removeCartShipping(mcpClient, conversationId) {
 
   if (live?.cart) {
     return toolResult({
-      ...formatCartSummary(live.cart, live.raw, { checkoutUrl }),
+      ...formatCartSummary(live.cart, live.raw, { checkoutUrl, conversationId }),
       shipping_removed: true,
       shipping_saved: false,
       instruction: checkoutUrl
