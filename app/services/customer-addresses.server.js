@@ -26,6 +26,17 @@ function toolError(message) {
   });
 }
 
+function compactAddressLabel(address, index) {
+  const street = String(address.street_address || "").trim();
+  const city = String(address.address_locality || "").trim();
+  const region = String(address.address_region || "").trim();
+  const postal = String(address.postal_code || "").trim();
+  const place = [city, region, postal].filter(Boolean).join(" ");
+  const line = [street, place].filter(Boolean).join(", ");
+  const prefix = address.is_default ? "Default" : `Address ${index + 1}`;
+  return line ? `${prefix} · ${line}` : prefix;
+}
+
 /**
  * Tool is only registered when the storefront customer is logged in.
  */
@@ -37,8 +48,9 @@ export function getCustomerAddressTools() {
         "Get the logged-in customer's saved Shopify shipping addresses from the store account. " +
         "Call this when the customer asks for their addresses, wants to ship to a saved/default address, " +
         "or needs an address for set_cart_shipping / checkout. " +
-        "You MAY list these addresses to the customer. Prefer the default address when they say " +
-        '"use my address" or "default". Pass fields into set_cart_shipping — do not invent addresses.',
+        "A compact address select UI is shown in chat — do NOT paste full address lists in your reply. " +
+        "Prefer the default address when they say \"use my address\" or \"default\". " +
+        "After they pick one (or if they already specified), pass fields into set_cart_shipping — do not invent addresses.",
       input_schema: {
         type: "object",
         properties: {
@@ -55,6 +67,40 @@ export function getCustomerAddressTools() {
 
 export function isCustomerAddressesTool(toolName) {
   return toolName === CUSTOMER_ADDRESSES_TOOL_NAME;
+}
+
+/**
+ * Build SSE payload for the storefront address select UI.
+ */
+export function extractCustomerAddressesUi(toolUseResponse) {
+  try {
+    const data =
+      toolUseResponse?.structuredContent ||
+      (() => {
+        const text = toolUseResponse?.content?.find((b) => b.type === "text")?.text;
+        if (!text) return null;
+        try {
+          return JSON.parse(text);
+        } catch {
+          return null;
+        }
+      })();
+
+    if (!data?.success || !Array.isArray(data.addresses) || data.addresses.length === 0) {
+      return null;
+    }
+
+    return {
+      title: "Select a saved address",
+      addresses: data.addresses.map((address, index) => ({
+        ...address,
+        label: compactAddressLabel(address, index)
+      }))
+    };
+  } catch (error) {
+    console.error("[customer-addresses] extract UI failed", error.message);
+    return null;
+  }
 }
 
 export async function callCustomerAddressesTool(
@@ -77,10 +123,18 @@ export async function callCustomerAddressesTool(
       found: addresses.length > 0,
       address_count: addresses.length,
       addresses,
+      ui_instruction:
+        addresses.length > 0
+          ? "CRITICAL: A select dropdown of saved addresses is already shown in the chat UI. " +
+            "FORBIDDEN in your reply: listing street/city/state/ZIP/phone/name fields, numbered address lists, or long address blocks. " +
+            "Reply in ONE short sentence only (e.g. \"Pick a saved address below, or tell me a new one.\")."
+          : undefined,
       instruction:
         addresses.length > 0
-          ? "Use these saved addresses for shipping. Prefer is_default=true when the customer does not specify which one. " +
-            "Map fields into set_cart_shipping (street_address, address_locality, address_region, postal_code, address_country, names, phone)."
+          ? "Saved addresses are shown in the UI select. Prefer is_default=true when the customer does not specify which one. " +
+            "When they choose one (or describe one), map fields into set_cart_shipping " +
+            "(street_address, address_locality, address_region, postal_code, address_country, names, phone). " +
+            "Do not invent addresses. Do not paste the address book into chat text."
           : "No saved addresses on file. Ask the customer to enter a shipping address, or add one in their Shopify account."
     });
   } catch (error) {

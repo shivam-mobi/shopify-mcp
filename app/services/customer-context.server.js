@@ -119,7 +119,7 @@ export function buildCustomerContextHintMessage(profile = {}) {
     "Use their first name naturally when you know it — briefly, not as the whole greeting. " +
       "If only last name is known, you may use it politely. " +
       "If no name is known, skip the name. " +
-      "For hi/hello greetings, briefly offer help with cabin air filters and vehicle fitment. " +
+      "For hi/hello greetings, briefly offer help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters. " +
       "Do NOT say \"AI-powered shopping assistant\" — the chat UI already shows that. " +
       "Never say \"vehicle parts\" or long generic lines like \"How can I assist you today\". " +
       "Do not ask for their name at welcome unless needed for shipping or orders."
@@ -157,7 +157,7 @@ export function buildWelcomePromptMessages(profile = {}, { welcomeTemplate } = {
   const instruction =
     "Generate the opening welcome message for a NEW chat session. " +
     "Reply with 1-2 short sentences only. " +
-    "Say you can help with cabin air filters and vehicle fitment (year, make, model). " +
+    "Say you can help with cabin air filters and vehicle fitment (year, make, model), cabin filter air fresheners, and home filters. " +
     "Do NOT say \"AI-powered shopping assistant\" or \"I'm your AI-powered shopping assistant\" — the chat UI already shows that. " +
     "If first name is known, you may start with a brief Hi {firstName}! — then the help line. " +
     "If no name is known, skip the name — never output 'Hi !'. " +
@@ -187,9 +187,9 @@ export function getFallbackWelcomeMessage(profile = {}) {
   const firstName = normalizeCustomerName(profile.firstName);
 
   if (firstName) {
-    return `Hi ${firstName}! I can help you find the right cabin air filter for your vehicle.`;
+    return `Hi ${firstName}! I can help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters.`;
   }
-  return "I can help you with cabin air filters for your vehicle. Tell me your year, make, and model.";
+  return "I can help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters. What are you looking for?";
 }
 
 const GREETING_PATTERN = /^(hi|hello|hey|howdy|good\s+(morning|afternoon|evening)|what'?s\s+up|yo)[!.?\s]*$/i;
@@ -213,7 +213,7 @@ export function buildGreetingHintMessage(userMessage, profile = {}) {
     content:
       "The customer sent a simple greeting. Reply in 1-2 short sentences only. " +
       nameHint +
-      "Mention you help with cabin air filters and vehicle fitment (year/make/model). " +
+      "Mention you help with cabin air filters and vehicle fitment (year/make/model), cabin filter air fresheners, and home filters. " +
       "Do NOT say \"AI-powered shopping assistant\" or \"I'm your AI-powered shopping assistant\" — the chat UI already shows that. " +
       "Do NOT say 'vehicle parts', 'How can I assist you today', or other long generic support lines. " +
       "Do not call tools for a plain greeting."

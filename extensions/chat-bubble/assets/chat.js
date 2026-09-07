@@ -158,7 +158,7 @@
   }
 
   function getStaticWelcomeFallback() {
-    return window.shopChatConfig?.welcomeMessage || "I can help you with cabin air filters for your vehicle. Tell me your year, make, and model.";
+    return window.shopChatConfig?.welcomeMessage || "I can help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters.";
   }
 
   function getAssistantName() {
@@ -876,7 +876,7 @@
         if (greetingSubEl) {
           const sub =
             window.shopChatConfig?.greetingSubtitle ||
-            'Here to help you find the right cabin air filter and vehicle fitment. How can I assist you today?';
+            'Here to help you find the right cabin air filters, vehicle fitment, cabin filter air fresheners, and home filters.';
           greetingSubEl.textContent = decodeHtmlEntities(sub);
         }
 
@@ -1126,6 +1126,84 @@
           break;
         }
 
+        this.scrollToBottom();
+      },
+
+      /**
+       * Compact <select> for saved Shopify addresses (logged-in customers).
+       */
+      displayCustomerAddresses: function(payload) {
+        const { messagesContainer, chatInput } = this.elements;
+        const addresses = Array.isArray(payload?.addresses) ? payload.addresses : [];
+        if (!addresses.length) return;
+
+        messagesContainer
+          .querySelectorAll('.shop-ai-address-select')
+          .forEach((el) => el.remove());
+
+        const wrap = document.createElement('div');
+        wrap.classList.add('shop-ai-address-select');
+
+        const title = document.createElement('div');
+        title.classList.add('shop-ai-address-select-title');
+        title.textContent = payload.title || 'Select a saved address';
+        wrap.appendChild(title);
+
+        const row = document.createElement('div');
+        row.classList.add('shop-ai-address-select-row');
+
+        const select = document.createElement('select');
+        select.classList.add('shop-ai-address-select-input');
+        select.setAttribute('aria-label', 'Saved shipping addresses');
+
+        addresses.forEach((address, index) => {
+          const option = document.createElement('option');
+          option.value = String(index);
+          option.textContent = address.label || `Address ${index + 1}`;
+          if (address.is_default) option.selected = true;
+          select.appendChild(option);
+        });
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.classList.add('shop-ai-address-select-use');
+        button.textContent = 'Use address';
+
+        const buildShipMessage = (address) => {
+          const parts = [
+            address.street_address,
+            address.extended_address,
+            [address.address_locality, address.address_region, address.postal_code]
+              .filter(Boolean)
+              .join(', '),
+            address.address_country
+          ].filter(Boolean);
+          const name = [address.first_name, address.last_name].filter(Boolean).join(' ');
+          const bits = [`Please use this saved shipping address: ${parts.join(', ')}.`];
+          if (name) bits.push(`Name: ${name}.`);
+          if (address.phone_number) bits.push(`Phone: ${address.phone_number}.`);
+          if (address.email) bits.push(`Email: ${address.email}.`);
+          return bits.join(' ');
+        };
+
+        button.addEventListener('click', () => {
+          if (wrap.classList.contains('is-used')) return;
+          const chosen = addresses[Number(select.value)];
+          if (!chosen) return;
+
+          wrap.classList.add('is-used');
+          select.disabled = true;
+          button.disabled = true;
+
+          if (chatInput) chatInput.value = '';
+          ShopAIChat.UI.showChatView();
+          ShopAIChat.Message.sendText(buildShipMessage(chosen), messagesContainer);
+        });
+
+        row.appendChild(select);
+        row.appendChild(button);
+        wrap.appendChild(row);
+        messagesContainer.appendChild(wrap);
         this.scrollToBottom();
       },
 
@@ -1883,6 +1961,10 @@
 
           case 'fitment_options':
             ShopAIChat.UI.displayFitmentOptions(data);
+            break;
+
+          case 'customer_addresses':
+            ShopAIChat.UI.displayCustomerAddresses(data);
             break;
 
           case 'tool_use':
@@ -2833,6 +2915,9 @@
         }
         info.appendChild(stock);
 
+        const resources = document.createElement('div');
+        resources.classList.add('shop-ai-product-resources');
+
         const pdfUrl = String(product.pdfUrl || product.pdf_url || '').trim();
         const pdfTitle = String(product.pdfTitle || product.pdf_title || '').trim();
         if (pdfUrl) {
@@ -2842,7 +2927,7 @@
           pdfLink.target = '_blank';
           pdfLink.rel = 'noopener noreferrer';
           pdfLink.textContent = pdfTitle || 'View PDF';
-          info.appendChild(pdfLink);
+          resources.appendChild(pdfLink);
         }
 
         const youtubeUrl = String(product.youtubeUrl || product.youtube_url || '').trim();
@@ -2853,8 +2938,10 @@
           ytLink.target = '_blank';
           ytLink.rel = 'noopener noreferrer';
           ytLink.textContent = 'Installation Video';
-          info.appendChild(ytLink);
+          resources.appendChild(ytLink);
         }
+
+        info.appendChild(resources);
 
         // Only show Add to Cart when in stock
         if (inStock) {

@@ -45,7 +45,8 @@ import {
 import {
   getCustomerAddressTools,
   isCustomerAddressesTool,
-  callCustomerAddressesTool
+  callCustomerAddressesTool,
+  extractCustomerAddressesUi
 } from "../services/customer-addresses.server.js";
 import { logEmptyToolResultIfNeeded } from "../services/tool-empty-log.server.js";
 import { storeToolEmptyResultLog } from "../db.server.js";
@@ -380,6 +381,7 @@ async function handleChatSession({
     let conversationHistory = [];
     let productsToDisplay = [];
     let fitmentOptionsToDisplay = null;
+    let customerAddressesToDisplay = null;
 
     const customerProfile = await syncCustomerContextFromRequest(conversationId, body);
 
@@ -647,6 +649,13 @@ async function handleChatSession({
                 if (choiceOptions?.options?.length) {
                   fitmentOptionsToDisplay = choiceOptions;
                 }
+
+                if (isCustomerAddressesTool(toolName)) {
+                  const addressUi = extractCustomerAddressesUi(toolUseResponse);
+                  if (addressUi?.addresses?.length) {
+                    customerAddressesToDisplay = addressUi;
+                  }
+                }
               }
             } catch (historyError) {
               console.error("[chat] failed to record tool result", historyError);
@@ -701,6 +710,15 @@ async function handleChatSession({
         field: fitmentOptionsToDisplay.field,
         title: fitmentOptionsToDisplay.title,
         options: fitmentOptionsToDisplay.options
+      });
+    }
+
+    // Compact saved-address select (logged-in customers)
+    if (customerAddressesToDisplay?.addresses?.length) {
+      stream.sendMessage({
+        type: 'customer_addresses',
+        title: customerAddressesToDisplay.title,
+        addresses: customerAddressesToDisplay.addresses
       });
     }
 
