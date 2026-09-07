@@ -30,6 +30,15 @@ const VARIANTS_BY_IDS_QUERY = `#graphql
           featuredImage {
             url
           }
+          pdfTitle: metafield(namespace: "global", key: "1_pdf_title") {
+            value
+          }
+          pdfUrl: metafield(namespace: "global", key: "1_pdf_url") {
+            value
+          }
+          youtubeId: metafield(namespace: "global", key: "product_youtube_id") {
+            value
+          }
         }
       }
     }
@@ -268,6 +277,33 @@ function formatPrice(price) {
   return raw.startsWith("$") ? raw : `$${raw}`;
 }
 
+function readMetafieldValue(metafield) {
+  if (metafield == null || metafield.value == null) return null;
+  const value = String(metafield.value).trim();
+  return value || null;
+}
+
+/**
+ * Metafield may be a bare YouTube id or a full URL — always return a watchable URL.
+ */
+function toYoutubeUrl(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) return value;
+
+  const fromQuery = value.match(/[?&]v=([\w-]{6,})/i)?.[1];
+  if (fromQuery) return `https://www.youtube.com/watch?v=${fromQuery}`;
+
+  const fromShort = value.match(/(?:youtu\.be\/|embed\/|shorts\/)([\w-]{6,})/i)?.[1];
+  if (fromShort) return `https://www.youtube.com/watch?v=${fromShort}`;
+
+  if (/^[\w-]{6,}$/.test(value)) {
+    return `https://www.youtube.com/watch?v=${value}`;
+  }
+
+  return null;
+}
+
 function normalizeVariantNode(node) {
   if (!node?.id) return null;
 
@@ -318,6 +354,10 @@ function normalizeVariantNode(node) {
       ? formatPrice(node.compareAtPrice)
       : null;
 
+  const pdfTitle = readMetafieldValue(product.pdfTitle);
+  const pdfUrl = readMetafieldValue(product.pdfUrl);
+  const youtubeUrl = toYoutubeUrl(readMetafieldValue(product.youtubeId));
+
   return {
     variantId: String(node.id),
     sku,
@@ -334,6 +374,9 @@ function normalizeVariantNode(node) {
     inventoryPolicy: node.inventoryPolicy || null,
     descriptionHtml: product.descriptionHtml || "",
     vendor: product.vendor || "",
+    pdfTitle,
+    pdfUrl,
+    youtubeUrl,
     ...compareAttrs
   };
 }

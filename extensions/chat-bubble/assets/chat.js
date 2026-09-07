@@ -2594,6 +2594,29 @@
         }
         info.appendChild(stock);
 
+        const pdfUrl = String(product.pdfUrl || product.pdf_url || '').trim();
+        const pdfTitle = String(product.pdfTitle || product.pdf_title || '').trim();
+        if (pdfUrl) {
+          const pdfLink = document.createElement('a');
+          pdfLink.classList.add('shop-ai-product-pdf');
+          pdfLink.href = pdfUrl;
+          pdfLink.target = '_blank';
+          pdfLink.rel = 'noopener noreferrer';
+          pdfLink.textContent = pdfTitle || 'View PDF';
+          info.appendChild(pdfLink);
+        }
+
+        const youtubeUrl = String(product.youtubeUrl || product.youtube_url || '').trim();
+        if (youtubeUrl) {
+          const ytLink = document.createElement('a');
+          ytLink.classList.add('shop-ai-product-youtube');
+          ytLink.href = youtubeUrl;
+          ytLink.target = '_blank';
+          ytLink.rel = 'noopener noreferrer';
+          ytLink.textContent = 'Installation Video';
+          info.appendChild(ytLink);
+        }
+
         // Only show Add to Cart when in stock
         if (inStock) {
           const button = document.createElement('button');
@@ -2780,6 +2803,29 @@
         meta.appendChild(price);
         meta.appendChild(stock);
         info.appendChild(meta);
+
+        const pdfUrl = String(product.pdfUrl || product.pdf_url || '').trim();
+        const pdfTitle = String(product.pdfTitle || product.pdf_title || '').trim();
+        if (pdfUrl) {
+          const pdfLink = document.createElement('a');
+          pdfLink.classList.add('shop-ai-product-pdf');
+          pdfLink.href = pdfUrl;
+          pdfLink.target = '_blank';
+          pdfLink.rel = 'noopener noreferrer';
+          pdfLink.textContent = pdfTitle || 'View PDF';
+          info.appendChild(pdfLink);
+        }
+
+        const youtubeUrl = String(product.youtubeUrl || product.youtube_url || '').trim();
+        if (youtubeUrl) {
+          const ytLink = document.createElement('a');
+          ytLink.classList.add('shop-ai-product-youtube');
+          ytLink.href = youtubeUrl;
+          ytLink.target = '_blank';
+          ytLink.rel = 'noopener noreferrer';
+          ytLink.textContent = 'Installation Video';
+          info.appendChild(ytLink);
+        }
 
         if (inStock) {
           const actions = document.createElement('div');

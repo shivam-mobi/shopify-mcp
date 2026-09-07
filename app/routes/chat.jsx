@@ -676,7 +676,10 @@ async function handleChatSession({
           inStock: p.inStock,
           filterType: p.filterType,
           isBest: p.isBest,
-          compareScore: p.compareScore
+          compareScore: p.compareScore,
+          pdfTitle: p.pdfTitle || null,
+          pdfUrl: p.pdfUrl || null,
+          youtubeUrl: p.youtubeUrl || null
         }))
       );
       stream.sendMessage({

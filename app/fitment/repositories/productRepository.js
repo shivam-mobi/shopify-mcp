@@ -177,7 +177,10 @@ export async function fetchProductList(
       yGroup: live.yGroup || "",
       features: Array.isArray(live.features) ? live.features : [],
       tags: Array.isArray(live.tags) ? live.tags : [],
-      descriptionHtml: live.descriptionHtml || ""
+      descriptionHtml: live.descriptionHtml || "",
+      pdfTitle: live.pdfTitle || null,
+      pdfUrl: live.pdfUrl || null,
+      youtubeUrl: live.youtubeUrl || null
     });
   }
 

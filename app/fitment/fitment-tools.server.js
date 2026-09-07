@@ -65,7 +65,10 @@ function formatProducts(products, vehicle, qualifiers) {
     hasParticulate: product.hasParticulate === true,
     yGroup: product.yGroup || "",
     features: Array.isArray(product.features) ? product.features : [],
-    tags: Array.isArray(product.tags) ? product.tags : []
+    tags: Array.isArray(product.tags) ? product.tags : [],
+    pdfTitle: product.pdfTitle || null,
+    pdfUrl: product.pdfUrl || null,
+    youtubeUrl: product.youtubeUrl || null
   }));
 
   const ranked = enrichProductsWithComparison(formatted);

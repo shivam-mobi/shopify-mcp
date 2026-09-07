@@ -266,6 +266,9 @@ export function createToolService() {
       yGroup: product.yGroup || "",
       features: Array.isArray(product.features) ? product.features : undefined,
       tags: Array.isArray(product.tags) ? product.tags : product.tags,
+      pdfTitle: product.pdfTitle || product.pdf_title || null,
+      pdfUrl: product.pdfUrl || product.pdf_url || null,
+      youtubeUrl: product.youtubeUrl || product.youtube_url || null,
       ...((!product.filterType && !product.isHepa)
         ? buildCompareAttributes({
             tags: product.tags,
