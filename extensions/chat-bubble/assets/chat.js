@@ -1342,9 +1342,7 @@
         const rawText = element.dataset.rawText;
 
         // Process the text with various Markdown features
-        let processedText = this.stripBestPickFromReply(
-          this.stripDuplicateProductListing(rawText)
-        );
+        let processedText = this.stripBestPickFromReply(rawText);
 
         // Remove markdown images entirely (LLM often emits ![alt](image_url)).
         // The link regex below would otherwise turn them into clickable "!alt" image links.
@@ -1442,61 +1440,6 @@
           .trim();
 
         return source;
-      },
-
-      /**
-       * Hide long LLM product dumps — cards + comparison UI already show them.
-       */
-      stripDuplicateProductListing: function(text) {
-        const source = String(text || '');
-        const variantIdCount = (source.match(/Variant ID:\s*gid:\/\/shopify\/ProductVariant\//gi) || []).length;
-        const priceLineCount = (source.match(/^\s*Price:\s*/gim) || []).length;
-        const pricedAtCount = (source.match(/\bPriced at\s*\$/gi) || []).length;
-        const inlinePriceCount = (source.match(/\$\d+\.\d{2}/g) || []).length;
-        const looksLikeCatalogDump =
-          variantIdCount >= 1 ||
-          priceLineCount >= 2 ||
-          pricedAtCount >= 1 ||
-          (inlinePriceCount >= 2 && /filter|product|cabin|hepa|febreez/i.test(source)) ||
-          (/Description:\s*/i.test(source) && priceLineCount >= 1) ||
-          (/here are the options|following (?:filters|products)|options below/i.test(source) &&
-            (pricedAtCount >= 1 || inlinePriceCount >= 2));
-
-        if (!looksLikeCatalogDump) {
-          return source;
-        }
-
-        const fallback =
-          "I found matching filters for your vehicle. Browse the product cards and comparison below, then tell me which one to add to your cart.";
-
-        // Keep only a short intro before the first product dump block
-        const cut = source.search(
-          /\n\s*(?:Price:|Variant ID:|Description:)|(?:\n|^)[^*\n]{10,}:\s*(?:Priced at\s*\$|\$\d+\.\d{2})/i
-        );
-        let intro = cut > 0 ? source.slice(0, cut).trim() : '';
-
-        // Drop intro lines that are themselves product titles in a list
-        intro = intro
-          .split('\n')
-          .map((line) => line.trim())
-          .filter(Boolean)
-          .filter((line) => !/^(Price|Description|Variant ID|Stock):/i.test(line))
-          .filter((line) => !/gid:\/\/shopify\/ProductVariant\//i.test(line))
-          .filter((line) => !/\bPriced at\s*\$/i.test(line))
-          .filter((line) => !/\$\d+\.\d{2}/.test(line))
-          .join(' ')
-          .trim();
-
-        if (!intro || intro.length > 220 || /Price:|Variant ID:|\$\d+\.\d{2}/i.test(intro)) {
-          return fallback;
-        }
-
-        // If intro is only "Here are the products..." keep a cleaner line
-        if (/here are the (?:products|options)|following products|products that fit|you will need a cabin air filter\. here are/i.test(intro)) {
-          return fallback;
-        }
-
-        return intro;
       },
 
       /**

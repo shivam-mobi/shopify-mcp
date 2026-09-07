@@ -27,6 +27,7 @@ import {
 } from "../fitment/fitment-tools.server.js";
 import { enrichProductsWithComparison } from "../services/product-compare.server.js";
 import { buildStoreHelpHintMessage } from "../services/store-help-hints.server.js";
+import { buildCatalogSearchHintMessage } from "../services/catalog-search-hints.server.js";
 import {
   getStorePolicyTools,
   isStorePolicyTool,
@@ -35,6 +36,12 @@ import {
   callStorePolicyTool,
   withLocalPolicyFallback
 } from "../services/store-policies.server.js";
+import {
+  getCatalogSearchTools,
+  isCatalogSearchTool,
+  callCatalogSearchTool,
+  filterCatalogToolsForLlm
+} from "../services/catalog-search.server.js";
 import { logEmptyToolResultIfNeeded } from "../services/tool-empty-log.server.js";
 import { storeToolEmptyResultLog } from "../db.server.js";
 import {
@@ -313,17 +320,22 @@ async function handleChatSession({
     const fitmentTools = isFitmentConfigured() ? getFitmentTools() : [];
     const cartWrapperTools = getCartWrapperTools();
     const storePolicyTools = getStorePolicyTools();
-    const mcpToolsForLlm = filterCartToolsForLlm(mcpClient.tools);
+    const catalogSearchTools = getCatalogSearchTools();
+    const mcpToolsForLlm = filterCatalogToolsForLlm(
+      filterCartToolsForLlm(mcpClient.tools)
+    );
     const allTools = [
       ...mcpToolsForLlm,
       ...cartWrapperTools,
       ...fitmentTools,
-      ...storePolicyTools
+      ...storePolicyTools,
+      ...catalogSearchTools
     ];
 
-    console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length} (${mcpToolsForLlm.length} after cart filter)`);
+    console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length} (${mcpToolsForLlm.length} after cart/catalog filter)`);
     console.log(`Cart wrapper tools: ${cartWrapperTools.length}`);
     console.log(`Store policy tools: ${storePolicyTools.length} (local fallback if Shopify policy empty)`);
+    console.log(`Catalog search tools: ${catalogSearchTools.length}`);
     if (fitmentTools.length) {
       console.log(`Fitment tools enabled: ${fitmentTools.length}`);
     }
@@ -381,6 +393,11 @@ async function handleChatSession({
     const storeHelpHint = buildStoreHelpHintMessage(userMessage);
     if (storeHelpHint) {
       conversationHistory.unshift(storeHelpHint);
+    }
+
+    const catalogSearchHint = buildCatalogSearchHintMessage(userMessage);
+    if (catalogSearchHint) {
+      conversationHistory.unshift(catalogSearchHint);
     }
 
     const customerContextHint = buildCustomerContextHintMessage(customerProfile);
@@ -457,6 +474,13 @@ async function handleChatSession({
                 console.log("[chat] fitment tool invoke", { toolName, toolArgs, shop });
                 toolUseResponse = await callFitmentTool(toolName, toolArgs, { shop, conversationId });
                 console.log("[chat] fitment tool success", { toolName });
+              } else if (isCatalogSearchTool(toolName)) {
+                console.log("[chat] catalog search invoke", { toolName, toolArgs, shop });
+                toolUseResponse = await callCatalogSearchTool(mcpClient, toolName, toolArgs, {
+                  shop,
+                  conversationId
+                });
+                console.log("[chat] catalog search done", { toolName });
               } else if (isStorePolicyTool(toolName)) {
                 console.log("[chat] store policy tool invoke", { toolName, toolArgs });
                 toolUseResponse = await callStorePolicyTool(toolName, toolArgs);

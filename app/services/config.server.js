@@ -88,6 +88,7 @@ export const AppConfig = {
     productSearchNames: [
       "search_catalog",
       "search_shop_catalog",
+      "search_store_products",
       "find_fitment_products",
       "get_fitment_next_step"
     ],
