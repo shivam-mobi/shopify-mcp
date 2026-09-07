@@ -28,6 +28,16 @@ import {
 import { enrichProductsWithComparison } from "../services/product-compare.server.js";
 import { buildStoreHelpHintMessage } from "../services/store-help-hints.server.js";
 import {
+  getStorePolicyTools,
+  isStorePolicyTool,
+  isShopifyPolicyTool,
+  isEmptyShopifyPolicyResult,
+  callStorePolicyTool,
+  withLocalPolicyFallback
+} from "../services/store-policies.server.js";
+import { logEmptyToolResultIfNeeded } from "../services/tool-empty-log.server.js";
+import { storeToolEmptyResultLog } from "../db.server.js";
+import {
   syncCustomerContextFromRequest,
   buildCustomerContextHintMessage,
   buildWelcomePromptMessages,
@@ -302,11 +312,18 @@ async function handleChatSession({
 
     const fitmentTools = isFitmentConfigured() ? getFitmentTools() : [];
     const cartWrapperTools = getCartWrapperTools();
+    const storePolicyTools = getStorePolicyTools();
     const mcpToolsForLlm = filterCartToolsForLlm(mcpClient.tools);
-    const allTools = [...mcpToolsForLlm, ...cartWrapperTools, ...fitmentTools];
+    const allTools = [
+      ...mcpToolsForLlm,
+      ...cartWrapperTools,
+      ...fitmentTools,
+      ...storePolicyTools
+    ];
 
     console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length} (${mcpToolsForLlm.length} after cart filter)`);
     console.log(`Cart wrapper tools: ${cartWrapperTools.length}`);
+    console.log(`Store policy tools: ${storePolicyTools.length} (local fallback if Shopify policy empty)`);
     if (fitmentTools.length) {
       console.log(`Fitment tools enabled: ${fitmentTools.length}`);
     }
@@ -433,13 +450,54 @@ async function handleChatSession({
               });
             }
 
-            // Route fitment tools locally; keep Shopify MCP tools unchanged
+            // Route fitment / store-policy tools locally; keep Shopify MCP tools unchanged
             let toolUseResponse;
             try {
               if (isFitmentTool(toolName)) {
                 console.log("[chat] fitment tool invoke", { toolName, toolArgs, shop });
                 toolUseResponse = await callFitmentTool(toolName, toolArgs, { shop, conversationId });
                 console.log("[chat] fitment tool success", { toolName });
+              } else if (isStorePolicyTool(toolName)) {
+                console.log("[chat] store policy tool invoke", { toolName, toolArgs });
+                toolUseResponse = await callStorePolicyTool(toolName, toolArgs);
+                console.log("[chat] store policy tool success", { toolName });
+              } else if (isShopifyPolicyTool(toolName)) {
+                console.log("[chat] Shopify policy tool invoke", { toolName, toolArgs });
+                let shopifyRaw;
+                try {
+                  shopifyRaw = await mcpClient.callTool(toolName, toolArgs);
+                } catch (shopifyError) {
+                  console.warn("[chat] Shopify policy failed — local fallback", {
+                    message: shopifyError.message
+                  });
+                  shopifyRaw = { error: true, message: shopifyError.message };
+                }
+
+                // Log empty Shopify policy responses before local fallback fills them.
+                if (isEmptyShopifyPolicyResult(shopifyRaw)) {
+                  storeToolEmptyResultLog({
+                    conversationId,
+                    shop,
+                    userQuery: userMessage,
+                    toolName,
+                    toolArgs,
+                    response: shopifyRaw,
+                    reason: shopifyRaw?.error ? "error" : "empty"
+                  }).catch((err) => {
+                    console.error("[chat] tool empty log failed", err.message);
+                  });
+                }
+
+                toolUseResponse = await withLocalPolicyFallback(
+                  shopifyRaw,
+                  toolArgs,
+                  userMessage
+                );
+                console.log("[chat] Shopify policy tool done", {
+                  toolName,
+                  usedLocalFallback: toolUseResponse?.structuredContent?.source === "local_fallback"
+                    || String(toolUseResponse?.content?.[0]?.text || "").includes('"source":"local_fallback"')
+                });
               } else if (isCartWrapperTool(toolName)) {
                 console.log("[chat] cart wrapper invoke", { toolName, toolArgs });
                 toolUseResponse = await callCartWrapperTool(
@@ -479,6 +537,20 @@ async function handleChatSession({
                   data: `Tool failed: ${error.message}`
                 }
               };
+            }
+
+            // Log empty / no-data tool results (skip Shopify — already logged above before fallback)
+            if (!isShopifyPolicyTool(toolName)) {
+              logEmptyToolResultIfNeeded({
+                conversationId,
+                shop,
+                userQuery: userMessage,
+                toolName,
+                toolArgs,
+                response: toolUseResponse
+              }).catch((err) => {
+                console.error("[chat] tool empty log failed", err.message);
+              });
             }
 
             // Always record a tool result so OpenAI history stays valid

@@ -114,3 +114,32 @@ model McpCallLog {
   @@index([toolName])
   @@index([createdAt])
 }
+
+/// Local PUREFLOW policy cheat sheet used when Shopify policy search is empty.
+model StorePolicyDigest {
+  id          String   @id @default("default")
+  title       String
+  note        String?
+  digest      String
+  contentDate String   // e.g. 2026-09-04 — source content date
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// When a tool is called but returns no useful data (empty / error / not found).
+model ToolEmptyResultLog {
+  id             String   @id @default(cuid())
+  conversationId String?
+  shop           String?
+  userQuery      String
+  toolName       String
+  toolArgs       String?  // JSON
+  response       String   // JSON or text of tool response
+  reason         String   // empty | error | no_results
+  createdAt      DateTime @default(now())
+
+  @@index([toolName])
+  @@index([conversationId])
+  @@index([createdAt])
+  @@index([reason])
+}

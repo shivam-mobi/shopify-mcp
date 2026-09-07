@@ -660,3 +660,105 @@ function llmJsonReplacer(_key, value) {
 
   return value;
 }
+
+/** Default PUREFLOW digest used if DB row is missing. */
+export const DEFAULT_STORE_POLICY_DIGEST = {
+  id: "default",
+  title: "PUREFLOW store policy cheat sheet",
+  note:
+    "Returned when Shopify search_shop_policies_and_faqs is empty. Prefer these quick facts; do not invent policy details.",
+  contentDate: "2026-09-04",
+  digest: `PUREFLOW quick facts — use these before inventing anything.
+
+CONTACT: Email support@pureflowair.com or call 866-206-4492 (typically 9am–5pm CST). Contact page: https://pureflowair.com/pages/contact-us
+
+CANCEL ORDER: You may cancel any time BEFORE the order is dispatched/shipped. Email support@pureflowair.com or call 866-206-4492. Orders placed before noon often ship the same day — next-day cancel only works if it has not shipped yet. After dispatch, use returns (not cancel). Do NOT treat “sales final after 30 days” as the cancel rule.
+
+SHIPPING / WHERE WE DELIVER: Ships domestically AND internationally. No fixed public country list — availability and cost are calculated at checkout by destination. Domestic transit usually 2–7 days; international usually 4–22 days. Orders usually dispatch within 2 business days of payment. Shipping price at checkout is final. P.O. Boxes: postal only. Military: USPS only. International import duties/taxes may be due on arrival. Tracking emailed after dispatch. Shipping policy: https://pureflowair.com/pages/shippings-policy
+
+RETURNS / REFUNDS (US & Canada): Return or exchange within 30 days of purchase if unused and in original packaging. Email support@pureflowair.com — PUREFLOW emails a prepaid return label. Damaged or wrong item: contact support for replacement. Refunds: after return received and checked, credit original payment in 3–5 business days; original outbound shipping (if charged) is not refunded. Canada: same return window; duties/taxes not refunded. Returns page: https://pureflowair.com/pages/return-refund-policy
+
+WARRANTY: 1-year limited warranty on PUREFLOW cabin and home filters for defects in workmanship/materials under normal use. Excludes misuse, abuse, neglect, alteration, improper install, acts of nature. Proof of purchase required; call 866-206-4492 if bought from PUREFLOW. Also a 30-day money-back guarantee if not satisfied with filter quality. Warranty page: https://pureflowair.com/pages/warranty
+
+PRODUCTS / WHY PUREFLOW: Sells cabin air filters, home furnace filters, and cabin-filter air fresheners. Multi-stage filtration (particles + charcoal/baking soda + antimicrobial). Febreze cabin filters (P&G license) are unscented odor-control. Fresheners: ~90 days, 6 scents, attach to filter pleats. Why PUREFLOW: https://pureflowair.com/pages/why-pureflow
+
+COMMON FAQs: Cabin filter replace about every 12,000–15,000 miles or at least yearly. Standard vs carbon vs HEPA: particulate vs odor/gases vs HEPA ~99.97% plus charcoal/antibacterial. Payments: major cards, Amazon Pay, Google Pay, Facebook Pay. Home furnace filters: change at least twice a year; arrows toward furnace. FAQs: https://pureflowair.com/pages/faqs
+
+PRIVACY: Site collects contact/account info as needed; uses cookies; CCPA/GDPR-style rights may apply — contact support. Privacy: https://pureflowair.com/pages/privacy-policies
+
+TERMS: Operated by Premium Guard Inc. (PGI). Subscriptions: cancel with at least 30 days notice via account page. “Sales final 30 days after order” in Terms is about purchase finality/returns timing — NOT a substitute for the cancel-before-dispatch rule. Terms: https://pureflowair.com/pages/term-of-service`
+};
+
+/**
+ * Load local store policy digest from DB (fallback content when Shopify is empty).
+ * Seeds the default row if missing.
+ */
+export async function getStorePolicyDigest(id = "default") {
+  try {
+    let row = await prisma.storePolicyDigest.findUnique({ where: { id } });
+
+    if (!row) {
+      row = await prisma.storePolicyDigest.create({
+        data: {
+          id: DEFAULT_STORE_POLICY_DIGEST.id,
+          title: DEFAULT_STORE_POLICY_DIGEST.title,
+          note: DEFAULT_STORE_POLICY_DIGEST.note,
+          digest: DEFAULT_STORE_POLICY_DIGEST.digest,
+          contentDate: DEFAULT_STORE_POLICY_DIGEST.contentDate
+        }
+      });
+    }
+
+    return {
+      id: row.id,
+      title: row.title,
+      note: row.note,
+      digest: row.digest,
+      contentDate: row.contentDate,
+      updatedAt: row.updatedAt
+    };
+  } catch (error) {
+    console.error("[db] getStorePolicyDigest failed — using in-code default", error.message);
+    return { ...DEFAULT_STORE_POLICY_DIGEST, updatedAt: null };
+  }
+}
+
+function stringifyLogPayload(value) {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return JSON.stringify({ unserializable: true, error: error.message });
+  }
+}
+
+/**
+ * Record when a tool was called but returned no useful data.
+ * Use this to find which tools miss user queries.
+ */
+export async function storeToolEmptyResultLog({
+  conversationId = null,
+  shop = null,
+  userQuery = "",
+  toolName,
+  toolArgs = null,
+  response = null,
+  reason = "empty"
+} = {}) {
+  try {
+    return await prisma.toolEmptyResultLog.create({
+      data: {
+        conversationId: conversationId || null,
+        shop: shop || null,
+        userQuery: String(userQuery || "").slice(0, 4000),
+        toolName: String(toolName || "unknown"),
+        toolArgs: toolArgs == null ? null : stringifyLogPayload(toolArgs).slice(0, 8000),
+        response: stringifyLogPayload(response ?? {}).slice(0, 20000),
+        reason: String(reason || "empty").slice(0, 64)
+      }
+    });
+  } catch (error) {
+    console.error("[db] storeToolEmptyResultLog failed", error.message);
+    return null;
+  }
+}
