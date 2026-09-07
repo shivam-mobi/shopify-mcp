@@ -42,6 +42,11 @@ import {
   callCatalogSearchTool,
   filterCatalogToolsForLlm
 } from "../services/catalog-search.server.js";
+import {
+  getCustomerAddressTools,
+  isCustomerAddressesTool,
+  callCustomerAddressesTool
+} from "../services/customer-addresses.server.js";
 import { logEmptyToolResultIfNeeded } from "../services/tool-empty-log.server.js";
 import { storeToolEmptyResultLog } from "../db.server.js";
 import {
@@ -337,6 +342,14 @@ async function handleChatSession({
     const cartWrapperTools = getCartWrapperTools();
     const storePolicyTools = getStorePolicyTools();
     const catalogSearchTools = getCatalogSearchTools();
+    const loggedInCustomerId = String(
+      body.customer_id || body.shopify_customer_id || ""
+    ).trim();
+    const customerLoggedIn =
+      body.customer_logged_in === true || Boolean(loggedInCustomerId);
+    // Saved-address tool only for storefront-logged-in customers
+    const customerAddressTools =
+      customerLoggedIn && loggedInCustomerId ? getCustomerAddressTools() : [];
     const mcpToolsForLlm = filterCatalogToolsForLlm(
       filterCartToolsForLlm(mcpClient.tools)
     );
@@ -345,13 +358,15 @@ async function handleChatSession({
       ...cartWrapperTools,
       ...fitmentTools,
       ...storePolicyTools,
-      ...catalogSearchTools
+      ...catalogSearchTools,
+      ...customerAddressTools
     ];
 
     console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length} (${mcpToolsForLlm.length} after cart/catalog filter)`);
     console.log(`Cart wrapper tools: ${cartWrapperTools.length}`);
     console.log(`Store policy tools: ${storePolicyTools.length} (local fallback if Shopify policy empty)`);
     console.log(`Catalog search tools: ${catalogSearchTools.length}`);
+    console.log(`Customer address tools: ${customerAddressTools.length} (logged-in only)`);
     if (fitmentTools.length) {
       console.log(`Fitment tools enabled: ${fitmentTools.length}`);
     }
@@ -501,6 +516,13 @@ async function handleChatSession({
                 console.log("[chat] store policy tool invoke", { toolName, toolArgs });
                 toolUseResponse = await callStorePolicyTool(toolName, toolArgs);
                 console.log("[chat] store policy tool success", { toolName });
+              } else if (isCustomerAddressesTool(toolName)) {
+                console.log("[chat] customer addresses tool invoke", { toolName });
+                toolUseResponse = await callCustomerAddressesTool(toolName, toolArgs, {
+                  shopifyCustomerId: loggedInCustomerId,
+                  shopDomain: shop || body.shop || null
+                });
+                console.log("[chat] customer addresses tool done", { toolName });
               } else if (isShopifyPolicyTool(toolName)) {
                 console.log("[chat] Shopify policy tool invoke", { toolName, toolArgs });
                 let shopifyRaw;

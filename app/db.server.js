@@ -980,3 +980,170 @@ export async function storeToolEmptyResultLog({
     return null;
   }
 }
+
+function normalizeAddressField(value, max = 500) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  return text.slice(0, max);
+}
+
+/**
+ * Upsert storefront customer + replace their saved addresses from Liquid sync.
+ */
+export async function upsertStoreCustomerAddresses({
+  shopifyCustomerId,
+  shopDomain,
+  email = null,
+  firstName = null,
+  lastName = null,
+  addresses = []
+} = {}) {
+  const customerKey = String(shopifyCustomerId || "").trim();
+  const shop = String(shopDomain || "").trim().toLowerCase();
+  if (!customerKey || !shop) {
+    return { ok: false, error: "Missing shopifyCustomerId or shopDomain" };
+  }
+
+  try {
+    const list = Array.isArray(addresses) ? addresses : [];
+    const normalized = list
+      .map((raw) => {
+        const streetAddress = normalizeAddressField(
+          raw?.street_address || raw?.address1 || raw?.streetAddress,
+          500
+        );
+        if (!streetAddress) return null;
+        return {
+          shopifyAddressId: normalizeAddressField(raw?.id ?? raw?.shopifyAddressId, 64),
+          firstName: normalizeAddressField(raw?.first_name || raw?.firstName, 120),
+          lastName: normalizeAddressField(raw?.last_name || raw?.lastName, 120),
+          company: normalizeAddressField(raw?.company, 200),
+          streetAddress,
+          extendedAddress: normalizeAddressField(
+            raw?.extended_address || raw?.address2 || raw?.extendedAddress,
+            500
+          ),
+          addressLocality: normalizeAddressField(
+            raw?.address_locality || raw?.city || raw?.addressLocality,
+            200
+          ),
+          addressRegion: normalizeAddressField(
+            raw?.address_region || raw?.province_code || raw?.province || raw?.addressRegion,
+            120
+          ),
+          postalCode: normalizeAddressField(
+            raw?.postal_code || raw?.zip || raw?.postalCode,
+            40
+          ),
+          addressCountry: normalizeAddressField(
+            raw?.address_country || raw?.country_code || raw?.country || raw?.addressCountry,
+            80
+          ),
+          phoneNumber: normalizeAddressField(
+            raw?.phone_number || raw?.phone || raw?.phoneNumber,
+            80
+          ),
+          isDefault: Boolean(raw?.is_default || raw?.isDefault || raw?.default)
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 20);
+
+    const customer = await prisma.storeCustomer.upsert({
+      where: {
+        shopifyCustomerId_shopDomain: {
+          shopifyCustomerId: customerKey,
+          shopDomain: shop
+        }
+      },
+      create: {
+        shopifyCustomerId: customerKey,
+        shopDomain: shop,
+        email: normalizeAddressField(email, 320),
+        firstName: normalizeAddressField(firstName, 120),
+        lastName: normalizeAddressField(lastName, 120)
+      },
+      update: {
+        email: normalizeAddressField(email, 320),
+        firstName: normalizeAddressField(firstName, 120),
+        lastName: normalizeAddressField(lastName, 120)
+      }
+    });
+
+    await prisma.$transaction([
+      prisma.storeCustomerAddress.deleteMany({ where: { customerId: customer.id } }),
+      ...(normalized.length
+        ? [
+            prisma.storeCustomerAddress.createMany({
+              data: normalized.map((row) => ({
+                ...row,
+                customerId: customer.id
+              }))
+            })
+          ]
+        : [])
+    ]);
+
+    return {
+      ok: true,
+      customerId: customer.id,
+      shopifyCustomerId: customerKey,
+      shopDomain: shop,
+      addressCount: normalized.length
+    };
+  } catch (error) {
+    console.error("[db] upsertStoreCustomerAddresses failed", error.message);
+    return { ok: false, error: error.message || "Sync failed" };
+  }
+}
+
+/**
+ * List saved addresses for a storefront customer (Liquid-synced).
+ */
+export async function listStoreCustomerAddresses(shopifyCustomerId, { shopDomain = null } = {}) {
+  const customerKey = String(shopifyCustomerId || "").trim();
+  if (!customerKey) return [];
+
+  try {
+    const shop = String(shopDomain || "").trim().toLowerCase();
+    const customer = shop
+      ? await prisma.storeCustomer.findUnique({
+          where: {
+            shopifyCustomerId_shopDomain: {
+              shopifyCustomerId: customerKey,
+              shopDomain: shop
+            }
+          },
+          include: {
+            addresses: { orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }] }
+          }
+        })
+      : await prisma.storeCustomer.findFirst({
+          where: { shopifyCustomerId: customerKey },
+          orderBy: { updatedAt: "desc" },
+          include: {
+            addresses: { orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }] }
+          }
+        });
+
+    if (!customer) return [];
+
+    return customer.addresses.map((row) => ({
+      id: row.shopifyAddressId || row.id,
+      first_name: row.firstName,
+      last_name: row.lastName,
+      company: row.company,
+      street_address: row.streetAddress,
+      extended_address: row.extendedAddress,
+      address_locality: row.addressLocality,
+      address_region: row.addressRegion,
+      postal_code: row.postalCode,
+      address_country: row.addressCountry,
+      phone_number: row.phoneNumber,
+      is_default: row.isDefault
+    }));
+  } catch (error) {
+    console.error("[db] listStoreCustomerAddresses failed", error.message);
+    return [];
+  }
+}

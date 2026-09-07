@@ -101,6 +101,53 @@
     return payload;
   }
 
+  /**
+   * Push Liquid customer.addresses into app DB (logged-in page load only).
+   * Does not put addresses into the LLM prompt — tool reads DB later.
+   */
+  async function syncCustomerAddressesToServer() {
+    const config = window.shopChatConfig || {};
+    const customerId = getLoggedInCustomerId();
+    if (!customerId || !isCustomerLoggedIn()) return null;
+
+    const shopDomain = String(window.shopDomain || config.shopDomain || '').trim();
+    if (!shopDomain) {
+      console.warn('Skipping address sync: missing shop domain');
+      return null;
+    }
+
+    const addresses = Array.isArray(config.customerAddresses)
+      ? config.customerAddresses
+      : [];
+    const email = String(config.customerEmail || '').trim();
+
+    try {
+      const apiBaseUrl = getApiBaseUrl();
+      const response = await fetch(`${apiBaseUrl}/chat/customer-addresses`, {
+        method: 'POST',
+        headers: getApiHeaders({
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        }),
+        body: JSON.stringify({
+          ...getCustomerContextPayload(),
+          customer_email: email || undefined,
+          addresses
+        })
+      });
+
+      if (!response.ok) {
+        console.warn('Failed to sync customer addresses', response.status);
+        return null;
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.warn('Customer address sync error', error);
+      return null;
+    }
+  }
+
   function isCustomerLoggedIn() {
     const config = window.shopChatConfig || {};
     return config.customerLoggedIn === true || Boolean(String(config.customerId || '').trim());
@@ -3058,8 +3105,9 @@
       this.UI.init(container);
       await this.Config.load();
 
-      // Logged-in: claim local sessions + load cross-device list from server
+      // Logged-in: sync addresses to DB, then claim/load cross-device sessions
       if (isCustomerLoggedIn() && getLoggedInCustomerId()) {
+        await syncCustomerAddressesToServer();
         await Sessions.syncFromServer();
       }
 

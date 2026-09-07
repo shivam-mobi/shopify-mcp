@@ -147,3 +147,42 @@ model ToolEmptyResultLog {
   @@index([createdAt])
   @@index([reason])
 }
+
+/// Storefront customer profile cached from Liquid (no Customer Account OAuth).
+model StoreCustomer {
+  id                String                 @id @default(cuid())
+  shopifyCustomerId String
+  shopDomain        String
+  email             String?
+  firstName         String?
+  lastName          String?
+  addresses         StoreCustomerAddress[]
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  @@unique([shopifyCustomerId, shopDomain])
+  @@index([shopDomain])
+}
+
+model StoreCustomerAddress {
+  id               String        @id @default(cuid())
+  customerId       String
+  customer         StoreCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  shopifyAddressId String?
+  firstName        String?
+  lastName         String?
+  company          String?
+  streetAddress    String
+  extendedAddress  String?
+  addressLocality  String?
+  addressRegion    String?
+  postalCode       String?
+  addressCountry   String?
+  phoneNumber      String?
+  isDefault        Boolean       @default(false)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([customerId])
+  @@index([shopifyAddressId])
+}
