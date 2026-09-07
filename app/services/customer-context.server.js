@@ -4,7 +4,8 @@
 
 import {
   getConversationCustomerProfile,
-  setConversationCustomerProfile
+  setConversationCustomerProfile,
+  claimConversationForCustomer
 } from "../db.server";
 
 export function normalizeCustomerName(value) {
@@ -16,12 +17,20 @@ export function parseCustomerContextFromBody(body = {}) {
   const firstName = normalizeCustomerName(body.customer_first_name);
   const lastName = normalizeCustomerName(body.customer_last_name);
   const loggedIn = body.customer_logged_in === true;
+  const shopifyCustomerId = String(
+    body.customer_id || body.shopify_customer_id || ""
+  ).trim();
+  const shopDomain = String(body.shop || body.shop_domain || "")
+    .trim()
+    .toLowerCase();
 
   return {
     firstName,
     lastName,
-    loggedIn,
-    hasName: Boolean(firstName || lastName)
+    loggedIn: loggedIn || Boolean(shopifyCustomerId),
+    hasName: Boolean(firstName || lastName),
+    shopifyCustomerId: shopifyCustomerId || null,
+    shopDomain: shopDomain || null
   };
 }
 
@@ -35,19 +44,41 @@ export async function syncCustomerContextFromRequest(conversationId, body = {}) 
   const merged = {
     firstName: incoming.firstName || existing?.firstName || null,
     lastName: incoming.lastName || existing?.lastName || null,
-    loggedIn: incoming.loggedIn || existing?.loggedIn || false
+    loggedIn: incoming.loggedIn || existing?.loggedIn || false,
+    shopifyCustomerId:
+      incoming.shopifyCustomerId || existing?.shopifyCustomerId || null,
+    shopDomain: incoming.shopDomain || existing?.shopDomain || null
   };
 
   const shouldPersist =
     incoming.loggedIn ||
     incoming.hasName ||
+    Boolean(incoming.shopifyCustomerId) ||
     (existing &&
       (merged.firstName !== existing.firstName ||
         merged.lastName !== existing.lastName ||
-        merged.loggedIn !== existing.loggedIn));
+        merged.loggedIn !== existing.loggedIn ||
+        merged.shopifyCustomerId !== existing.shopifyCustomerId ||
+        merged.shopDomain !== existing.shopDomain));
 
-  if (shouldPersist && (merged.firstName || merged.lastName || merged.loggedIn)) {
+  if (
+    shouldPersist &&
+    (merged.firstName ||
+      merged.lastName ||
+      merged.loggedIn ||
+      merged.shopifyCustomerId)
+  ) {
     await setConversationCustomerProfile(conversationId, merged);
+  }
+
+  // Guest session → login: attach this conversation to the customer
+  if (incoming.shopifyCustomerId) {
+    await claimConversationForCustomer(conversationId, {
+      shopifyCustomerId: incoming.shopifyCustomerId,
+      shopDomain: incoming.shopDomain,
+      firstName: merged.firstName,
+      lastName: merged.lastName
+    });
   }
 
   return merged;

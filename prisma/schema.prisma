@@ -54,16 +54,20 @@ model CodeVerifier {
 }
 
 model Conversation {
-  id               String    @id
-  activeCartId     String?
-  activeCheckoutId String?
-  shippingAddress  String?   // JSON string of last saved Shopify shipping destination
+  id                String    @id
+  activeCartId      String?
+  activeCheckoutId  String?
+  shippingAddress   String?   // JSON string of last saved Shopify shipping destination
   customerFirstName String?
   customerLastName  String?
   customerLoggedIn  Boolean   @default(false)
-  messages         Message[]
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  shopifyCustomerId String?   // Storefront customer id for cross-device session sync
+  shopDomain        String?   // e.g. pureairflow.myshopify.com
+  messages          Message[]
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([shopifyCustomerId, shopDomain, updatedAt])
 }
 
 model Message {

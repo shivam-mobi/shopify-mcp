@@ -3,7 +3,7 @@
  * Handles chat interactions with the configured LLM provider and tools
  */
 import MCPClient, { ensureMcpToolsWarmed } from "../mcp-client";
-import { saveMessage, getConversationHistory, storeCustomerAccountUrls, getCustomerAccountUrls as getCustomerAccountUrlsFromDb, getConversationCartId } from "../db.server";
+import { saveMessage, getConversationHistory, storeCustomerAccountUrls, getCustomerAccountUrls as getCustomerAccountUrlsFromDb, getConversationCartId, getConversationCustomerProfile } from "../db.server";
 import AppConfig from "../services/config.server";
 import { createSseStream } from "../services/streaming.server";
 import { createLlmService } from "../services/llm.server";
@@ -107,7 +107,23 @@ export async function action({ request }) {
  * @returns {Response} JSON response with chat history
  */
 async function handleHistoryRequest(request, conversationId) {
+  const url = new URL(request.url);
+  const customerId = String(url.searchParams.get("customer_id") || "").trim();
   const messages = await getConversationHistory(conversationId);
+
+  if (customerId) {
+    const profile = await getConversationCustomerProfile(conversationId);
+    const ownedBy = profile?.shopifyCustomerId
+      ? String(profile.shopifyCustomerId).trim()
+      : "";
+    if (ownedBy && ownedBy !== customerId) {
+      return new Response(JSON.stringify({ error: "Forbidden", messages: [] }), {
+        status: 403,
+        headers: getCorsHeaders(request)
+      });
+    }
+  }
+
   const toolService = createToolService();
   const enrichedMessages = enrichHistoryWithProductResults(messages, toolService);
 

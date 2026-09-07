@@ -1,4 +1,4 @@
-<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=pdf-yt-2">
+<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=greeting-help-1">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
 {% assign brand_color = block.settings.chat_bubble_color | default: '#00BCF2' %}
@@ -165,7 +165,7 @@
   </div>
 </div>
 
-<script src="{{ 'chat.js' | asset_url }}?v=pdf-yt-2" defer></script>
+<script src="{{ 'chat.js' | asset_url }}?v=greeting-help-1" defer></script>
 <script>
   window.shopChatConfig = {
     apiUrl: "https://struggle-throwing-recycled.ngrok-free.dev",
@@ -189,6 +189,7 @@
     voiceDeniedLabel: {{ 'chat.voiceDenied' | t | json }},
     voiceReviewLabel: {{ 'chat.voiceReview' | t | json }}{% if customer %},
     customerLoggedIn: true,
+    customerId: {{ customer.id | json }},
     customerFirstName: {{ customer.first_name | json }},
     customerLastName: {{ customer.last_name | json }}{% endif %}
   };

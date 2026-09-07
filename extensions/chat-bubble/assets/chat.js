@@ -78,10 +78,15 @@
     const config = window.shopChatConfig || {};
     const firstName = String(config.customerFirstName || '').trim();
     const lastName = String(config.customerLastName || '').trim();
+    const customerId = String(config.customerId || '').trim();
+    const shopDomain = String(window.shopDomain || config.shopDomain || '').trim();
     const payload = {};
 
-    if (config.customerLoggedIn === true) {
+    if (config.customerLoggedIn === true || customerId) {
       payload.customer_logged_in = true;
+    }
+    if (customerId) {
+      payload.customer_id = customerId;
     }
     if (firstName) {
       payload.customer_first_name = firstName;
@@ -89,8 +94,20 @@
     if (lastName) {
       payload.customer_last_name = lastName;
     }
+    if (shopDomain) {
+      payload.shop = shopDomain;
+    }
 
     return payload;
+  }
+
+  function isCustomerLoggedIn() {
+    const config = window.shopChatConfig || {};
+    return config.customerLoggedIn === true || Boolean(String(config.customerId || '').trim());
+  }
+
+  function getLoggedInCustomerId() {
+    return String(window.shopChatConfig?.customerId || '').trim();
   }
 
   function getStaticWelcomeFallback() {
@@ -142,7 +159,7 @@
 
     if (customer) {
       const template = decodeHtmlEntities(
-        config.greetingWithName || "Hi {customer}, I'm {name}!"
+        config.greetingWithName || "Hi {customer}, I'm {name}!<br>How can I help?"
       );
       return template
         .replace(/\{customer\}/g, escapeHtml(customer))
@@ -150,7 +167,7 @@
     }
 
     const template = decodeHtmlEntities(
-      config.greetingAnonymous || "Hi, I'm {name}!"
+      config.greetingAnonymous || "Hi, I'm {name}!<br>How can I help?"
     );
     return template.replace(/\{name\}/g, boldName);
   }
@@ -166,7 +183,7 @@
   }
 
   function writeSessionsIndex(sessions) {
-    localStorage.setItem(SESSIONS_INDEX_KEY, JSON.stringify(sessions.slice(0, 20)));
+    localStorage.setItem(SESSIONS_INDEX_KEY, JSON.stringify(Array.isArray(sessions) ? sessions : []));
   }
 
   function formatSessionDate(timestamp) {
@@ -226,6 +243,66 @@
 
     remove: function(conversationId) {
       writeSessionsIndex(readSessionsIndex().filter((s) => s.id !== conversationId));
+    },
+
+    replaceAll: function(sessions) {
+      const list = Array.isArray(sessions) ? sessions : [];
+      writeSessionsIndex(
+        list
+          .filter((s) => s && s.id)
+          .map((s) => ({
+            id: String(s.id),
+            title: s.title || 'Chat',
+            preview: s.preview || '',
+            updatedAt: Number(s.updatedAt) || Date.now()
+          }))
+      );
+    },
+
+    /**
+     * When logged in: claim local sessions, then load server list for this customer.
+     */
+    syncFromServer: async function() {
+      const customerId = getLoggedInCustomerId();
+      if (!customerId || !isCustomerLoggedIn()) {
+        return this.list();
+      }
+
+      try {
+        const apiBaseUrl = getApiBaseUrl();
+        const localIds = this.list().map((s) => s.id);
+        const currentId = getConversationId();
+        if (currentId && !localIds.includes(currentId)) {
+          localIds.push(currentId);
+        }
+
+        const response = await fetch(`${apiBaseUrl}/chat/sessions`, {
+          method: 'POST',
+          headers: getApiHeaders({
+            Accept: 'application/json',
+            'Content-Type': 'application/json'
+          }),
+          body: JSON.stringify({
+            customer_id: customerId,
+            conversation_ids: localIds,
+            ...getCustomerContextPayload()
+          })
+        });
+
+        if (!response.ok) {
+          console.warn('Failed to sync chat sessions', response.status);
+          return this.list();
+        }
+
+        const data = await response.json();
+        if (Array.isArray(data.sessions)) {
+          this.replaceAll(data.sessions);
+        }
+        return this.list();
+      } catch (error) {
+        console.warn('Chat session sync failed', error);
+        return this.list();
+      }
     }
   };
 
@@ -775,6 +852,16 @@
         this.pendingNewChat = true;
         this.updateGreeting();
         this.renderSessionsList();
+
+        if (isCustomerLoggedIn() && getLoggedInCustomerId()) {
+          Sessions.syncFromServer()
+            .then(() => {
+              if (this.currentView === 'home') {
+                this.renderSessionsList();
+              }
+            })
+            .catch(() => {});
+        }
       },
 
       showChatView: function() {
@@ -1128,21 +1215,43 @@
         const list = Array.isArray(products) ? products.slice() : [];
         const best = list.find((p) => p && p.isBest) || list[0] || null;
 
-        // Create the product grid container
+        // Horizontal carousel with scroll arrows (so users see more products exist)
+        const carousel = document.createElement('div');
+        carousel.classList.add('shop-ai-product-carousel');
+
         const productsContainer = document.createElement('div');
         productsContainer.classList.add('shop-ai-product-grid');
-        productSection.appendChild(productsContainer);
+
+        const { prevBtn, nextBtn, refresh } = ShopAIChat.Product.createScrollControls(
+          carousel,
+          productsContainer,
+          {
+            prevLabel: 'Scroll products left',
+            nextLabel: 'Scroll products right',
+            stepSelector: '.shop-ai-product-card'
+          }
+        );
+
+        carousel.appendChild(prevBtn);
+        carousel.appendChild(productsContainer);
+        carousel.appendChild(nextBtn);
+        productSection.appendChild(carousel);
 
         if (!list.length) {
           const noProductsMessage = document.createElement('p');
           noProductsMessage.textContent = "No products found";
           noProductsMessage.style.padding = "10px";
           productsContainer.appendChild(noProductsMessage);
+          prevBtn.hidden = true;
+          nextBtn.hidden = true;
         } else {
           list.forEach(product => {
             const productCard = ShopAIChat.Product.createCard(product);
             productsContainer.appendChild(productCard);
           });
+
+          refresh();
+          setTimeout(refresh, 120);
 
           if (list.length > 1) {
             productSection.appendChild(ShopAIChat.Product.createComparisonTable(list));
@@ -1760,7 +1869,14 @@
 
         try {
           const apiBaseUrl = getApiBaseUrl();
-          const historyUrl = `${apiBaseUrl}/chat?history=true&conversation_id=${encodeURIComponent(conversationId)}`;
+          const params = new URLSearchParams({
+            history: 'true',
+            conversation_id: conversationId
+          });
+          const customerId = getLoggedInCustomerId();
+          if (customerId) params.set('customer_id', customerId);
+
+          const historyUrl = `${apiBaseUrl}/chat?${params.toString()}`;
           const response = await fetch(historyUrl, {
             method: 'GET',
             headers: getApiHeaders({
@@ -1793,7 +1909,13 @@
 
           // Fetch history from the server
           const apiBaseUrl = getApiBaseUrl();
-          const historyUrl = `${apiBaseUrl}/chat?history=true&conversation_id=${encodeURIComponent(conversationId)}`;
+          const params = new URLSearchParams({
+            history: 'true',
+            conversation_id: conversationId
+          });
+          const customerId = getLoggedInCustomerId();
+          if (customerId) params.set('customer_id', customerId);
+          const historyUrl = `${apiBaseUrl}/chat?${params.toString()}`;
           console.log('Fetching history from:', historyUrl);
 
           const response = await fetch(historyUrl, {
@@ -2493,6 +2615,76 @@
      */
     Product: {
       /**
+       * Left/right controls for a horizontal scroller.
+       */
+      createScrollControls: function(carousel, scroller, options = {}) {
+        const prevBtn = document.createElement('button');
+        prevBtn.type = 'button';
+        prevBtn.classList.add('shop-ai-product-scroll', 'shop-ai-product-scroll--prev');
+        prevBtn.setAttribute('aria-label', options.prevLabel || 'Scroll left');
+        prevBtn.innerHTML =
+          '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>';
+
+        const nextBtn = document.createElement('button');
+        nextBtn.type = 'button';
+        nextBtn.classList.add('shop-ai-product-scroll', 'shop-ai-product-scroll--next');
+        nextBtn.setAttribute('aria-label', options.nextLabel || 'Scroll right');
+        nextBtn.innerHTML =
+          '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>';
+
+        const refresh = function() {
+          const maxScroll = scroller.scrollWidth - scroller.clientWidth;
+          const canScroll = maxScroll > 4;
+          carousel.classList.toggle('has-overflow', canScroll);
+          if (!canScroll) {
+            prevBtn.hidden = true;
+            nextBtn.hidden = true;
+            return;
+          }
+          // Keep both visible on small screens so users notice scrolling is possible;
+          // only dim/disable at the edges.
+          prevBtn.hidden = false;
+          nextBtn.hidden = false;
+          const atStart = scroller.scrollLeft <= 4;
+          const atEnd = scroller.scrollLeft >= maxScroll - 4;
+          prevBtn.disabled = atStart;
+          nextBtn.disabled = atEnd;
+          prevBtn.classList.toggle('is-disabled', atStart);
+          nextBtn.classList.toggle('is-disabled', atEnd);
+        };
+
+        const scrollByStep = function(direction) {
+          let amount = Math.max(140, scroller.clientWidth * 0.75);
+          if (options.stepSelector) {
+            const stepEl = scroller.querySelector(options.stepSelector);
+            if (stepEl) amount = stepEl.offsetWidth + 12;
+          } else if (typeof options.step === 'number') {
+            amount = options.step;
+          }
+          scroller.scrollBy({ left: direction * amount, behavior: 'smooth' });
+        };
+
+        prevBtn.addEventListener('click', function(event) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!prevBtn.disabled) scrollByStep(-1);
+        });
+        nextBtn.addEventListener('click', function(event) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!nextBtn.disabled) scrollByStep(1);
+        });
+        scroller.addEventListener('scroll', refresh, { passive: true });
+        if (typeof ResizeObserver !== 'undefined') {
+          const observer = new ResizeObserver(refresh);
+          observer.observe(scroller);
+          observer.observe(carousel);
+        }
+
+        return { prevBtn, nextBtn, refresh };
+      },
+
+      /**
        * Create a product card element
        * @param {Object} product - Product data
        * @returns {HTMLElement} Product card element
@@ -2652,6 +2844,9 @@
         heading.textContent = 'Quick comparison';
         wrap.appendChild(heading);
 
+        const scroller = document.createElement('div');
+        scroller.classList.add('shop-ai-compare-scroll');
+
         const table = document.createElement('table');
         table.classList.add('shop-ai-compare-table');
 
@@ -2707,7 +2902,8 @@
           table.appendChild(tr);
         });
 
-        wrap.appendChild(table);
+        scroller.appendChild(table);
+        wrap.appendChild(scroller);
         return wrap;
       },
 
@@ -2861,6 +3057,11 @@
 
       this.UI.init(container);
       await this.Config.load();
+
+      // Logged-in: claim local sessions + load cross-device list from server
+      if (isCustomerLoggedIn() && getLoggedInCustomerId()) {
+        await Sessions.syncFromServer();
+      }
 
       const conversationId = getConversationId();
       const sessions = Sessions.list();

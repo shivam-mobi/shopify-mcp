@@ -360,7 +360,9 @@ export async function getConversationCustomerProfile(conversationId) {
       select: {
         customerFirstName: true,
         customerLastName: true,
-        customerLoggedIn: true
+        customerLoggedIn: true,
+        shopifyCustomerId: true,
+        shopDomain: true
       }
     });
 
@@ -371,7 +373,9 @@ export async function getConversationCustomerProfile(conversationId) {
     return {
       firstName: conversation.customerFirstName || null,
       lastName: conversation.customerLastName || null,
-      loggedIn: Boolean(conversation.customerLoggedIn)
+      loggedIn: Boolean(conversation.customerLoggedIn),
+      shopifyCustomerId: conversation.shopifyCustomerId || null,
+      shopDomain: conversation.shopDomain || null
     };
   } catch (error) {
     console.error("Error retrieving conversation customer profile:", error);
@@ -384,7 +388,13 @@ export async function getConversationCustomerProfile(conversationId) {
  */
 export async function setConversationCustomerProfile(
   conversationId,
-  { firstName = null, lastName = null, loggedIn = false } = {}
+  {
+    firstName = null,
+    lastName = null,
+    loggedIn = false,
+    shopifyCustomerId = null,
+    shopDomain = null
+  } = {}
 ) {
   if (!conversationId) {
     return null;
@@ -395,10 +405,14 @@ export async function setConversationCustomerProfile(
     const data = {};
     const normalizedFirst = String(firstName || "").trim();
     const normalizedLast = String(lastName || "").trim();
+    const normalizedCustomerId = String(shopifyCustomerId || "").trim();
+    const normalizedShop = String(shopDomain || "").trim().toLowerCase();
 
     if (normalizedFirst) data.customerFirstName = normalizedFirst;
     if (normalizedLast) data.customerLastName = normalizedLast;
     if (loggedIn) data.customerLoggedIn = true;
+    if (normalizedCustomerId) data.shopifyCustomerId = normalizedCustomerId;
+    if (normalizedShop) data.shopDomain = normalizedShop;
 
     if (Object.keys(data).length === 0) {
       return null;
@@ -411,6 +425,210 @@ export async function setConversationCustomerProfile(
   } catch (error) {
     console.error("Error storing conversation customer profile:", error);
     return null;
+  }
+}
+
+function truncateSessionText(text, maxLen) {
+  const value = String(text || "").replace(/\s+/g, " ").trim();
+  if (!value) return "";
+  if (value.length <= maxLen) return value;
+  return `${value.slice(0, maxLen - 1)}…`;
+}
+
+function extractPlainUserText(content) {
+  if (content == null) return "";
+  if (typeof content === "string") {
+    const trimmed = content.trim();
+    if (!trimmed) return "";
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed
+            .filter((block) => block?.type === "text" && block.text)
+            .map((block) => block.text)
+            .join(" ")
+            .trim();
+        }
+        if (parsed?.type === "text" && parsed.text) {
+          return String(parsed.text).trim();
+        }
+      } catch {
+        // use raw string
+      }
+    }
+    return trimmed;
+  }
+  return "";
+}
+
+/**
+ * Attach a guest (or same-customer) conversation to a logged-in Shopify customer.
+ * Refuses to steal a conversation already owned by a different customer.
+ * Does not bump activity time when only linking ownership.
+ */
+export async function claimConversationForCustomer(
+  conversationId,
+  { shopifyCustomerId, shopDomain = null, firstName = null, lastName = null } = {}
+) {
+  const id = String(conversationId || "").trim();
+  const customerId = String(shopifyCustomerId || "").trim();
+  if (!id || !customerId) {
+    return { ok: false, reason: "missing_ids" };
+  }
+
+  try {
+    const existing = await prisma.conversation.findUnique({
+      where: { id },
+      select: {
+        shopifyCustomerId: true,
+        shopDomain: true,
+        customerFirstName: true,
+        customerLastName: true,
+        customerLoggedIn: true
+      }
+    });
+
+    const ownedBy = existing?.shopifyCustomerId
+      ? String(existing.shopifyCustomerId).trim()
+      : "";
+
+    if (ownedBy && ownedBy !== customerId) {
+      return { ok: false, reason: "owned_by_other" };
+    }
+
+    const normalizedShop = String(shopDomain || "").trim().toLowerCase() || null;
+    const normalizedFirst = String(firstName || "").trim() || null;
+    const normalizedLast = String(lastName || "").trim() || null;
+
+    // Already linked to this customer — skip write so @updatedAt stays unchanged
+    if (
+      ownedBy === customerId &&
+      existing?.customerLoggedIn === true &&
+      (!normalizedShop || existing.shopDomain === normalizedShop) &&
+      (!normalizedFirst || existing.customerFirstName === normalizedFirst) &&
+      (!normalizedLast || existing.customerLastName === normalizedLast)
+    ) {
+      return { ok: true, conversationId: id, claimed: false };
+    }
+
+    const data = {
+      shopifyCustomerId: customerId,
+      customerLoggedIn: true
+    };
+    if (normalizedShop) data.shopDomain = normalizedShop;
+    if (normalizedFirst) data.customerFirstName = normalizedFirst;
+    if (normalizedLast) data.customerLastName = normalizedLast;
+
+    if (!existing) {
+      await prisma.conversation.create({
+        data: { id, ...data }
+      });
+      return { ok: true, conversationId: id, claimed: true };
+    }
+
+    await prisma.conversation.update({
+      where: { id },
+      data
+    });
+
+    return { ok: true, conversationId: id, claimed: !ownedBy };
+  } catch (error) {
+    console.error("Error claiming conversation for customer:", error);
+    return { ok: false, reason: "error" };
+  }
+}
+
+/**
+ * List chat sessions for a storefront customer (cross-device).
+ * updatedAt is last message time (not claim/sync time) for correct sorting/display.
+ * Pass limit to cap results; omit / null / 0 = all sessions for this customer.
+ */
+export async function listConversationsForCustomer(
+  shopifyCustomerId,
+  { shopDomain = null, limit = null } = {}
+) {
+  const customerId = String(shopifyCustomerId || "").trim();
+  if (!customerId) return [];
+
+  const parsedLimit = limit == null || limit === "" ? null : Number(limit);
+  const take =
+    parsedLimit == null || !Number.isFinite(parsedLimit) || parsedLimit <= 0
+      ? null
+      : Math.floor(parsedLimit);
+  const shop = String(shopDomain || "").trim().toLowerCase();
+
+  try {
+    const conversations = await prisma.conversation.findMany({
+      where: {
+        shopifyCustomerId: customerId,
+        ...(shop ? { shopDomain: shop } : {})
+      },
+      orderBy: { updatedAt: "desc" },
+      ...(take ? { take } : {}),
+      select: { id: true, updatedAt: true, createdAt: true }
+    });
+
+    if (!conversations.length) return [];
+
+    const ids = conversations.map((row) => row.id);
+    const messages = await prisma.message.findMany({
+      where: { conversationId: { in: ids } },
+      orderBy: { createdAt: "asc" },
+      select: {
+        conversationId: true,
+        role: true,
+        content: true,
+        createdAt: true
+      }
+    });
+
+    const byConversation = new Map();
+    for (const message of messages) {
+      const bucket = byConversation.get(message.conversationId) || {
+        firstUser: null,
+        lastUser: null,
+        lastActivityAt: null
+      };
+
+      const activityMs = message.createdAt?.getTime?.() || 0;
+      if (!bucket.lastActivityAt || activityMs > bucket.lastActivityAt) {
+        bucket.lastActivityAt = activityMs;
+      }
+
+      if (message.role === "user") {
+        const text = extractPlainUserText(message.content);
+        if (text) {
+          if (!bucket.firstUser) bucket.firstUser = text;
+          bucket.lastUser = text;
+        }
+      }
+
+      byConversation.set(message.conversationId, bucket);
+    }
+
+    const sessions = conversations.map((row) => {
+      const meta = byConversation.get(row.id);
+      const titleSource = meta?.firstUser || "Chat";
+      const previewSource = meta?.lastUser || meta?.firstUser || "";
+      const updatedAt =
+        meta?.lastActivityAt ||
+        row.updatedAt?.getTime?.() ||
+        row.createdAt?.getTime?.() ||
+        Date.now();
+
+      return {
+        id: row.id,
+        title: truncateSessionText(titleSource, 48) || "Chat",
+        preview: truncateSessionText(previewSource, 80),
+        updatedAt
+      };
+    });
+
+    return sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  } catch (error) {
+    console.error("Error listing conversations for customer:", error);
+    return [];
   }
 }
 
