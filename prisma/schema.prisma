@@ -57,6 +57,7 @@ model Conversation {
   id                String    @id
   activeCartId      String?
   activeCheckoutId  String?
+  checkoutUrl       String?   // Latest Shopify checkout continue_url for this conversation
   shippingAddress   String?   // JSON string of last saved Shopify shipping destination
   customerFirstName String?
   customerLastName  String?

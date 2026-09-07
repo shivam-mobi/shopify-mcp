@@ -654,6 +654,27 @@ export async function getConversationCheckoutId(conversationId) {
 }
 
 /**
+ * Latest checkout continue_url stored for this conversation (may change if checkout is recreated).
+ */
+export async function getConversationCheckoutUrl(conversationId) {
+  if (!conversationId) {
+    return null;
+  }
+
+  try {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { checkoutUrl: true }
+    });
+
+    return conversation?.checkoutUrl || null;
+  } catch (error) {
+    console.error("Error retrieving conversation checkout url:", error);
+    return null;
+  }
+}
+
+/**
  * Persist the active Shopify checkout id for a conversation.
  */
 export async function setConversationCheckoutId(conversationId, checkoutId) {
@@ -674,7 +695,42 @@ export async function setConversationCheckoutId(conversationId, checkoutId) {
 }
 
 /**
- * Clear the active checkout id (cancel / expired / cart cleared).
+ * Persist the latest checkout URL. Returns whether the URL changed vs what was stored.
+ */
+export async function setConversationCheckoutUrl(conversationId, checkoutUrl) {
+  if (!conversationId) {
+    return { ok: false, changed: false, checkoutUrl: null };
+  }
+
+  const nextUrl = checkoutUrl ? String(checkoutUrl).trim() : null;
+  if (!nextUrl) {
+    return { ok: false, changed: false, checkoutUrl: null };
+  }
+
+  try {
+    await createOrUpdateConversation(conversationId);
+    const existing = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { checkoutUrl: true }
+    });
+    const previous = existing?.checkoutUrl || null;
+    const changed = Boolean(previous && previous !== nextUrl);
+
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { checkoutUrl: nextUrl }
+    });
+
+    return { ok: true, changed, checkoutUrl: nextUrl, previousUrl: previous };
+  } catch (error) {
+    console.error("Error storing conversation checkout url:", error);
+    return { ok: false, changed: false, checkoutUrl: null };
+  }
+}
+
+/**
+ * Clear the active checkout id (stale/expired recreate path).
+ * Keeps checkoutUrl until a new URL is persisted so we can detect URL changes.
  */
 export async function clearConversationCheckoutId(conversationId) {
   if (!conversationId) {
@@ -688,6 +744,25 @@ export async function clearConversationCheckoutId(conversationId) {
     });
   } catch (error) {
     console.error("Error clearing conversation checkout id:", error);
+    return null;
+  }
+}
+
+/**
+ * Clear checkout id + stored checkout URL (cart cleared / checkout cancelled).
+ */
+export async function clearConversationCheckout(conversationId) {
+  if (!conversationId) {
+    return null;
+  }
+
+  try {
+    return await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { activeCheckoutId: null, checkoutUrl: null }
+    });
+  } catch (error) {
+    console.error("Error clearing conversation checkout:", error);
     return null;
   }
 }

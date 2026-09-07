@@ -4,12 +4,14 @@
  */
 import {
   clearConversationCartId,
+  clearConversationCheckout,
   clearConversationCheckoutId,
   clearConversationShippingAddress,
   getConversationCartId,
   getConversationCheckoutId,
   getConversationShippingAddress,
   setConversationCheckoutId,
+  setConversationCheckoutUrl,
   setConversationShippingAddress
 } from "../db.server";
 import {
@@ -531,6 +533,7 @@ export async function appendFinalCartSnapshot(mcpClient, conversationId, convers
     empty: Boolean(data?.empty),
     items: data?.items || [],
     checkout_url: data?.checkout_url || null,
+    checkout_url_changed: Boolean(data?.checkout_url_changed),
     total: data?.total || null,
     subtotal: data?.subtotal || null,
     currency: data?.currency || null
@@ -540,6 +543,12 @@ export async function appendFinalCartSnapshot(mcpClient, conversationId, convers
     "FINAL CART SNAPSHOT after cart updates in this turn. " +
     "When replying to the customer, state EVERY product quantity ONLY from snapshot.items[].quantity below. " +
     "Ignore items[] from earlier add_to_cart/remove_from_cart tool results in this same turn. " +
+    (snapshot.checkout_url
+      ? `If you share a checkout link, use ONLY snapshot.checkout_url exactly: ${snapshot.checkout_url}` +
+        (snapshot.checkout_url_changed
+          ? " (CHANGED — do not reuse any older checkout link from this chat). "
+          : ". ")
+      : "") +
     JSON.stringify(snapshot);
 
   conversationHistory.push({ role: "system", content });
@@ -760,18 +769,26 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
 
   await setConversationShippingAddress(conversationId, writableShippingAddress(verifiedAddress));
 
+  const checkoutUrl = verification?.checkoutUrl || synced.checkoutUrl || null;
+  const persisted = await persistLatestCheckoutUrl(conversationId, checkoutUrl);
+  const checkoutUrlChanged = Boolean(
+    persisted.changed || synced.checkoutUrlChanged
+  );
+
   console.log("[cart-wrapper] set_cart_shipping verified", {
     conversationId,
     itemCount: cartLineItems.length,
     checkoutId: synced.checkoutId,
     savedStreet: verifiedAddress.street_address,
     savedPhone: verifiedAddress.phone_number || verification?.buyerPhone || null,
-    checkoutUrl: verification?.checkoutUrl || synced.checkoutUrl || null
+    checkoutUrl: persisted.checkoutUrl || checkoutUrl,
+    checkoutUrlChanged
   });
 
   return toolResult(
     formatCartSummary(live.cart, live.raw, {
-      checkoutUrl: verification?.checkoutUrl || synced.checkoutUrl,
+      checkoutUrl: persisted.checkoutUrl || checkoutUrl,
+      checkoutUrlChanged,
       shippingAddress: {
         ...verifiedAddress,
         phone_number:
@@ -1049,6 +1066,31 @@ async function fetchFreshCheckoutUrl(
   );
 }
 
+/**
+ * Save latest checkout URL on the conversation. When Shopify recreates checkout,
+ * this replaces the old URL so later replies share the new link.
+ */
+async function persistLatestCheckoutUrl(conversationId, checkoutUrl) {
+  if (!conversationId || !checkoutUrl) {
+    return { changed: false, checkoutUrl: checkoutUrl || null };
+  }
+
+  const result = await setConversationCheckoutUrl(conversationId, checkoutUrl);
+  if (result?.previousUrl && result.previousUrl !== result.checkoutUrl) {
+    console.log("[cart-wrapper] checkout_url updated in DB", {
+      conversationId,
+      previousUrl: result.previousUrl,
+      checkoutUrl: result.checkoutUrl
+    });
+    return { changed: true, checkoutUrl: result.checkoutUrl };
+  }
+
+  return {
+    changed: false,
+    checkoutUrl: result?.checkoutUrl || checkoutUrl
+  };
+}
+
 function isUsLikeCountry(country) {
   const value = String(country || "").trim().toUpperCase();
   return value === "US" || value === "USA" || value === "UNITED STATES";
@@ -1130,18 +1172,21 @@ async function syncCheckoutWithCart(
         updated.checkoutUrl,
         conversationId
       );
+      const persisted = await persistLatestCheckoutUrl(conversationId, checkoutUrl);
 
       console.log("[cart-wrapper] updated existing checkout", {
         conversationId,
         checkoutId: updated.checkout.id,
         hasShipping: Boolean(updated.shippingAddress?.street_address),
         validationErrors,
-        checkoutUrl
+        checkoutUrl: persisted.checkoutUrl,
+        checkoutUrlChanged: persisted.changed
       });
 
       return {
         checkoutId: updated.checkout.id,
-        checkoutUrl,
+        checkoutUrl: persisted.checkoutUrl,
+        checkoutUrlChanged: persisted.changed,
         shippingAddress: updated.shippingAddress || null,
         checkout: updated.checkout,
         validationErrors,
@@ -1231,10 +1276,12 @@ async function syncCheckoutWithCart(
     created.checkoutUrl,
     conversationId
   );
+  const persisted = await persistLatestCheckoutUrl(conversationId, checkoutUrl);
 
   return {
     checkoutId: created.checkout.id,
-    checkoutUrl,
+    checkoutUrl: persisted.checkoutUrl,
+    checkoutUrlChanged: persisted.changed,
     shippingAddress: created.shippingAddress || null,
     checkout: created.checkout,
     validationErrors,
@@ -1535,6 +1582,7 @@ function buildCartSummaryWithCheckoutIssue(cart, rawResponse, synced, savedShipp
   const checkoutUrl = synced?.checkoutUrl || null;
   const summary = formatCartSummary(cart, rawResponse, {
     checkoutUrl,
+    checkoutUrlChanged: Boolean(synced?.checkoutUrlChanged),
     shippingAddress: checkoutUrl ? synced?.shippingAddress || savedShipping : null,
     conversationId
   });
@@ -1668,6 +1716,7 @@ async function summarizeCartWithShipping(
   if (synced.checkoutUrl) {
     return formatCartSummary(cart, rawResponse, {
       checkoutUrl: synced.checkoutUrl,
+      checkoutUrlChanged: Boolean(synced.checkoutUrlChanged),
       shippingAddress: synced.shippingAddress || savedShipping,
       conversationId
     });
@@ -1767,7 +1816,8 @@ async function removeCartShipping(mcpClient, conversationId) {
     const stripped = await stripCheckoutShipping(mcpClient, checkoutId, live.cart, conversationId);
     if (stripped?.checkout?.id) {
       await setConversationCheckoutId(conversationId, stripped.checkout.id);
-      checkoutUrl = stripped.checkoutUrl;
+      const persisted = await persistLatestCheckoutUrl(conversationId, stripped.checkoutUrl);
+      checkoutUrl = persisted.checkoutUrl;
     } else {
       console.warn("[cart-wrapper] strip checkout shipping failed", {
         conversationId,
@@ -1827,7 +1877,7 @@ async function clearMyCart(mcpClient, conversationId) {
   }
 
   await clearConversationCartId(conversationId);
-  await clearConversationCheckoutId(conversationId);
+  await clearConversationCheckout(conversationId);
   await clearConversationShippingAddress(conversationId);
 
   return toolResult({ success: true, message: "Cart cleared. Use add_to_cart to start a new cart." });

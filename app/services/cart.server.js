@@ -1043,7 +1043,12 @@ export async function updateCartLineItems(
 export function formatCartSummary(
   cart,
   rawResponse = null,
-  { checkoutUrl = null, shippingAddress = null, conversationId = null } = {}
+  {
+    checkoutUrl = null,
+    shippingAddress = null,
+    conversationId = null,
+    checkoutUrlChanged = false
+  } = {}
 ) {
   if (!cart) {
     return { success: false, empty: true, message: "Cart is empty." };
@@ -1061,6 +1066,14 @@ export function formatCartSummary(
 
   const resolvedCheckoutUrl = appendAiraUtmParams(checkoutUrl || null, conversationId);
 
+  const checkoutLinkInstruction = resolvedCheckoutUrl
+    ? checkoutUrlChanged
+      ? `CRITICAL: checkout_url CHANGED (new Shopify checkout). You MUST share ONLY this exact checkout_url in your reply: ${resolvedCheckoutUrl} ` +
+        "as [click here to proceed to checkout](URL). FORBIDDEN: reusing any older checkout/cart link from earlier messages in this chat."
+      : `Share checkout ONLY using this exact checkout_url: ${resolvedCheckoutUrl} ` +
+        "as [click here to proceed to checkout](URL). Do not reuse any older checkout link from earlier messages."
+    : null;
+
   const summary = {
     success: true,
     cart_id: cart.id,
@@ -1070,6 +1083,7 @@ export function formatCartSummary(
     subtotal: formatMoney(subtotalEntry?.amount, cart.currency),
     total: formatMoney(totalEntry?.amount, cart.currency),
     checkout_url: resolvedCheckoutUrl,
+    ...(checkoutUrlChanged ? { checkout_url_changed: true } : {}),
     instruction:
       "Base your reply ONLY on this summary. Do not claim items were added/removed unless they appear here."
   };
@@ -1087,8 +1101,11 @@ export function formatCartSummary(
     summary.shipping_saved = true;
     summary.shipping_address = shippingAddress;
     summary.instruction = resolvedCheckoutUrl
-      ? "Shipping was saved successfully ONLY because shipping_saved is true. Confirm shipping_address and share checkout_url ONLY — never use continue_url. Do not say there was an error."
+      ? "Shipping was saved successfully ONLY because shipping_saved is true. Confirm shipping_address and share checkout_url ONLY — never use continue_url. Do not say there was an error. " +
+        (checkoutLinkInstruction || "")
       : "Shipping address is on file (shipping_saved is true) but checkout_url is not available. Confirm cart items/totals only — do NOT invent a checkout link and do NOT use continue_url as a checkout/payment link.";
+  } else if (checkoutLinkInstruction) {
+    summary.instruction = [summary.instruction, checkoutLinkInstruction].filter(Boolean).join(" ");
   }
 
   return summary;
