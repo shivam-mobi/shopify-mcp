@@ -819,10 +819,17 @@ export async function getCustomerAccountUrls(conversationId) {
  * Persist the exact payload sent to an LLM and the exact payload returned.
  * Logging failures must not break the chat.
  */
-export async function storeLlmRequestLog({ request, response, statusCode, provider }) {
+export async function storeLlmRequestLog({
+  request,
+  response,
+  statusCode,
+  provider,
+  conversationId = null
+}) {
   try {
     return await prisma.llmRequestLog.create({
       data: {
+        conversationId: conversationId ? String(conversationId) : null,
         request: stringifyLlmPayload(request),
         response: stringifyLlmPayload(response),
         statusCode: Number.isInteger(statusCode) ? statusCode : 0,

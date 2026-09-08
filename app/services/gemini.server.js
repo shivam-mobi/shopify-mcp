@@ -20,7 +20,8 @@ export function createGeminiService(apiKey = process.env.GEMINI_API_KEY) {
   const streamConversation = async ({
     messages,
     promptType = AppConfig.api.defaultPromptType,
-    tools
+    tools,
+    conversationId = null
   }, streamHandlers) => {
     const systemInstruction = getSystemPrompt(promptType);
     const contents = convertMessagesToGemini(messages);
@@ -44,6 +45,7 @@ export function createGeminiService(apiKey = process.env.GEMINI_API_KEY) {
         await storeLlmRequestLog({
           provider: "gemini",
           statusCode: 200,
+          conversationId,
           request,
           response: serializeGeminiSdkValue(response)
         });
@@ -52,6 +54,7 @@ export function createGeminiService(apiKey = process.env.GEMINI_API_KEY) {
         await storeLlmRequestLog({
           provider: "gemini",
           statusCode: getLlmStatusCode(error),
+          conversationId,
           request,
           response: serializeLlmError(error)
         });
@@ -89,6 +92,7 @@ export function createGeminiService(apiKey = process.env.GEMINI_API_KEY) {
       await storeLlmRequestLog({
         provider: "gemini",
         statusCode: 200,
+        conversationId,
         request,
         response: { streamed: true, chunks }
       });
@@ -109,6 +113,7 @@ export function createGeminiService(apiKey = process.env.GEMINI_API_KEY) {
       await storeLlmRequestLog({
         provider: "gemini",
         statusCode: getLlmStatusCode(error),
+        conversationId,
         request,
         response: serializeLlmError(error)
       });

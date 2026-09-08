@@ -14,7 +14,8 @@ export function createClaudeService(apiKey = process.env.CLAUDE_API_KEY) {
   const streamConversation = async ({
     messages,
     promptType = AppConfig.api.defaultPromptType,
-    tools
+    tools,
+    conversationId = null
   }, streamHandlers) => {
     const systemInstruction = getSystemPrompt(promptType);
     const request = {
@@ -45,6 +46,7 @@ export function createClaudeService(apiKey = process.env.CLAUDE_API_KEY) {
       await storeLlmRequestLog({
         provider: "claude",
         statusCode: 200,
+        conversationId,
         request,
         response: finalMessage
       });
@@ -62,6 +64,7 @@ export function createClaudeService(apiKey = process.env.CLAUDE_API_KEY) {
       await storeLlmRequestLog({
         provider: "claude",
         statusCode: error?.status || error?.statusCode || 0,
+        conversationId,
         request,
         response: {
           error: true,

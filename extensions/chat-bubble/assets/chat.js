@@ -1208,6 +1208,66 @@
       },
 
       /**
+       * Compact install PDF / video links for "how do I install this".
+       */
+      displayInstallResources: function(payload) {
+        const { messagesContainer } = this.elements;
+        const products = Array.isArray(payload?.products) ? payload.products : [];
+        if (!products.length) return;
+
+        messagesContainer
+          .querySelectorAll('.shop-ai-install-resources')
+          .forEach((el) => el.remove());
+
+        const wrap = document.createElement('div');
+        wrap.classList.add('shop-ai-install-resources');
+
+        const title = document.createElement('div');
+        title.classList.add('shop-ai-install-resources-title');
+        title.textContent = payload.title || 'Installation resources';
+        wrap.appendChild(title);
+
+        products.forEach((product) => {
+          const row = document.createElement('div');
+          row.classList.add('shop-ai-install-resource');
+
+          const name = document.createElement('div');
+          name.classList.add('shop-ai-install-resource-name');
+          name.textContent = product.title || 'Product';
+          row.appendChild(name);
+
+          const links = document.createElement('div');
+          links.classList.add('shop-ai-install-resource-links');
+
+          if (product.pdfUrl) {
+            const pdf = document.createElement('a');
+            pdf.classList.add('shop-ai-product-pdf');
+            pdf.href = product.pdfUrl;
+            pdf.target = '_blank';
+            pdf.rel = 'noopener noreferrer';
+            pdf.textContent = product.pdfTitle || 'Installation Guide (PDF)';
+            links.appendChild(pdf);
+          }
+
+          if (product.youtubeUrl) {
+            const yt = document.createElement('a');
+            yt.classList.add('shop-ai-product-youtube');
+            yt.href = product.youtubeUrl;
+            yt.target = '_blank';
+            yt.rel = 'noopener noreferrer';
+            yt.textContent = 'Installation Video';
+            links.appendChild(yt);
+          }
+
+          row.appendChild(links);
+          wrap.appendChild(row);
+        });
+
+        messagesContainer.appendChild(wrap);
+        this.scrollToBottom();
+      },
+
+      /**
        * If this turn's assistant text landed after product cards, move it just above them.
        * Never jump over a user message (that would scramble later turns after refresh).
        */
@@ -1965,6 +2025,10 @@
 
           case 'customer_addresses':
             ShopAIChat.UI.displayCustomerAddresses(data);
+            break;
+
+          case 'install_resources':
+            ShopAIChat.UI.displayInstallResources(data);
             break;
 
           case 'tool_use':

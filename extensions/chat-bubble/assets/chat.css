@@ -987,6 +987,45 @@
   opacity: 0.85;
 }
 
+/* ── Install PDF / video resources ── */
+.shop-ai-install-resources {
+  align-self: flex-start;
+  max-width: 92%;
+  width: min(100%, 360px);
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--shop-ai-brand-border);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.shop-ai-install-resources-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--shop-ai-text-muted);
+  margin: 0 0 8px;
+}
+
+.shop-ai-install-resource + .shop-ai-install-resource {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #F0F0F0;
+}
+
+.shop-ai-install-resource-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111;
+  margin: 0 0 6px;
+  line-height: 1.3;
+}
+
+.shop-ai-install-resource-links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 /* ── Auth links ── */
 .shop-auth-trigger {
   color: var(--shop-ai-brand);

@@ -7,7 +7,7 @@
  * To add a new provider:
  * 1. Create app/services/<provider>.server.js
  * 2. Export createXService() with this interface:
- *      { streamConversation({ messages, promptType, tools }, handlers) }
+ *      { streamConversation({ messages, promptType, tools, conversationId }, handlers) }
  *    streamConversation must return:
  *      { role: "assistant", content: [...], stop_reason: "end_turn" | "tool_use" }
  *    content blocks:

@@ -14,7 +14,8 @@ export function createOpenAIService(apiKey = process.env.OPENAI_API_KEY) {
   const streamConversation = async ({
     messages,
     promptType = AppConfig.api.defaultPromptType,
-    tools
+    tools,
+    conversationId = null
   }, streamHandlers) => {
     const systemInstruction = getSystemPrompt(promptType);
     const openAiMessages = repairOpenAIToolCallSequence(
@@ -103,6 +104,7 @@ export function createOpenAIService(apiKey = process.env.OPENAI_API_KEY) {
       await storeLlmRequestLog({
         provider: "openai",
         statusCode: 200,
+        conversationId,
         request,
         response: { streamed: true, chunks, finalMessage }
       });
@@ -123,6 +125,7 @@ export function createOpenAIService(apiKey = process.env.OPENAI_API_KEY) {
       await storeLlmRequestLog({
         provider: "openai",
         statusCode: error?.status || error?.statusCode || 0,
+        conversationId,
         request,
         response: {
           error: true,

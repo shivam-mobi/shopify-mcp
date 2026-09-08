@@ -27,6 +27,11 @@ import {
 } from "../fitment/fitment-tools.server.js";
 import { enrichProductsWithComparison } from "../services/product-compare.server.js";
 import { buildStoreHelpHintMessage } from "../services/store-help-hints.server.js";
+import {
+  isInstallHelpQuestion,
+  extractInstallMediaFromMessages,
+  buildInstallMediaHintMessage
+} from "../services/install-media.server.js";
 import { buildCatalogSearchHintMessage } from "../services/catalog-search-hints.server.js";
 import {
   getStorePolicyTools,
@@ -226,7 +231,8 @@ async function handleWelcomeSession({
         {
           messages: welcomeMessages,
           promptType,
-          tools: []
+          tools: [],
+          conversationId
         },
         {
           onText: (textDelta) => {
@@ -382,6 +388,7 @@ async function handleChatSession({
     let productsToDisplay = [];
     let fitmentOptionsToDisplay = null;
     let customerAddressesToDisplay = null;
+    let installMediaToDisplay = null;
 
     const customerProfile = await syncCustomerContextFromRequest(conversationId, body);
 
@@ -423,6 +430,15 @@ async function handleChatSession({
       conversationHistory.unshift(shippingEmailHint);
     }
 
+    const installMediaProducts = extractInstallMediaFromMessages(dbMessages);
+    const installMediaHint = buildInstallMediaHintMessage(userMessage, installMediaProducts);
+    if (installMediaHint) {
+      conversationHistory.unshift(installMediaHint);
+    }
+    if (isInstallHelpQuestion(userMessage) && installMediaProducts.length > 0) {
+      installMediaToDisplay = installMediaProducts;
+    }
+
     const storeHelpHint = buildStoreHelpHintMessage(userMessage);
     if (storeHelpHint) {
       conversationHistory.unshift(storeHelpHint);
@@ -456,7 +472,8 @@ async function handleChatSession({
         {
           messages: conversationHistory,
           promptType,
-          tools: allTools
+          tools: allTools,
+          conversationId
         },
         {
           // Handle text chunks
@@ -719,6 +736,15 @@ async function handleChatSession({
         type: 'customer_addresses',
         title: customerAddressesToDisplay.title,
         addresses: customerAddressesToDisplay.addresses
+      });
+    }
+
+    // Installation PDF / video for "how do I install this"
+    if (installMediaToDisplay?.length) {
+      stream.sendMessage({
+        type: 'install_resources',
+        title: 'Installation resources',
+        products: installMediaToDisplay
       });
     }
 

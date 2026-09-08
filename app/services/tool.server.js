@@ -138,7 +138,8 @@ export function createToolService() {
         originalData.ui_instruction ||
         "CRITICAL: Top Matching Products cards, Quick comparison, and Best pick UI are already shown in chat. " +
         "FORBIDDEN in your reply: product names, prices, 'Priced at $…', descriptions, feature bullets, numbered product lists, or recommending a specific filter by name. " +
-        "Reply in 1-2 short sentences only (e.g. matching filters were found for their vehicle), then ask if they want to add one to the cart."
+        "Reply in 1-2 short sentences only (e.g. matching filters were found for their vehicle), then ask if they want to add one to the cart. " +
+        "If a later message asks how to install and products include installation_pdf_url / installation_video_url, share those links then."
     };
 
     if (originalData.vehicle) enriched.vehicle = originalData.vehicle;

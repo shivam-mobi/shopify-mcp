@@ -272,14 +272,27 @@ export function annotateRankedProductsForLlm(rankedProducts = []) {
  * Omits title, price, description, and features so the model does not repeat the UI cards.
  */
 export function buildLlmProductSummary(rankedProducts = []) {
-  return rankedProducts.map((product, index) => ({
-    position: index + 1,
-    variant_id: resolveProductVariantId(product),
-    is_best_pick: product.isBest === true,
-    inStock: product.inStock === true,
-    filterType: product.filterType || null,
-    vendor: product.vendor || null
-  }));
+  return rankedProducts.map((product, index) => {
+    const pdfUrl = String(product.pdfUrl || product.pdf_url || "").trim() || null;
+    const youtubeUrl = String(product.youtubeUrl || product.youtube_url || "").trim() || null;
+    const pdfTitle = String(product.pdfTitle || product.pdf_title || "").trim() || null;
+
+    return {
+      position: index + 1,
+      variant_id: resolveProductVariantId(product),
+      is_best_pick: product.isBest === true,
+      inStock: product.inStock === true,
+      filterType: product.filterType || null,
+      vendor: product.vendor || null,
+      ...(pdfUrl
+        ? {
+            installation_pdf_url: pdfUrl,
+            installation_pdf_title: pdfTitle || "Installation Guide (PDF)"
+          }
+        : {}),
+      ...(youtubeUrl ? { installation_video_url: youtubeUrl } : {})
+    };
+  });
 }
 
 /**
