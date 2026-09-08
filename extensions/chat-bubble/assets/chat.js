@@ -157,6 +157,20 @@
     return String(window.shopChatConfig?.customerId || '').trim();
   }
 
+  /**
+   * Include variant_id so similar titles (e.g. freshener scents) add the correct product.
+   */
+  function buildAddToCartMessage(product) {
+    const title = String(product?.title || 'this product').trim() || 'this product';
+    const variantId = String(
+      product?.variantId || product?.variant_id || product?.id || ''
+    ).trim();
+    if (variantId && /ProductVariant\//i.test(variantId)) {
+      return `Add "${title}" to my cart using variant_id: ${variantId}`;
+    }
+    return `Add ${title} to my cart`;
+  }
+
   function getStaticWelcomeFallback() {
     return window.shopChatConfig?.welcomeMessage || "I can help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters.";
   }
@@ -3018,7 +3032,7 @@
             const messagesContainer = document.querySelector('.shop-ai-chat-messages');
             ShopAIChat.UI.showChatView();
             if (input) {
-              input.value = `Add ${product.title} to my cart`;
+              input.value = buildAddToCartMessage(product);
               const sendButton = document.querySelector('.shop-ai-chat-send');
               if (sendButton) {
                 sendButton.click();
@@ -3231,7 +3245,7 @@
             const input = document.querySelector('.shop-ai-chat-input-field');
             ShopAIChat.UI.showChatView();
             if (input) {
-              input.value = `Add ${product.title} to my cart`;
+              input.value = buildAddToCartMessage(product);
               const sendButton = document.querySelector('.shop-ai-chat-send');
               if (sendButton) sendButton.click();
             }

@@ -93,12 +93,16 @@ model CustomerAccountUrls {
 }
 
 model LlmRequestLog {
-  id         String   @id @default(cuid())
-  request    String
-  response   String
-  statusCode Int
-  provider   String
-  createdAt  DateTime @default(now())
+  id             String   @id @default(cuid())
+  conversationId String?
+  request        String
+  response       String
+  statusCode     Int
+  provider       String
+  createdAt      DateTime @default(now())
+
+  @@index([conversationId])
+  @@index([createdAt])
 }
 
 model McpCallLog {
