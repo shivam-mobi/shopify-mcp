@@ -126,8 +126,10 @@ export function buildCustomerContextHintMessage(profile = {}) {
   if (loggedIn) {
     parts.push(
       "Saved shipping addresses: available via get_customer_addresses. " +
-        "When they ask to show, list, see, or use saved/existing addresses, you MUST call get_customer_addresses. " +
-        "A select dropdown appears in the UI — reply in one short sentence only. Do not invent addresses."
+        "Call that tool ONLY when they clearly ask about addresses (saved/shipping/my/default address, use my address for checkout). " +
+        "NEVER call it for \"show the products\", filters, fresheners, or other product lists — those are not address requests. " +
+        "If unclear (e.g. just \"show\"), ask what they want; do not guess addresses. " +
+        "A select dropdown appears in the UI after a valid address call — reply in one short sentence only. Do not invent addresses."
     );
   } else {
     parts.push(

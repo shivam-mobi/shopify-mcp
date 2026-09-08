@@ -38,10 +38,13 @@ export function buildCatalogSearchHintMessage(userMessage) {
       (category
         ? `with category=\"${category}\"` +
           (category === "home_filter"
-            ? ". BEFORE calling, build query yourself as WidthxHeightxDepth. " +
-              "Mapping: length→Height (2nd number), thickness→Depth (3rd), width→Width (1st), height→Height (2nd). " +
-              "Example: prior size 24x10x1 + \"length is 30\" → query MUST be \"24x30x1\" (NOT \"30x10x1\"). " +
-              "If they only change one dimension, keep the other known dimensions from this chat. " +
+            ? ". BEFORE calling, build query from what the customer gave — do NOT invent a missing depth. " +
+              "If they say 20x20 or 20x10, pass query exactly \"20x20\" or \"20x10\" (WidthxHeight only). " +
+              "Only add a third number (Depth) when they gave thickness/depth or a full WxHxD like 20x25x1. " +
+              "FORBIDDEN: defaulting depth to 1 (never turn 20x20 into 20x20x1 unless they said x1 / thickness 1). " +
+              "Mapping when they use words: length→Height (2nd), thickness→Depth (3rd), width→Width (1st), height→Height (2nd). " +
+              "Example: prior size 24x10x1 + \"length is 30\" → query \"24x30x1\". " +
+              "If they only change one dimension, keep other known dimensions from this chat. " +
               "Pass MERV only if 8, 11, or 13."
             : " and put any scent name in query.")
         : "with category=\"home_filter\" or category=\"freshener\" (ask which if unclear).") +

@@ -967,14 +967,14 @@ export const DEFAULT_STORE_POLICY_DIGEST = {
   title: "PUREFLOW store policy cheat sheet",
   note:
     "Returned when Shopify search_shop_policies_and_faqs is empty. Prefer these quick facts; do not invent policy details.",
-  contentDate: "2026-09-04",
+  contentDate: "2026-09-08",
   digest: `PUREFLOW quick facts — use these before inventing anything.
 
 CONTACT: Email support@pureflowair.com or call 866-206-4492 (typically 9am–5pm CST). Contact page: https://pureflowair.com/pages/contact-us
 
 CANCEL ORDER: You may cancel any time BEFORE the order is dispatched/shipped. Email support@pureflowair.com or call 866-206-4492. Orders placed before noon often ship the same day — next-day cancel only works if it has not shipped yet. After dispatch, use returns (not cancel). Do NOT treat “sales final after 30 days” as the cancel rule.
 
-SHIPPING / WHERE WE DELIVER: Ships domestically AND internationally. No fixed public country list — availability and cost are calculated at checkout by destination. Domestic transit usually 2–7 days; international usually 4–22 days. Orders usually dispatch within 2 business days of payment. Shipping price at checkout is final. P.O. Boxes: postal only. Military: USPS only. International import duties/taxes may be due on arrival. Tracking emailed after dispatch. Shipping policy: https://pureflowair.com/pages/shippings-policy
+SHIPPING / WHERE WE DELIVER: Ships domestically (US) and to some international destinations outside Asia. CRITICAL EXCLUSION — does NOT ship to Asia, including India, China, Japan, South Korea, Southeast Asia, and other Asian countries. If asked about India or any Asian country: say clearly that PUREFLOW does NOT deliver there. Do NOT say shipping to India/Asia is available or “calculated at checkout.” For allowed destinations only: availability and cost are calculated at checkout. Domestic transit usually 2–7 days; international (non-Asia) usually 4–22 days. Orders usually dispatch within 2 business days of payment. Shipping price at checkout is final. P.O. Boxes: postal only. Military: USPS only. International import duties/taxes may be due on arrival. Tracking emailed after dispatch. Shipping policy: https://pureflowair.com/pages/shippings-policy
 
 RETURNS / REFUNDS (US & Canada): Return or exchange within 30 days of purchase if unused and in original packaging. Email support@pureflowair.com — PUREFLOW emails a prepaid return label. Damaged or wrong item: contact support for replacement. Refunds: after return received and checked, credit original payment in 3–5 business days; original outbound shipping (if charged) is not refunded. Canada: same return window; duties/taxes not refunded. Returns page: https://pureflowair.com/pages/return-refund-policy
 

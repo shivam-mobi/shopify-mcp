@@ -45,18 +45,19 @@ export function getCustomerAddressTools() {
     {
       name: CUSTOMER_ADDRESSES_TOOL_NAME,
       description:
-        "REQUIRED for logged-in customers when they ask to show, list, see, pick, or use saved/existing shipping addresses. " +
-        "Also call when they want to ship to a saved/default address or need an account address for set_cart_shipping / checkout. " +
-        "A compact address select UI is shown in chat after this tool — do NOT paste full address lists in your reply. " +
+        "Load saved Shopify shipping addresses for a logged-in customer. " +
+        "Call ONLY when they clearly mention addresses — e.g. saved address, my addresses, shipping address, use my address, default address, pick an address for checkout. " +
+        "NEVER call for product requests: \"show the products\", \"list filters\", \"show fresheners\", catalog results, or any \"show/list/see\" that is about products (not addresses). " +
+        "If unclear whether they want products or addresses, ask a short clarifying question — do NOT call this tool. " +
+        "A compact address select UI appears after this tool — do NOT paste full address lists in your reply. " +
         "Prefer the default address when they say \"use my address\" or \"default\". " +
-        "After they pick one (or if they already specified), pass fields into set_cart_shipping — do not invent addresses. " +
-        "Never refuse with \"unable to show\" when this tool is available — call it.",
+        "After they pick one, pass fields into set_cart_shipping — do not invent addresses.",
       input_schema: {
         type: "object",
         properties: {
           reason: {
             type: "string",
-            description: "Optional short reason (e.g. shipping, show_list)"
+            description: "Optional short reason (e.g. shipping, show_list). Only when the user clearly asked about addresses."
           }
         },
         required: []

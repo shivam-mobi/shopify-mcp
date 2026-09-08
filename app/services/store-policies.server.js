@@ -66,7 +66,8 @@ export async function searchStorePolicies({ query = "", topic = null } = {}) {
     instruction:
       "Shopify policy search returned no useful results (or this tool was called directly). " +
       "Answer ONLY from policy_digest. Do NOT invent policy details. " +
-      "Do NOT use Terms “30 days final” as the cancel rule — cancel is only before dispatch."
+      "Do NOT use Terms “30 days final” as the cancel rule — cancel is only before dispatch. " +
+      "CRITICAL: PUREFLOW does NOT ship to Asia (including India). If the customer asks about India or Asia, say we do not deliver there — never say shipping is available at checkout for those destinations."
   };
 }
 
@@ -247,7 +248,8 @@ export async function callStorePolicyTool(toolName, toolArgs = {}) {
         phone: "866-206-4492"
       },
       instruction:
-        "Answer ONLY from policy_digest. Do NOT invent policy details."
+        "Answer ONLY from policy_digest. Do NOT invent policy details. " +
+        "CRITICAL: PUREFLOW does NOT ship to Asia (including India). Say we do not deliver there when asked."
     });
   }
 }

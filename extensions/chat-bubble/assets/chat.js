@@ -159,6 +159,7 @@
 
   /**
    * Include variant_id so similar titles (e.g. freshener scents) add the correct product.
+   * Full text is sent to the API; the chat bubble hides the variant_id.
    */
   function buildAddToCartMessage(product) {
     const title = String(product?.title || 'this product').trim() || 'this product';
@@ -169,6 +170,16 @@
       return `Add "${title}" to my cart using variant_id: ${variantId}`;
     }
     return `Add ${title} to my cart`;
+  }
+
+  /** Hide Shopify variant GIDs from what the customer sees in chat. */
+  function stripVariantIdForDisplay(text) {
+    return String(text || '')
+      .replace(/\s*using\s+variant_id:\s*gid:\/\/shopify\/ProductVariant\/\d+/gi, '')
+      .replace(/\s*variant_id:\s*gid:\/\/shopify\/ProductVariant\/\d+/gi, '')
+      .replace(/\s*gid:\/\/shopify\/ProductVariant\/\d+/gi, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
   }
 
   function getStaticWelcomeFallback() {
@@ -283,7 +294,7 @@
     },
 
     touchFromMessage: function(conversationId, userMessage) {
-      const text = String(userMessage || '').trim();
+      const text = stripVariantIdForDisplay(userMessage);
       if (!conversationId || !text) return;
       const sessions = readSessionsIndex();
       const existing = sessions.find((s) => s.id === conversationId);
@@ -1553,7 +1564,8 @@
           messageElement.dataset.rawText = text;
           ShopAIChat.Formatting.formatMessageContent(messageElement);
         } else {
-          messageElement.textContent = text;
+          // Still send full text (with variant_id) to the API; hide GIDs in the bubble.
+          messageElement.textContent = stripVariantIdForDisplay(text);
         }
 
         messagesContainer.appendChild(messageElement);

@@ -197,7 +197,9 @@ export function getCatalogSearchTools() {
       description:
         "Search PUREFLOW catalog for Home Furnace Air Filters or Car Air Fresheners. " +
         "Use category=home_filter for home/furnace filters. " +
-        "For home_filter query: YOU must pass size as WidthxHeightxDepth. " +
+        "For home_filter query: pass the size the customer gave. " +
+        "Two numbers (20x20 or 20x10) → query \"20x20\" / \"20x10\" — do NOT invent depth/x1. " +
+        "Three numbers or labeled thickness/depth → include Depth (e.g. 20x25x1). " +
         "length means Height (2nd number), thickness means Depth (3rd). " +
         "Example follow-up: after 24x10x1 if customer says length is 30, query must be 24x30x1 not 30x10x1. " +
         "Use category=freshener for cabin-filter air fresheners (MCP catalog, optional scent in query). " +
@@ -215,7 +217,7 @@ export function getCatalogSearchTools() {
           query: {
             type: "string",
             description:
-              "Optional keywords for home filters: size as 20x25x1, or words width/length/height/thickness (length→height, thickness→depth), and MERV 8|11|13. For fresheners: scent name."
+              "Home filters: size as given (20x20, 20x10, or 20x25x1 if depth known), labeled width/length/height/thickness, MERV 8|11|13. Do not invent x1. Fresheners: scent name."
           }
         },
         required: ["category"]
