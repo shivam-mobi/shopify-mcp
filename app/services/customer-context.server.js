@@ -97,13 +97,11 @@ export function buildCustomerContextHintMessage(profile = {}) {
   const lastName = normalizeCustomerName(profile.lastName);
   const loggedIn = Boolean(profile.loggedIn);
 
-  if (!firstName && !lastName && !loggedIn) {
-    return null;
-  }
-
   const parts = [];
   if (loggedIn) {
     parts.push("The customer is logged into their Shopify account.");
+  } else {
+    parts.push("The customer is a guest (not logged into Shopify).");
   }
   if (firstName) {
     parts.push(`Customer first name: ${firstName}.`);
@@ -124,6 +122,21 @@ export function buildCustomerContextHintMessage(profile = {}) {
       "Never say \"vehicle parts\" or long generic lines like \"How can I assist you today\". " +
       "Do not ask for their name at welcome unless needed for shipping or orders."
   );
+
+  if (loggedIn) {
+    parts.push(
+      "Saved shipping addresses: available via get_customer_addresses. " +
+        "When they ask to show, list, see, or use saved/existing addresses, you MUST call get_customer_addresses. " +
+        "A select dropdown appears in the UI — reply in one short sentence only. Do not invent addresses."
+    );
+  } else {
+    parts.push(
+      "Saved shipping addresses: NOT available for guests (get_customer_addresses is not in your tools). " +
+        "If they ask to show or use saved addresses, reply in 1-2 short friendly sentences: " +
+        "saved addresses are available after they sign in; they can type a new shipping address here in chat, or sign in to their account to use saved ones. " +
+        "Do NOT say only \"I'm unable to show stored addresses\". Do NOT invent a select UI or fake addresses."
+    );
+  }
 
   return {
     role: "system",

@@ -45,12 +45,12 @@ export function getCustomerAddressTools() {
     {
       name: CUSTOMER_ADDRESSES_TOOL_NAME,
       description:
-        "Get the logged-in customer's saved Shopify shipping addresses from the store account. " +
-        "Call this when the customer asks for their addresses, wants to ship to a saved/default address, " +
-        "or needs an address for set_cart_shipping / checkout. " +
-        "A compact address select UI is shown in chat — do NOT paste full address lists in your reply. " +
+        "REQUIRED for logged-in customers when they ask to show, list, see, pick, or use saved/existing shipping addresses. " +
+        "Also call when they want to ship to a saved/default address or need an account address for set_cart_shipping / checkout. " +
+        "A compact address select UI is shown in chat after this tool — do NOT paste full address lists in your reply. " +
         "Prefer the default address when they say \"use my address\" or \"default\". " +
-        "After they pick one (or if they already specified), pass fields into set_cart_shipping — do not invent addresses.",
+        "After they pick one (or if they already specified), pass fields into set_cart_shipping — do not invent addresses. " +
+        "Never refuse with \"unable to show\" when this tool is available — call it.",
       input_schema: {
         type: "object",
         properties: {
