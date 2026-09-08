@@ -72,7 +72,8 @@ export const CART_WRAPPER_TOOL_NAMES = [
   "get_my_cart",
   "set_cart_shipping",
   "remove_cart_shipping",
-  "clear_my_cart"
+  "clear_my_cart",
+  "apply_discount_code"
 ];
 
 export function getCartWrapperTools() {
@@ -216,6 +217,30 @@ export function getCartWrapperTools() {
         type: "object",
         properties: {}
       }
+    },
+    {
+      name: "apply_discount_code",
+      description:
+        "Apply or clear a Shopify discount / promo code on checkout (same UCP checkout session). " +
+        "Call when the customer gives a coupon/promo/discount code (e.g. SAVE10, WELCOME20). " +
+        "Requires at least one product in the cart. Uses existing create_checkout / update_checkout — does not change cart lines. " +
+        "Pass code with the promo string. Pass clear:true to remove applied codes. " +
+        "If success:false, tell the customer EXACTLY the tool customer_message / issues text " +
+        "(e.g. the code is not available to them) — do NOT say the discount was applied. " +
+        "If success:true, confirm briefly and mention updated total when present.",
+      input_schema: {
+        type: "object",
+        properties: {
+          code: {
+            type: "string",
+            description: "Discount / promo code to apply (required unless clear:true)"
+          },
+          clear: {
+            type: "boolean",
+            description: "Set true to remove discount codes from checkout"
+          }
+        }
+      }
     }
   ];
 }
@@ -249,6 +274,8 @@ export async function callCartWrapperTool(
       return removeCartShipping(mcpClient, conversationId);
     case "clear_my_cart":
       return clearMyCart(mcpClient, conversationId);
+    case "apply_discount_code":
+      return applyDiscountCode(mcpClient, conversationId, toolArgs);
     default:
       return toolError(`Unknown cart wrapper tool: ${toolName}`);
   }
@@ -339,7 +366,8 @@ export function buildActiveCartWrapperContextMessage(cartId) {
       "This conversation has an active cart. Use add_to_cart to add products or increase qty, " +
       "remove_from_cart for one product or reduce qty (NOT for remove-all), " +
       "clear_my_cart to remove all products / empty cart, " +
-      "get_my_cart to show contents, set_cart_shipping to save address, remove_cart_shipping to clear address. " +
+      "get_my_cart to show contents, set_cart_shipping to save address, remove_cart_shipping to clear address, " +
+      "apply_discount_code when they give a promo/coupon code. " +
       "Do NOT call create_cart, update_cart, or get_cart directly."
   };
 }
@@ -548,11 +576,10 @@ export async function appendFinalCartSnapshot(mcpClient, conversationId, convers
     "When replying to the customer, state EVERY product quantity ONLY from snapshot.items[].quantity below. " +
     "Ignore items[] from earlier add_to_cart/remove_from_cart tool results in this same turn. " +
     (snapshot.checkout_url
-      ? `If you share a checkout link, use ONLY snapshot.checkout_url exactly: ${snapshot.checkout_url}` +
-        (snapshot.checkout_url_changed
-          ? " (CHANGED — do not reuse any older checkout link from this chat). "
-          : ". ")
-      : "") +
+      ? `CRITICAL: If you share a checkout link, use ONLY this exact snapshot.checkout_url: ${snapshot.checkout_url} ` +
+        "as [click here to proceed to checkout](URL). " +
+        "FORBIDDEN: reusing any older checkout/cart URL from earlier messages in this chat. "
+      : "Do not invent a checkout link. ") +
     JSON.stringify(snapshot);
 
   conversationHistory.push({ role: "system", content });
@@ -595,6 +622,161 @@ async function getMyCart(mcpClient, conversationId) {
   return toolResult(
     await summarizeCartWithShipping(mcpClient, conversationId, live.cart, live.raw)
   );
+}
+
+/**
+ * Apply / clear discount codes via existing UCP create_checkout / update_checkout.
+ * Does not change cart line items; safe no-op path if Shopify rejects the code.
+ */
+async function applyDiscountCode(mcpClient, conversationId, toolArgs = {}) {
+  const clear = Boolean(toolArgs.clear);
+  const rawCode = String(toolArgs.code || toolArgs.discount_code || "").trim();
+
+  if (!clear && !rawCode) {
+    return toolResult({
+      success: false,
+      discount_applied: false,
+      issues: ["Missing discount code."],
+      message: "Pass a discount code, or clear:true to remove codes.",
+      instruction:
+        "Ask the customer for the promo/discount code, then call apply_discount_code again."
+    });
+  }
+
+  const live = await fetchLiveCart(mcpClient, conversationId);
+  if (!live?.cart?.line_items?.length) {
+    return toolResult({
+      success: false,
+      discount_applied: false,
+      empty_cart: true,
+      issues: ["Cart is empty."],
+      message: "Add a product to the cart before applying a discount code.",
+      instruction:
+        "Cart is empty. Ask them to add a product first, then retry apply_discount_code."
+    });
+  }
+
+  const discounts = clear
+    ? { codes: [] }
+    : { codes: [rawCode] };
+
+  console.log("[cart-wrapper] apply_discount_code", {
+    conversationId,
+    clear,
+    codes: discounts.codes
+  });
+
+  const synced = await syncCheckoutWithCart(mcpClient, conversationId, live.cart, {
+    force: true,
+    allowCreate: true,
+    discounts
+  });
+
+  if (synced?.rate_limited) {
+    return toolResult({
+      success: false,
+      discount_applied: false,
+      rate_limited: true,
+      retry_after_seconds: synced.retry_after_seconds || null,
+      message: TOOL_FAILURE_USER_MESSAGE,
+      instruction: RATE_LIMIT_CUSTOMER_INSTRUCTION
+    });
+  }
+
+  if (synced?.error && !synced?.checkout?.id) {
+    return toolResult({
+      success: false,
+      discount_applied: false,
+      issues: [String(synced.error)],
+      message: String(synced.error),
+      instruction:
+        "Discount was NOT applied. Tell the customer briefly using issues. Do not invent a discount."
+    });
+  }
+
+  const checkout = synced?.checkout || null;
+  const summary = summarizeDiscountOutcome(
+    checkout,
+    discounts.codes,
+    clear,
+    collectCheckoutMessages(checkout, synced)
+  );
+
+  // Rejected promo (e.g. discount_code_user_ineligible): surface Shopify's text clearly.
+  // Also clear the rejected code so later add_to_cart / checkout sync does not re-send it.
+  if (!summary.success && !clear) {
+    const customerMessage =
+      summary.customer_message ||
+      summary.message ||
+      (rawCode
+        ? `The ${rawCode} discount code is not available to you right now`
+        : "That discount code is not available to you right now");
+
+    try {
+      const clearedResponse = await updateCartLineItems(
+        mcpClient,
+        conversationId,
+        live.cartId,
+        live.cart,
+        toWritableLineItems(live.cart.line_items || []),
+        { incomingCart: { discounts: { codes: [] } } }
+      );
+      const clearedCart = extractCartPayload(clearedResponse) || live.cart;
+      const checkoutId = await getConversationCheckoutId(conversationId);
+      if (checkoutId) {
+        await syncCheckoutWithCart(mcpClient, conversationId, clearedCart, {
+          force: true,
+          allowCreate: false,
+          discounts: { codes: [] }
+        });
+      }
+    } catch (clearError) {
+      console.warn("[cart-wrapper] failed to clear rejected discount code", clearError.message);
+    }
+
+    return toolResult({
+      success: false,
+      discount_applied: false,
+      discount_error_code: summary.error_code || "discount_code_user_ineligible",
+      customer_message: customerMessage,
+      issues: [customerMessage],
+      message: customerMessage,
+      instruction:
+        `Reply to the customer with ONLY this exact sentence: "${customerMessage}". ` +
+        "Do not say the discount was applied. Do not invent savings. Do not list the full cart unless they ask."
+    });
+  }
+
+  const cartSummary = formatCartSummary(live.cart, live.raw, {
+    checkoutUrl: synced?.checkoutUrl || null,
+    checkoutUrlChanged: Boolean(synced?.checkoutUrlChanged),
+    shippingAddress: synced?.shippingAddress || null,
+    conversationId,
+    checkout
+  });
+
+  const discountInstruction = summary.instruction;
+  const totalInstruction = summary.success
+    ? " CRITICAL: Quote `total` (after discount) to the customer — never quote `subtotal` as what they pay. Include `order_discount` savings when present."
+    : "";
+
+  return toolResult({
+    ...cartSummary,
+    success: summary.success,
+    discount_applied: summary.discount_applied,
+    discount_cleared: summary.discount_cleared,
+    discount_error_code: summary.error_code,
+    customer_message: summary.customer_message || summary.message,
+    discount_codes: summary.codes?.length ? summary.codes : cartSummary.discount_codes,
+    discounts_applied: summary.applied,
+    issues: summary.issues,
+    message: summary.message,
+    instruction: [cartSummary.instruction, discountInstruction, totalInstruction]
+      .filter(Boolean)
+      .join(" "),
+    checkout_url: synced?.checkoutUrl || cartSummary?.checkout_url || null,
+    checkout_url_changed: Boolean(synced?.checkoutUrlChanged)
+  });
 }
 
 async function setCartShipping(mcpClient, conversationId, address, context = {}) {
@@ -848,6 +1030,10 @@ function buildCreateCheckoutArgs(cartId, cart, overrides = {}, conversationId = 
     checkout.fulfillment = overrides.fulfillment;
   }
 
+  if (overrides.discounts) {
+    checkout.discounts = overrides.discounts;
+  }
+
   return {
     cart_id: cartId,
     checkout: withAiraAttribution(checkout, conversationId)
@@ -1071,8 +1257,8 @@ async function fetchFreshCheckoutUrl(
 }
 
 /**
- * Save latest checkout URL on the conversation. When Shopify recreates checkout,
- * this replaces the old URL so later replies share the new link.
+ * Save latest buyer checkout/cart URL. Marks changed when the Shopify link
+ * itself changes (ignores AIRA utm_* noise).
  */
 async function persistLatestCheckoutUrl(conversationId, checkoutUrl) {
   if (!conversationId || !checkoutUrl) {
@@ -1080,18 +1266,75 @@ async function persistLatestCheckoutUrl(conversationId, checkoutUrl) {
   }
 
   const result = await setConversationCheckoutUrl(conversationId, checkoutUrl);
-  if (result?.previousUrl && result.previousUrl !== result.checkoutUrl) {
+  const previousIdentity = checkoutUrlIdentity(result?.previousUrl);
+  const nextIdentity = checkoutUrlIdentity(result?.checkoutUrl || checkoutUrl);
+  const changed = Boolean(
+    result?.previousUrl && previousIdentity && nextIdentity && previousIdentity !== nextIdentity
+  );
+
+  if (changed) {
     console.log("[cart-wrapper] checkout_url updated in DB", {
       conversationId,
       previousUrl: result.previousUrl,
       checkoutUrl: result.checkoutUrl
     });
-    return { changed: true, checkoutUrl: result.checkoutUrl };
   }
 
   return {
-    changed: false,
-    checkoutUrl: result?.checkoutUrl || checkoutUrl
+    changed,
+    checkoutUrl: result?.checkoutUrl || checkoutUrl,
+    previousUrl: result?.previousUrl || null
+  };
+}
+
+/** Compare Shopify cart/checkout links without AIRA UTM query noise. */
+function checkoutUrlIdentity(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    const keep = [];
+    for (const [key, value] of parsed.searchParams.entries()) {
+      if (key.toLowerCase().startsWith("utm_")) continue;
+      keep.push(`${key}=${value}`);
+    }
+    keep.sort();
+    return `${parsed.origin}${parsed.pathname}${keep.length ? `?${keep.join("&")}` : ""}`;
+  } catch {
+    return raw.split("#")[0];
+  }
+}
+
+/**
+ * Prefer the freshest buyer link from checkout sync, else latest cart continue_url.
+ * Always persist and flag when it differs from what we last stored.
+ */
+async function resolveAndPersistBuyerUrl({
+  conversationId,
+  preferredUrl = null,
+  cart = null,
+  forceChanged = false
+} = {}) {
+  const cartContinue = cart?.continue_url
+    ? appendAiraUtmParams(cart.continue_url, conversationId)
+    : null;
+  const preferred = preferredUrl
+    ? appendAiraUtmParams(preferredUrl, conversationId)
+    : null;
+
+  // Prefer explicit checkout/sync URL; fall back to latest cart continue_url.
+  const candidate = preferred || cartContinue || null;
+  if (!candidate) {
+    return { checkoutUrl: null, checkoutUrlChanged: false };
+  }
+
+  const persisted = await persistLatestCheckoutUrl(conversationId, candidate);
+  const changed = Boolean(forceChanged || persisted.changed);
+
+  return {
+    checkoutUrl: persisted.checkoutUrl || candidate,
+    checkoutUrlChanged: changed,
+    previousUrl: persisted.previousUrl || null
   };
 }
 
@@ -1116,6 +1359,182 @@ function writableShippingAddress(destination = {}) {
 }
 
 /**
+ * Build UCP discounts payload for checkout.
+ * When explicitDiscounts is provided (including clear { codes: [] }), use it.
+ * Otherwise preserve codes already on the checkout so PUT updates do not wipe them.
+ */
+function resolveCheckoutDiscounts(explicitDiscounts = null, existingCheckout = null) {
+  if (explicitDiscounts && Object.prototype.hasOwnProperty.call(explicitDiscounts, "codes")) {
+    const codes = Array.isArray(explicitDiscounts.codes)
+      ? explicitDiscounts.codes.map((code) => String(code || "").trim()).filter(Boolean)
+      : [];
+    return { codes };
+  }
+
+  // Only carry codes that actually applied — rejected codes often remain in codes[].
+  const applied = Array.isArray(existingCheckout?.discounts?.applied)
+    ? existingCheckout.discounts.applied
+    : [];
+  const appliedCodes = applied
+    .map((entry) => String(entry?.code || "").trim())
+    .filter(Boolean);
+  if (appliedCodes.length > 0) {
+    return { codes: appliedCodes };
+  }
+
+  return null;
+}
+
+function summarizeDiscountOutcome(checkout, requestedCodes = [], clear = false, extraMessages = []) {
+  const codes = Array.isArray(checkout?.discounts?.codes)
+    ? checkout.discounts.codes.map((code) => String(code || "").trim()).filter(Boolean)
+    : [];
+  const applied = Array.isArray(checkout?.discounts?.applied)
+    ? checkout.discounts.applied
+    : [];
+  const messagePools = [
+    ...(Array.isArray(checkout?.messages) ? checkout.messages : []),
+    ...(Array.isArray(extraMessages) ? extraMessages : [])
+  ];
+  const discountRejections = extractDiscountRejectionMessages(messagePools);
+
+  if (clear) {
+    const cleared = codes.length === 0;
+    return {
+      success: cleared,
+      discount_applied: false,
+      discount_cleared: cleared,
+      codes,
+      applied,
+      error_code: null,
+      issues: cleared ? [] : ["Could not clear discount codes."],
+      message: cleared
+        ? "Discount codes cleared from checkout."
+        : "Could not clear discount codes.",
+      instruction: cleared
+        ? "Confirm discounts were removed. Share checkout_url if present."
+        : "Tell the customer the discount could not be cleared."
+    };
+  }
+
+  const requested = (requestedCodes || []).map((code) => String(code || "").trim()).filter(Boolean);
+  const requestedLower = new Set(requested.map((code) => code.toLowerCase()));
+  const appliedMatching = applied.filter((entry) => {
+    const code = String(entry?.code || "").trim().toLowerCase();
+    return code && requestedLower.has(code);
+  });
+
+  // Shopify often echoes rejected codes in discounts.codes — never treat that as success.
+  // Only applied[] (matching the requested code) means the promo actually took effect.
+  const successFinal = discountRejections.length === 0 && appliedMatching.length > 0;
+
+  const issues = [];
+  if (!successFinal) {
+    if (discountRejections.length) {
+      issues.push(...discountRejections.map((entry) => entry.content));
+    } else {
+      issues.push(
+        requested.length
+          ? `Discount code "${requested.join(", ")}" was not applied.`
+          : "Discount code was not applied."
+      );
+    }
+  }
+
+  const customerMessage = successFinal
+    ? `Discount applied${requested.length ? `: ${requested.join(", ")}` : ""}.`
+    : issues[0];
+
+  return {
+    success: successFinal,
+    discount_applied: successFinal,
+    discount_cleared: false,
+    codes,
+    applied,
+    error_code: discountRejections[0]?.code || null,
+    issues,
+    message: customerMessage,
+    customer_message: customerMessage,
+    instruction: successFinal
+      ? "Confirm the discount briefly. Mention updated totals from this tool result when available. Share checkout_url if present. CRITICAL: Quote `total` after discount — never subtotal as what they pay."
+      : "Discount was NOT applied. Tell the customer EXACTLY the text in customer_message (or issues[0]) — e.g. that the code is not available to them. " +
+        "Do NOT say the discount was applied. Do NOT invent a discounted total. You may still list cart items and the normal total."
+  };
+}
+
+/**
+ * Pull Shopify discount rejection warnings (e.g. discount_code_user_ineligible).
+ */
+function extractDiscountRejectionMessages(messages = []) {
+  if (!Array.isArray(messages)) return [];
+
+  const out = [];
+  const seen = new Set();
+  for (const msg of messages) {
+    if (!msg || typeof msg !== "object") continue;
+    const code = String(msg.code || "").trim();
+    const content = String(msg.content || msg.message || msg.description || "").trim();
+    const type = String(msg.type || "").toLowerCase();
+    const codeLower = code.toLowerCase();
+    const blob = `${codeLower} ${content.toLowerCase()}`;
+
+    const isDiscountRejection =
+      /^discount_code_/.test(codeLower) ||
+      /discount_code_user_ineligible|discount_code_not_found|discount_code_expired|discount_code_invalid|promo|coupon/.test(
+        blob
+      ) ||
+      ((type === "warning" || type === "error") && /discount|promo|coupon/.test(blob));
+
+    if (!isDiscountRejection) continue;
+    if (!content && !code) continue;
+
+    const key = `${codeLower}|${content.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      code: code || null,
+      content: content || code,
+      type: type || null
+    });
+  }
+  return out;
+}
+
+/** Collect messages from a checkout object and/or raw MCP tool response. */
+function collectCheckoutMessages(...sources) {
+  const messages = [];
+  const seen = new Set();
+  for (const source of sources) {
+    if (!source) continue;
+    const pools = [
+      source.messages,
+      source.checkout?.messages,
+      source.structuredContent?.messages,
+      source.structuredContent?.checkout?.messages
+    ];
+    // Parsed text body
+    if (typeof source.content?.[0]?.text === "string") {
+      try {
+        const parsed = JSON.parse(source.content[0].text);
+        pools.push(parsed?.messages, parsed?.checkout?.messages);
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const pool of pools) {
+      if (!Array.isArray(pool)) continue;
+      for (const message of pool) {
+        const key = `${message?.code || ""}|${message?.content || message?.message || ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        messages.push(message);
+      }
+    }
+  }
+  return messages;
+}
+
+/**
  * Keep one checkout per conversation.
  * - If activeCheckoutId exists → update_checkout (items + shipping)
  * - Else if shipping (or force) and allowCreate → create_checkout once and store id
@@ -1124,7 +1543,7 @@ async function syncCheckoutWithCart(
   mcpClient,
   conversationId,
   cart,
-  { shipping = null, force = false, allowCreate = true } = {}
+  { shipping = null, force = false, allowCreate = true, discounts = null } = {}
 ) {
   const savedShipping =
     shipping || (await getConversationShippingAddress(conversationId));
@@ -1135,6 +1554,7 @@ async function syncCheckoutWithCart(
   }
 
   // No shipping and not forced → nothing to sync (cart-only browsing).
+  // Discount apply uses force:true so checkout can be created/updated without shipping.
   if (!hasShipping && !force) {
     return null;
   }
@@ -1148,7 +1568,8 @@ async function syncCheckoutWithCart(
       checkoutId,
       cart,
       destination,
-      conversationId
+      conversationId,
+      { discounts }
     );
 
     if (updated?.checkout?.id) {
@@ -1237,7 +1658,8 @@ async function syncCheckoutWithCart(
     mcpClient,
     cart,
     destination,
-    conversationId
+    conversationId,
+    { discounts }
   );
   if (!created?.checkout?.id) {
     return {
@@ -1299,7 +1721,8 @@ async function updateExistingCheckout(
   checkoutId,
   cart,
   destination,
-  conversationId = null
+  conversationId = null,
+  { discounts = null } = {}
 ) {
   try {
     const getResponse = await mcpClient.callTool("get_checkout", { id: checkoutId });
@@ -1333,6 +1756,11 @@ async function updateExistingCheckout(
     } else if (existing.fulfillment) {
       // Preserve existing fulfillment when only items change.
       checkoutBody.fulfillment = existing.fulfillment;
+    }
+
+    const discountsPayload = resolveCheckoutDiscounts(discounts, existing);
+    if (discountsPayload) {
+      checkoutBody.discounts = discountsPayload;
     }
 
     const initialFulfillmentLineIds = destination
@@ -1369,6 +1797,13 @@ async function updateExistingCheckout(
       };
     }
 
+    // Keep Shopify discount warnings (e.g. discount_code_user_ineligible) on the checkout
+    // object — they often live on the tool response, not nested under checkout.
+    checkout = {
+      ...checkout,
+      messages: collectCheckoutMessages(updateResponse, checkout, existing)
+    };
+
     // New cart lines get checkout ids only after the first update — re-attach
     // shipping to ALL line ids so the address is not dropped.
     let shippingAddress = extractShippingDestination(checkout);
@@ -1385,16 +1820,18 @@ async function updateExistingCheckout(
         !shippingAddress?.street_address;
 
       if (needsFulfillmentRefresh && allLineIds.length > 0) {
+        const retryBody = {
+          line_items: allLineItems,
+          buyer: buildCheckoutBuyer(destination, existing.buyer),
+          fulfillment: buildCheckoutFulfillment(destination, allLineIds)
+        };
+        const retryDiscounts = resolveCheckoutDiscounts(discounts, checkout);
+        if (retryDiscounts) {
+          retryBody.discounts = retryDiscounts;
+        }
         const retryResponse = await mcpClient.callTool("update_checkout", {
           id: checkout.id,
-          checkout: withAiraAttribution(
-            {
-              line_items: allLineItems,
-              buyer: buildCheckoutBuyer(destination, existing.buyer),
-              fulfillment: buildCheckoutFulfillment(destination, allLineIds)
-            },
-            conversationId
-          )
+          checkout: withAiraAttribution(retryBody, conversationId)
         });
         const retryErrors = extractCheckoutValidationErrors(retryResponse);
         const retried = extractCheckoutPayload(retryResponse) || checkout;
@@ -1405,7 +1842,10 @@ async function updateExistingCheckout(
           ...extractCheckoutValidationErrors(retried)
         ];
         return {
-          checkout: retried,
+          checkout: {
+            ...retried,
+            messages: collectCheckoutMessages(retryResponse, updateResponse, retried, checkout)
+          },
           checkoutUrl: appendAiraUtmParams(
             extractContinueUrl(retryResponse) || retried.continue_url,
             conversationId
@@ -1435,7 +1875,8 @@ async function createCheckoutFromCart(
   mcpClient,
   cart,
   destination,
-  conversationId = null
+  conversationId = null,
+  { discounts = null } = {}
 ) {
   try {
     const overrides = {};
@@ -1451,6 +1892,10 @@ async function createCheckoutFromCart(
     if (destination?.street_address) {
       overrides.fulfillment = buildCheckoutFulfillment(destination);
     }
+    const discountsPayload = resolveCheckoutDiscounts(discounts, null);
+    if (discountsPayload) {
+      overrides.discounts = discountsPayload;
+    }
 
     const response = await mcpClient.callTool(
       "create_checkout",
@@ -1462,9 +1907,16 @@ async function createCheckoutFromCart(
     if (!checkout?.id) {
       return {
         error: createErrors[0]?.readable || extractToolErrorText(response) || "create_checkout failed",
-        validationErrors: createErrors
+        validationErrors: createErrors,
+        checkout: null,
+        messages: collectCheckoutMessages(response)
       };
     }
+
+    checkout = {
+      ...checkout,
+      messages: collectCheckoutMessages(response, checkout)
+    };
 
     let shippingAddress = extractShippingDestination(checkout);
     let checkoutUrl = appendAiraUtmParams(
@@ -1479,21 +1931,26 @@ async function createCheckoutFromCart(
     if (destination?.street_address) {
       const lineItems = buildCheckoutLineItems(checkout.line_items || cart.line_items);
       const lineItemIds = lineItems.map((line) => line.id).filter(Boolean);
+      const updateBody = {
+        ...(lineItems.length ? { line_items: lineItems } : {}),
+        buyer: buildCheckoutBuyer(destination, checkout.buyer),
+        fulfillment: buildCheckoutFulfillment(destination, lineItemIds)
+      };
+      const keepDiscounts = resolveCheckoutDiscounts(discounts, checkout);
+      if (keepDiscounts) {
+        updateBody.discounts = keepDiscounts;
+      }
       const updateResponse = await mcpClient.callTool("update_checkout", {
         id: checkout.id,
-        checkout: withAiraAttribution(
-          {
-            ...(lineItems.length ? { line_items: lineItems } : {}),
-            buyer: buildCheckoutBuyer(destination, checkout.buyer),
-            fulfillment: buildCheckoutFulfillment(destination, lineItemIds)
-          },
-          conversationId
-        )
+        checkout: withAiraAttribution(updateBody, conversationId)
       });
       const updateErrors = extractCheckoutValidationErrors(updateResponse);
       const updatedCheckout = extractCheckoutPayload(updateResponse);
       if (updatedCheckout?.id) {
-        checkout = updatedCheckout;
+        checkout = {
+          ...updatedCheckout,
+          messages: collectCheckoutMessages(updateResponse, response, updatedCheckout, checkout)
+        };
         shippingAddress = extractShippingDestination(checkout);
         checkoutUrl = appendAiraUtmParams(
           extractContinueUrl(updateResponse) || checkout.continue_url || checkoutUrl,
@@ -1501,6 +1958,10 @@ async function createCheckoutFromCart(
         );
       } else {
         shippingAddress = null;
+        checkout = {
+          ...checkout,
+          messages: collectCheckoutMessages(updateResponse, response, checkout)
+        };
       }
       validationErrors = [
         ...validationErrors,
@@ -1666,8 +2127,65 @@ async function summarizeCartWithShipping(
   const savedShipping = await getConversationShippingAddress(conversationId);
   const checkoutId = await getConversationCheckoutId(conversationId);
 
+  // Existing checkout: always update line items, then return the freshest continue_url.
+  if (checkoutId) {
+    const synced = await syncCheckoutWithCart(mcpClient, conversationId, cart, {
+      shipping: savedShipping,
+      allowCreate,
+      force: true
+    });
+
+    if (
+      synced?.rate_limited ||
+      (synced?.error && !synced?.checkoutUrl && !cart?.continue_url) ||
+      ((synced?.validationErrors || []).length > 0 && !synced?.checkoutUrl && !cart?.continue_url)
+    ) {
+      return buildCartSummaryWithCheckoutIssue(
+        cart,
+        rawResponse,
+        synced,
+        savedShipping,
+        conversationId
+      );
+    }
+
+    const resolved = await resolveAndPersistBuyerUrl({
+      conversationId,
+      preferredUrl: synced?.checkoutUrl || null,
+      cart,
+      // Cart lines changed — always force the model to use THIS link, not an older chat link.
+      forceChanged: true
+    });
+
+    console.log("[cart-wrapper] summarize buyer url after cart change", {
+      conversationId,
+      checkoutId,
+      checkoutUrl: resolved.checkoutUrl,
+      checkoutUrlChanged: resolved.checkoutUrlChanged,
+      previousUrl: resolved.previousUrl || null
+    });
+
+    return formatCartSummary(cart, rawResponse, {
+      checkoutUrl: resolved.checkoutUrl,
+      checkoutUrlChanged: resolved.checkoutUrlChanged,
+      shippingAddress: synced?.shippingAddress || savedShipping || null,
+      conversationId,
+      checkout: synced?.checkout || null
+    });
+  }
+
   if (!savedShipping?.street_address && !checkoutId) {
-    return formatCartSummary(cart, rawResponse, { conversationId });
+    const resolved = await resolveAndPersistBuyerUrl({
+      conversationId,
+      preferredUrl: null,
+      cart,
+      forceChanged: Boolean(cart?.continue_url)
+    });
+    return formatCartSummary(cart, rawResponse, {
+      checkoutUrl: resolved.checkoutUrl,
+      checkoutUrlChanged: resolved.checkoutUrlChanged,
+      conversationId
+    });
   }
 
   // Rare: caller opted out of create (should not hide URL when checkout already exists).
@@ -1694,8 +2212,14 @@ async function summarizeCartWithShipping(
   });
 
   if (!synced) {
+    const resolved = await resolveAndPersistBuyerUrl({
+      conversationId,
+      cart,
+      forceChanged: Boolean(cart?.continue_url)
+    });
     return formatCartSummary(cart, rawResponse, {
-      checkoutUrl: null,
+      checkoutUrl: resolved.checkoutUrl,
+      checkoutUrlChanged: resolved.checkoutUrlChanged,
       shippingAddress: savedShipping,
       conversationId
     });
@@ -1715,14 +2239,20 @@ async function summarizeCartWithShipping(
     );
   }
 
-  // Checkout URL present — share it even if Shopify also sent escalation messages
-  // (item_unavailable / extension_interaction_required / requires_escalation).
-  if (synced.checkoutUrl) {
+  const resolved = await resolveAndPersistBuyerUrl({
+    conversationId,
+    preferredUrl: synced.checkoutUrl || null,
+    cart,
+    forceChanged: true
+  });
+
+  if (resolved.checkoutUrl) {
     return formatCartSummary(cart, rawResponse, {
-      checkoutUrl: synced.checkoutUrl,
-      checkoutUrlChanged: Boolean(synced.checkoutUrlChanged),
+      checkoutUrl: resolved.checkoutUrl,
+      checkoutUrlChanged: resolved.checkoutUrlChanged,
       shippingAddress: synced.shippingAddress || savedShipping,
-      conversationId
+      conversationId,
+      checkout: synced.checkout || null
     });
   }
 
@@ -1741,7 +2271,8 @@ async function summarizeCartWithShipping(
       ...formatCartSummary(cart, rawResponse, {
         checkoutUrl: null,
         shippingAddress: savedShipping,
-        conversationId
+        conversationId,
+        checkout: synced.checkout || null
       }),
       checkout_url: null,
       needs_checkout_link: true,
@@ -1754,7 +2285,8 @@ async function summarizeCartWithShipping(
   return formatCartSummary(cart, rawResponse, {
     checkoutUrl: synced.checkoutUrl || null,
     shippingAddress: synced.shippingAddress || savedShipping,
-    conversationId
+    conversationId,
+    checkout: synced.checkout || null
   });
 }
 
@@ -1767,15 +2299,17 @@ async function stripCheckoutShipping(mcpClient, checkoutId, cart, conversationId
     }
 
     const lineItems = buildUpdateCheckoutLineItems(cart.line_items, existing.line_items);
+    const stripBody = {
+      ...(lineItems.length ? { line_items: lineItems } : {}),
+      fulfillment: { methods: [] }
+    };
+    const keepDiscounts = resolveCheckoutDiscounts(null, existing);
+    if (keepDiscounts) {
+      stripBody.discounts = keepDiscounts;
+    }
     const updateResponse = await mcpClient.callTool("update_checkout", {
       id: checkoutId,
-      checkout: withAiraAttribution(
-        {
-          ...(lineItems.length ? { line_items: lineItems } : {}),
-          fulfillment: { methods: [] }
-        },
-        conversationId
-      )
+      checkout: withAiraAttribution(stripBody, conversationId)
     });
 
     const checkout = extractCheckoutPayload(updateResponse) || existing;

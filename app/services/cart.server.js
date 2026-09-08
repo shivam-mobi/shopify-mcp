@@ -312,7 +312,9 @@ function buildPreservedCartUpdate({
     }
   }
 
-  const discounts = pickNonEmptyObject(incomingCart.discounts, existingCart?.discounts);
+  // Prefer explicit incoming discounts (including clear: []). Otherwise keep only
+  // codes that actually applied — never re-send rejected echoes from codes[].
+  const discounts = resolvePreservedDiscounts(incomingCart?.discounts, existingCart?.discounts);
   if (discounts) {
     cart.discounts = discounts;
   }
@@ -322,6 +324,38 @@ function buildPreservedCartUpdate({
     cart,
     meta
   };
+}
+
+/**
+ * Build discounts for cart PUT. Omit entirely when nothing valid is applied,
+ * so rejected codes are not carried forward on the next add_to_cart.
+ */
+function resolvePreservedDiscounts(incomingDiscounts = null, existingDiscounts = null) {
+  if (incomingDiscounts && Object.prototype.hasOwnProperty.call(incomingDiscounts, "codes")) {
+    return {
+      codes: normalizeDiscountCodeList(incomingDiscounts.codes)
+    };
+  }
+
+  const appliedCodes = appliedDiscountCodeList(existingDiscounts);
+  if (appliedCodes.length > 0) {
+    return { codes: appliedCodes };
+  }
+
+  return null;
+}
+
+function normalizeDiscountCodeList(codes) {
+  if (!Array.isArray(codes)) return [];
+  return codes.map((code) => String(code || "").trim()).filter(Boolean);
+}
+
+/** Codes that Shopify actually applied (not merely echoed in discounts.codes). */
+function appliedDiscountCodeList(discounts = null) {
+  const applied = Array.isArray(discounts?.applied) ? discounts.applied : [];
+  return applied
+    .map((entry) => String(entry?.code || "").trim())
+    .filter(Boolean);
 }
 
 /**
@@ -1047,7 +1081,8 @@ export function formatCartSummary(
     checkoutUrl = null,
     shippingAddress = null,
     conversationId = null,
-    checkoutUrlChanged = false
+    checkoutUrlChanged = false,
+    checkout = null
   } = {}
 ) {
   if (!cart) {
@@ -1061,16 +1096,19 @@ export function formatCartSummary(
     price: formatLinePrice(line)
   }));
 
-  const totalEntry = cart.totals?.find((t) => t.type === "total");
-  const subtotalEntry = cart.totals?.find((t) => t.type === "subtotal");
+  const currency = checkout?.currency || cart.currency || "USD";
+  const cartTotalEntry = cart.totals?.find((t) => t.type === "total");
+  const cartSubtotalEntry = cart.totals?.find((t) => t.type === "subtotal");
+  const checkoutPricing = extractCheckoutPricing(checkout, currency);
 
   const resolvedCheckoutUrl = appendAiraUtmParams(checkoutUrl || null, conversationId);
 
   const checkoutLinkInstruction = resolvedCheckoutUrl
     ? checkoutUrlChanged
-      ? `CRITICAL: checkout_url CHANGED (new Shopify checkout). You MUST share ONLY this exact checkout_url in your reply: ${resolvedCheckoutUrl} ` +
-        "as [click here to proceed to checkout](URL). FORBIDDEN: reusing any older checkout/cart link from earlier messages in this chat."
-      : `Share checkout ONLY using this exact checkout_url: ${resolvedCheckoutUrl} ` +
+      ? `CRITICAL: checkout_url is NEW/UPDATED for this cart. You MUST share ONLY this exact checkout_url in your reply: ${resolvedCheckoutUrl} ` +
+        "as [click here to proceed to checkout](URL). " +
+        "FORBIDDEN: reusing any older checkout or cart link from earlier messages in this chat — those are stale."
+      : `Share checkout ONLY using this exact checkout_url from THIS tool result: ${resolvedCheckoutUrl} ` +
         "as [click here to proceed to checkout](URL). Do not reuse any older checkout link from earlier messages."
     : null;
 
@@ -1079,22 +1117,42 @@ export function formatCartSummary(
     cart_id: cart.id,
     item_count: items.length,
     items,
-    currency: cart.currency || "USD",
-    subtotal: formatMoney(subtotalEntry?.amount, cart.currency),
-    total: formatMoney(totalEntry?.amount, cart.currency),
+    currency,
+    subtotal:
+      checkoutPricing?.subtotal ||
+      formatMoney(cartSubtotalEntry?.amount, currency),
+    total:
+      checkoutPricing?.total ||
+      formatMoney(cartTotalEntry?.amount, currency),
     checkout_url: resolvedCheckoutUrl,
     ...(checkoutUrlChanged ? { checkout_url_changed: true } : {}),
     instruction:
-      "Base your reply ONLY on this summary. Do not claim items were added/removed unless they appear here."
+      "Base your reply ONLY on this summary. Do not claim items were added/removed unless they appear here." +
+      (resolvedCheckoutUrl
+        ? ` If you share a checkout link, it MUST be checkout_url from THIS summary exactly (${resolvedCheckoutUrl}). Never paste an older link from chat history.`
+        : "")
   };
 
-  // Cart continue_url is what the model often pastes when checkout_url is null —
-  // always tag it with AIRA UTMs so attributes exist before the LLM turn.
+  if (checkoutPricing?.order_discount) {
+    summary.order_discount = checkoutPricing.order_discount;
+    summary.discount_codes = checkoutPricing.codes;
+    summary.instruction =
+      "Base your reply ONLY on this summary. " +
+      "CRITICAL: `total` is the amount AFTER discount. `subtotal` is BEFORE discount. " +
+      "When a discount is applied, tell the customer the discounted `total` (and `order_discount` savings) — NEVER quote subtotal as the total due. " +
+      "Do not claim items were added/removed unless they appear here.";
+  }
+
+  // Prefer a single checkout_url field for the model. If we already have checkout_url,
+  // do not also expose continue_url (that causes the model to paste a stale cart link).
   if (!resolvedCheckoutUrl && cart.continue_url) {
     summary.continue_url = appendAiraUtmParams(cart.continue_url, conversationId);
+    summary.checkout_url = summary.continue_url;
+    summary.checkout_url_changed = true;
     summary.instruction =
-      "checkout_url is null. If the customer wants to checkout, share continue_url EXACTLY as given " +
-      "(including all utm_* query params). Do not strip or rewrite the URL.";
+      "checkout_url above is the latest cart continue_url. " +
+      "You MUST share ONLY that exact URL as [click here to proceed to checkout](URL). " +
+      "FORBIDDEN: reusing any older checkout/cart link from earlier messages.";
   }
 
   if (shippingAddress) {
@@ -1102,6 +1160,9 @@ export function formatCartSummary(
     summary.shipping_address = shippingAddress;
     summary.instruction = resolvedCheckoutUrl
       ? "Shipping was saved successfully ONLY because shipping_saved is true. Confirm shipping_address and share checkout_url ONLY — never use continue_url. Do not say there was an error. " +
+        (checkoutPricing?.order_discount
+          ? "Use `total` AFTER discount (not subtotal). "
+          : "") +
         (checkoutLinkInstruction || "")
       : "Shipping address is on file (shipping_saved is true) but checkout_url is not available. Confirm cart items/totals only — do NOT invent a checkout link and do NOT use continue_url as a checkout/payment link.";
   } else if (checkoutLinkInstruction) {
@@ -1109,6 +1170,63 @@ export function formatCartSummary(
   }
 
   return summary;
+}
+
+/**
+ * Prefer checkout totals when a discount is on the checkout session.
+ * Cart totals do not include promo codes applied via update_checkout.
+ */
+function extractCheckoutPricing(checkout, fallbackCurrency = "USD") {
+  if (!checkout || typeof checkout !== "object") {
+    return null;
+  }
+
+  const currency = checkout.currency || fallbackCurrency || "USD";
+  const totals = Array.isArray(checkout.totals) ? checkout.totals : [];
+  const amountOf = (type) => {
+    const entry = totals.find((t) => t.type === type);
+    return entry?.amount != null ? Number(entry.amount) : null;
+  };
+
+  const totalAmount = amountOf("total");
+  const subtotalAmount = amountOf("subtotal");
+  const itemsDiscount = amountOf("items_discount");
+  const orderDiscount = amountOf("discount");
+
+  const applied = Array.isArray(checkout.discounts?.applied)
+    ? checkout.discounts.applied
+    : [];
+  const codes = Array.isArray(checkout.discounts?.codes)
+    ? checkout.discounts.codes.map((code) => String(code || "").trim()).filter(Boolean)
+    : [];
+
+  const appliedSum = applied.reduce((sum, entry) => {
+    const amount = Number(entry?.amount);
+    return Number.isFinite(amount) ? sum + Math.abs(amount) : sum;
+  }, 0);
+
+  let discountMinor = null;
+  if (itemsDiscount != null || orderDiscount != null) {
+    discountMinor = Math.abs(Number(itemsDiscount || 0)) + Math.abs(Number(orderDiscount || 0));
+  } else if (appliedSum > 0) {
+    discountMinor = appliedSum;
+  }
+
+  const hasDiscountSignal =
+    discountMinor > 0 || codes.length > 0 || applied.length > 0 || totalAmount != null;
+
+  if (!hasDiscountSignal) {
+    return null;
+  }
+
+  return {
+    currency,
+    subtotal: formatMoney(subtotalAmount, currency),
+    total: formatMoney(totalAmount, currency),
+    order_discount: discountMinor > 0 ? formatMoney(discountMinor, currency) : null,
+    codes,
+    applied
+  };
 }
 
 function formatLinePrice(line) {
@@ -1153,7 +1271,7 @@ export function buildActiveCartContextMessage(cartId) {
     role: "system",
     content:
       "This conversation has an active cart. Use add_to_cart, remove_from_cart (one product only), clear_my_cart (remove all), get_my_cart, " +
-      "set_cart_shipping, remove_cart_shipping — NOT create_cart, update_cart, or get_cart."
+      "set_cart_shipping, remove_cart_shipping, apply_discount_code — NOT create_cart, update_cart, or get_cart."
   };
 }
 
