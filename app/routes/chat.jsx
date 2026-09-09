@@ -467,6 +467,7 @@ async function handleChatSession({
 
     while (finalMessage.stop_reason !== "end_turn") {
       let cartMutatedThisTurn = false;
+      let lastCartMutationResponse = null;
 
       finalMessage = await llmService.streamConversation(
         {
@@ -660,6 +661,7 @@ async function handleChatSession({
 
                 if (isCartMutationTool(toolName) && !toolUseResponse?.error) {
                   cartMutatedThisTurn = true;
+                  lastCartMutationResponse = toolUseResponse;
                 }
 
                 const choiceOptions = toolService.extractFitmentChoiceOptions(toolUseResponse);
@@ -709,7 +711,12 @@ async function handleChatSession({
       );
 
       if (cartMutatedThisTurn) {
-        await appendFinalCartSnapshot(mcpClient, conversationId, conversationHistory);
+        await appendFinalCartSnapshot(
+          mcpClient,
+          conversationId,
+          conversationHistory,
+          lastCartMutationResponse
+        );
       }
 
       if (stopAfterToolError) {

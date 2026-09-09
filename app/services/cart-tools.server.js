@@ -406,12 +406,21 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
     merged
   );
 
-  // Trust live cart after update — response / stale fulfillment can omit new variants.
-  const verified = await fetchLiveCart(mcpClient, conversationId);
-  const verifiedCart = verified?.cart || extractCartPayload(response);
-  const added = (verifiedCart?.line_items || []).some(
+  // Prefer Shopify's update_cart payload. Only re-fetch when the new variant is missing
+  // (some responses omit new lines / stale fulfillment).
+  let verified = null;
+  let verifiedCart = extractCartPayload(response);
+  let added = (verifiedCart?.line_items || []).some(
     (line) => line?.item?.id === variantId
   );
+
+  if (!added) {
+    verified = await fetchLiveCart(mcpClient, conversationId);
+    verifiedCart = verified?.cart || verifiedCart;
+    added = (verifiedCart?.line_items || []).some(
+      (line) => line?.item?.id === variantId
+    );
+  }
 
   console.log("[cart-wrapper] add_to_cart", {
     conversationId,
@@ -419,7 +428,8 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
     before: live.cart.line_items?.length || 0,
     merged: merged.length,
     after: verifiedCart?.line_items?.length || 0,
-    added
+    added,
+    reFetched: Boolean(verified)
   });
 
   if (!added) {
@@ -519,6 +529,25 @@ async function removeFromCart(
     lineItems
   );
 
+  // Prefer update_cart payload; re-fetch only if Shopify response doesn't reflect the change.
+  let cartForSummary = extractCartPayload(response);
+  let rawForSummary = response;
+  const targetAfter = (cartForSummary?.line_items || []).find(
+    (line) => line?.item?.id === removeVariantId
+  );
+  const qtyMatches =
+    nextQty <= 0
+      ? !targetAfter
+      : Number(targetAfter?.quantity) === nextQty;
+
+  if (!qtyMatches) {
+    const verified = await fetchLiveCart(mcpClient, conversationId);
+    if (verified?.cart) {
+      cartForSummary = verified.cart;
+      rawForSummary = verified.raw;
+    }
+  }
+
   console.log("[cart-wrapper] remove_from_cart", {
     conversationId,
     variantId: removeVariantId,
@@ -527,14 +556,15 @@ async function removeFromCart(
     nextQty: Math.max(0, nextQty),
     wantsFullRemove,
     remainingLines: lineItems.length,
+    reFetched: !qtyMatches,
     userMessagePreview: userMessage.slice(0, 80)
   });
 
   const summary = await summarizeCartWithShipping(
     mcpClient,
     conversationId,
-    extractCartPayload(response),
-    response
+    cartForSummary,
+    rawForSummary
   );
 
   const qtyInstruction =
@@ -555,15 +585,24 @@ async function removeFromCart(
 
 /**
  * After cart mutation tools finish in an assistant turn, inject one authoritative cart
- * snapshot so the model does not reply from stale partial tool results.
+ * snapshot from the last mutation tool payload (already synced) — no second get_my_cart.
  */
-export async function appendFinalCartSnapshot(mcpClient, conversationId, conversationHistory) {
-  const cartResult = await callCartWrapperTool(mcpClient, conversationId, "get_my_cart", {});
-  const data = extractToolResultData(cartResult);
+export async function appendFinalCartSnapshot(
+  mcpClient,
+  conversationId,
+  conversationHistory,
+  lastMutationResponse = null
+) {
+  const data = extractToolResultData(lastMutationResponse);
+
+  const cleared =
+    Boolean(data?.empty) ||
+    (typeof data?.message === "string" && /cleared|no active cart/i.test(data.message));
+
   const snapshot = {
     final_cart_snapshot: true,
-    empty: Boolean(data?.empty),
-    items: data?.items || [],
+    empty: cleared,
+    items: Array.isArray(data?.items) ? data.items : [],
     checkout_url: data?.checkout_url || null,
     checkout_url_changed: Boolean(data?.checkout_url_changed),
     total: data?.total || null,
@@ -585,6 +624,7 @@ export async function appendFinalCartSnapshot(mcpClient, conversationId, convers
   conversationHistory.push({ role: "system", content });
   console.log("[cart-wrapper] final_cart_snapshot", {
     conversationId,
+    reused: true,
     itemCount: snapshot.items.length,
     items: snapshot.items.map((item) => ({ title: item.title, quantity: item.quantity }))
   });
@@ -703,7 +743,7 @@ async function applyDiscountCode(mcpClient, conversationId, toolArgs = {}) {
   );
 
   // Rejected promo (e.g. discount_code_user_ineligible): surface Shopify's text clearly.
-  // Also clear the rejected code so later add_to_cart / checkout sync does not re-send it.
+  // Clear rejected code on checkout only (promo is applied on checkout, not cart lines).
   if (!summary.success && !clear) {
     const customerMessage =
       summary.customer_message ||
@@ -713,18 +753,9 @@ async function applyDiscountCode(mcpClient, conversationId, toolArgs = {}) {
         : "That discount code is not available to you right now");
 
     try {
-      const clearedResponse = await updateCartLineItems(
-        mcpClient,
-        conversationId,
-        live.cartId,
-        live.cart,
-        toWritableLineItems(live.cart.line_items || []),
-        { incomingCart: { discounts: { codes: [] } } }
-      );
-      const clearedCart = extractCartPayload(clearedResponse) || live.cart;
       const checkoutId = await getConversationCheckoutId(conversationId);
       if (checkoutId) {
-        await syncCheckoutWithCart(mcpClient, conversationId, clearedCart, {
+        await syncCheckoutWithCart(mcpClient, conversationId, live.cart, {
           force: true,
           allowCreate: false,
           discounts: { codes: [] }
@@ -856,9 +887,47 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
     });
   }
 
-  const verification = synced?.checkoutId
-    ? await fetchVerifiedCheckoutShipping(mcpClient, synced.checkoutId)
-    : null;
+  // Prefer shipping from the sync response. Only get_checkout again when Shopify
+  // did not return a matching address (keeps validation / mismatch cases correct).
+  let verification = null;
+  if (synced?.checkoutId) {
+    const syncedAddress = synced.shippingAddress
+      ? {
+          ...synced.shippingAddress,
+          phone_number:
+            synced.shippingAddress.phone_number ||
+            synced.checkout?.buyer?.phone_number ||
+            destination.phone_number,
+          email:
+            resolved.email ||
+            savedShipping?.email ||
+            synced.checkout?.buyer?.email ||
+            undefined
+        }
+      : null;
+    const syncErrors = synced.validationErrors || [];
+    const syncLooksGood =
+      syncedAddress?.street_address &&
+      shippingAddressMatchesExpected(syncedAddress, destination) &&
+      syncErrors.length === 0;
+
+    if (syncLooksGood) {
+      verification = {
+        shippingAddress: syncedAddress,
+        checkout: synced.checkout || null,
+        checkoutUrl: synced.checkoutUrl || null,
+        validationErrors: [],
+        buyerPhone: synced.checkout?.buyer?.phone_number || null,
+        buyerEmail: synced.checkout?.buyer?.email || null
+      };
+      console.log("[cart-wrapper] set_cart_shipping reused sync (skipped get_checkout verify)", {
+        conversationId,
+        checkoutId: synced.checkoutId
+      });
+    } else {
+      verification = await fetchVerifiedCheckoutShipping(mcpClient, synced.checkoutId);
+    }
+  }
 
   const verifiedAddress = verification?.shippingAddress
     ? {
@@ -1242,16 +1311,23 @@ async function fetchVerifiedCheckoutShipping(mcpClient, checkoutId) {
   }
 }
 
-/** Always read continue_url from the checkout we just synced — not stale cart URLs. */
+/**
+ * Prefer continue_url from the update/create_checkout response.
+ * Only call get_checkout when Shopify did not return a usable URL.
+ */
 async function fetchFreshCheckoutUrl(
   mcpClient,
   checkoutId,
   fallbackUrl = null,
   conversationId = null
 ) {
+  if (fallbackUrl) {
+    return appendAiraUtmParams(fallbackUrl, conversationId);
+  }
+
   const verified = await fetchVerifiedCheckoutShipping(mcpClient, checkoutId);
   return appendAiraUtmParams(
-    verified?.checkoutUrl || fallbackUrl,
+    verified?.checkoutUrl || null,
     conversationId
   );
 }
