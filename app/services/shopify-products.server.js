@@ -345,7 +345,9 @@ function normalizeVariantNode(node) {
     title,
     descriptionHtml: product.descriptionHtml || "",
     vendor: product.vendor || "",
-    sku
+    sku,
+    productType: product.productType || product.product_type || "",
+    product_type: product.product_type || product.productType || ""
   });
 
   const priceAmount = node.price != null ? Number(node.price) : null;

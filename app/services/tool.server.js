@@ -4,7 +4,7 @@
  */
 import { saveMessage } from "../db.server";
 import AppConfig from "./config.server";
-import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId } from "./product-compare.server.js";
+import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId, isFreshenerProduct, resolveProductDescriptionHtml } from "./product-compare.server.js";
 
 /**
  * Creates a tool service instance
@@ -198,6 +198,11 @@ export function createToolService() {
     return [];
   };
 
+  const shouldBuildCompareAttrs = (product) => {
+    if (isFreshenerProduct(product)) return true;
+    return !product.filterType && product.isHepa == null;
+  };
+
   const formatProductData = (product) => {
     const variant = product.variants?.[0] || product.variant;
     const priceAmount = variant?.price?.amount ?? variant?.price;
@@ -243,6 +248,8 @@ export function createToolService() {
 
     const normalizedVariantId = resolveProductVariantId({ variantId, variant_id: product.variant_id, id: variantId });
 
+    const descriptionHtml = resolveProductDescriptionHtml(product);
+
     return {
       id: normalizedVariantId || product.product_id || product.id || product.partNumber || `product-${Math.random().toString(36).substring(7)}`,
       variantId: normalizedVariantId,
@@ -252,13 +259,20 @@ export function createToolService() {
       priceAmount: typeof product.priceAmount === "number" ? product.priceAmount : null,
       compareAtPrice: product.compareAtPrice || null,
       image_url: resolveProductImageUrl(product),
-      description: product.description || product.note || "",
+      description: descriptionHtml,
+      descriptionHtml,
       url: productUrl,
       availableForSale: availability.availableForSale,
       inStock: availability.inStock,
       inventoryQuantity: availability.inventoryQuantity,
       vendor,
       sku: product.sku || product.partNumber || "",
+      productType: product.productType || product.product_type || "",
+      product_type: product.product_type || product.productType || "",
+      productCategory: product.productCategory,
+      fragrance: product.fragrance,
+      durationDays: product.durationDays,
+      hasOdorEliminator: product.hasOdorEliminator,
       filterType: product.filterType,
       isHepa: product.isHepa,
       hasAntibacterial: product.hasAntibacterial,
@@ -270,13 +284,15 @@ export function createToolService() {
       pdfTitle: product.pdfTitle || product.pdf_title || null,
       pdfUrl: product.pdfUrl || product.pdf_url || null,
       youtubeUrl: product.youtubeUrl || product.youtube_url || null,
-      ...((!product.filterType && !product.isHepa)
+      ...(shouldBuildCompareAttrs(product)
         ? buildCompareAttributes({
             tags: product.tags,
             title: product.title || product.partTypeName || product.name || "",
-            descriptionHtml: product.descriptionHtml || product.description || "",
+            descriptionHtml,
             vendor,
-            sku: product.sku || product.partNumber || ""
+            sku: product.sku || product.partNumber || "",
+            productType: product.productType || product.product_type || "",
+            product_type: product.product_type || product.productType || ""
           })
         : {})
     };

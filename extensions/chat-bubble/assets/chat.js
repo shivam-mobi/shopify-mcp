@@ -3101,16 +3101,47 @@
         });
         table.appendChild(headerRow);
 
-        const rows = [
-          { label: 'HEPA', value: (p) => yesNo(p.isHepa) },
-          { label: 'Antibacterial', value: (p) => yesNo(p.hasAntibacterial) },
-          { label: 'Charcoal / odor', value: (p) => yesNo(p.hasCharcoal) },
-          { label: 'Price', value: (p) => p.price || '—' },
-          {
-            label: 'Stock',
-            value: (p) => (p.inStock && p.availableForSale !== false ? 'In stock' : 'Out of stock')
-          }
-        ];
+        const isFreshenerCompare = products.some(
+          (p) =>
+            p.productCategory === 'freshener' ||
+            p.filterType === 'freshener' ||
+            /\bfreshener/i.test(String(p.title || '')) ||
+            /\bfreshener|freshers/i.test(String(p.productType || p.product_type || ''))
+        );
+
+        const rows = isFreshenerCompare
+          ? [
+              {
+                label: 'Fragrance',
+                value: (p) => p.fragrance || '—'
+              },
+              {
+                label: 'Duration',
+                value: (p) =>
+                  typeof p.durationDays === 'number' ? `Up to ${p.durationDays} days` : '—'
+              },
+              {
+                label: 'Odor eliminator',
+                value: (p) => yesNo(p.hasOdorEliminator)
+              },
+              { label: 'Price', value: (p) => p.price || '—' },
+              {
+                label: 'Stock',
+                value: (p) =>
+                  p.inStock && p.availableForSale !== false ? 'In stock' : 'Out of stock'
+              }
+            ]
+          : [
+              { label: 'HEPA', value: (p) => yesNo(p.isHepa) },
+              { label: 'Antibacterial', value: (p) => yesNo(p.hasAntibacterial) },
+              { label: 'Charcoal / odor', value: (p) => yesNo(p.hasCharcoal) },
+              { label: 'Price', value: (p) => p.price || '—' },
+              {
+                label: 'Stock',
+                value: (p) =>
+                  p.inStock && p.availableForSale !== false ? 'In stock' : 'Out of stock'
+              }
+            ];
 
         rows.forEach((row) => {
           const tr = document.createElement('tr');

@@ -55,6 +55,35 @@ function stripHtml(html = "") {
     .trim();
 }
 
+/**
+ * MCP catalog often nests copy as description: { html: "..." }.
+ * Admin / fitment use descriptionHtml or a plain string.
+ */
+export function resolveProductDescriptionHtml(product = {}) {
+  if (!product || typeof product !== "object") {
+    return "";
+  }
+
+  const candidates = [
+    product.descriptionHtml,
+    product.body_html,
+    product.bodyHtml,
+    typeof product.description === "string" ? product.description : null,
+    product.description?.html,
+    product.description?.body,
+    product.description?.text,
+    typeof product.note === "string" ? product.note : null
+  ];
+
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+
+  return "";
+}
+
 function parsePriceNumber(price) {
   if (typeof price === "number" && Number.isFinite(price)) return price;
   if (price == null) return null;
@@ -62,16 +91,140 @@ function parsePriceNumber(price) {
   return match ? Number(match[1]) : null;
 }
 
+const KNOWN_FRESHENER_SCENTS =
+  /fresh\s*linen|black\s*rock|vanilla\s*orchid|tropical\s*peach|new\s*car|lavender/i;
+
 /**
- * Build comparison attributes from Shopify product fields.
+ * Detect cabin-filter air fresheners so compare uses scent attrs, not HEPA/charcoal.
+ * Cabin / home filters must not match this.
  */
-export function buildCompareAttributes({
+export function isFreshenerProduct({
+  tags = [],
+  title = "",
+  productType = "",
+  product_type = ""
+} = {}) {
+  const type = String(productType || product_type || "").trim();
+  if (/freshener|freshers/i.test(type)) return true;
+
+  const tagList = normalizeTagList(tags);
+  if (
+    tagList.some(
+      (tag) =>
+        /^scent$/i.test(tag) ||
+        /^YGroup_Scent$/i.test(tag) ||
+        /^freshener/i.test(tag)
+    )
+  ) {
+    return true;
+  }
+
+  return /\b(air\s*)?fresheners?\b/i.test(String(title || ""));
+}
+
+function extractFragrance(title = "") {
+  const raw = String(title || "").trim();
+  if (!raw) return null;
+
+  const known = raw.match(KNOWN_FRESHENER_SCENTS);
+  if (known) {
+    return known[0].replace(/\s+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  const parts = raw.split(/\s+[-–—]\s+/);
+  if (parts.length >= 2) {
+    const last = parts[parts.length - 1].trim();
+    if (last && last.length <= 40 && !/^\d+\s*-?\s*pack\b/i.test(last)) {
+      return last;
+    }
+  }
+
+  return null;
+}
+
+function extractDurationDays(text = "") {
+  const match = String(text || "").match(/up\s+to\s+(\d+)\s*days?|(\d+)\s*days?/i);
+  if (!match) return null;
+  const days = Number(match[1] || match[2]);
+  return Number.isFinite(days) ? days : null;
+}
+
+function buildFreshenerCompareAttributes({
   tags = [],
   title = "",
   descriptionHtml = "",
   vendor = "",
   sku = ""
 } = {}) {
+  const tagList = normalizeTagList(tags);
+  const plain = stripHtml(descriptionHtml);
+  const textBlob = `${title} ${plain}`.toLowerCase();
+
+  const fragrance = extractFragrance(title);
+  const durationDays = extractDurationDays(`${title} ${plain}`);
+  const hasOdorEliminator =
+    /odor\s*(eliminat|neutraliz)|odor\s*control|neutraliz(?:er|ing)?\s+technolog/i.test(
+      textBlob
+    );
+
+  const yGroupTag = tagList.find((tag) => /^YGroup_/i.test(tag));
+  const yGroup = yGroupTag ? yGroupTag.replace(/^YGroup_/i, "").trim() : "";
+
+  const features = [];
+  if (fragrance) features.push(`Fragrance: ${fragrance}`);
+  if (durationDays != null) features.push(`Up to ${durationDays} days`);
+  if (hasOdorEliminator) features.push("Odor eliminator / neutralizer");
+
+  return {
+    vendor: vendor || "",
+    sku: sku || "",
+    productCategory: "freshener",
+    fragrance: fragrance || null,
+    durationDays,
+    hasOdorEliminator,
+    // Keep filter fields falsey so UI/scoring never treat fresheners as filters.
+    filterType: "freshener",
+    isHepa: false,
+    hasAntibacterial: false,
+    hasCharcoal: false,
+    hasParticulate: false,
+    yGroup,
+    features: features.slice(0, 4),
+    tags: tagList
+  };
+}
+
+/**
+ * Build comparison attributes from Shopify product fields.
+ * Fresheners → fragrance / duration / odor eliminator.
+ * Filters → HEPA / charcoal / antibacterial (unchanged).
+ */
+export function buildCompareAttributes({
+  tags = [],
+  title = "",
+  descriptionHtml = "",
+  vendor = "",
+  sku = "",
+  productType = "",
+  product_type = ""
+} = {}) {
+  if (
+    isFreshenerProduct({
+      tags,
+      title,
+      productType,
+      product_type
+    })
+  ) {
+    return buildFreshenerCompareAttributes({
+      tags,
+      title,
+      descriptionHtml,
+      vendor,
+      sku
+    });
+  }
+
   const tagList = normalizeTagList(tags);
   const tagBlob = tagList.map((tag) => tag.toLowerCase()).join(" | ");
   const textBlob = `${title} ${stripHtml(descriptionHtml)} ${tagBlob}`.toLowerCase();
@@ -111,6 +264,10 @@ export function buildCompareAttributes({
   return {
     vendor: vendor || "",
     sku: sku || "",
+    productCategory: "filter",
+    fragrance: null,
+    durationDays: null,
+    hasOdorEliminator: false,
     filterType,
     isHepa: Boolean(isHepa),
     hasAntibacterial,
@@ -122,6 +279,14 @@ export function buildCompareAttributes({
   };
 }
 
+function isFreshenerCompareProduct(product = {}) {
+  return (
+    product.productCategory === "freshener" ||
+    product.filterType === "freshener" ||
+    isFreshenerProduct(product)
+  );
+}
+
 /**
  * Rank score used to pick the "best" product in a result set.
  */
@@ -129,6 +294,21 @@ export function scoreProductForComparison(product = {}) {
   let score = 0;
 
   if (product.inStock === true && product.availableForSale !== false) score += 40;
+
+  if (isFreshenerCompareProduct(product)) {
+    if (product.hasOdorEliminator === true) score += 25;
+    if (product.durationDays != null) {
+      score += Math.min(20, Math.round(Number(product.durationDays) / 5));
+    }
+    if (product.fragrance) score += 5;
+
+    const price = parsePriceNumber(product.priceAmount ?? product.price);
+    if (price != null) {
+      score += Math.max(0, 20 - Math.min(price, 20));
+    }
+    return score;
+  }
+
   if (product.isHepa === true) score += 30;
   if (product.hasAntibacterial === true) score += 15;
   if (product.hasCharcoal === true) score += 10;
@@ -145,6 +325,15 @@ export function scoreProductForComparison(product = {}) {
 
 function buildBestReason(product) {
   const reasons = [];
+  if (isFreshenerCompareProduct(product)) {
+    if (product.fragrance) reasons.push(product.fragrance);
+    if (product.durationDays != null) reasons.push(`up to ${product.durationDays} days`);
+    if (product.hasOdorEliminator) reasons.push("odor eliminator");
+    if (product.inStock) reasons.push("in stock");
+    if (!reasons.length) return "Best overall match";
+    return `Best pick: ${reasons.join(" · ")}`;
+  }
+
   if (product.isHepa) reasons.push("HEPA");
   if (product.hasAntibacterial) reasons.push("antibacterial");
   if (product.hasCharcoal) reasons.push("odor control");
@@ -195,27 +384,40 @@ export function enrichProductsWithComparison(products = []) {
   }
 
   const enriched = products.map((product) => {
-    const attrs =
-      product.filterType != null || product.isHepa != null
-        ? {
-            vendor: product.vendor || "",
-            sku: product.sku || product.partNumber || "",
-            filterType: product.filterType || "standard",
-            isHepa: product.isHepa === true,
-            hasAntibacterial: product.hasAntibacterial === true,
-            hasCharcoal: product.hasCharcoal === true,
-            hasParticulate: product.hasParticulate === true,
-            yGroup: product.yGroup || "",
-            features: Array.isArray(product.features) ? product.features : [],
-            tags: Array.isArray(product.tags) ? product.tags : []
-          }
-        : buildCompareAttributes({
-            tags: product.tags,
-            title: product.title,
-            descriptionHtml: product.descriptionHtml || product.description || "",
-            vendor: product.vendor,
-            sku: product.sku || product.partNumber
-          });
+    const looksFreshener = isFreshenerProduct(product);
+    // Recompute fresheners even if stale filter attrs were copied earlier.
+    const hasFilterAttrs =
+      !looksFreshener &&
+      product.productCategory !== "freshener" &&
+      (product.filterType != null || product.isHepa != null);
+
+    const attrs = hasFilterAttrs
+      ? {
+          vendor: product.vendor || "",
+          sku: product.sku || product.partNumber || "",
+          productCategory: product.productCategory || "filter",
+          fragrance: product.fragrance || null,
+          durationDays:
+            typeof product.durationDays === "number" ? product.durationDays : null,
+          hasOdorEliminator: product.hasOdorEliminator === true,
+          filterType: product.filterType || "standard",
+          isHepa: product.isHepa === true,
+          hasAntibacterial: product.hasAntibacterial === true,
+          hasCharcoal: product.hasCharcoal === true,
+          hasParticulate: product.hasParticulate === true,
+          yGroup: product.yGroup || "",
+          features: Array.isArray(product.features) ? product.features : [],
+          tags: Array.isArray(product.tags) ? product.tags : []
+        }
+      : buildCompareAttributes({
+          tags: product.tags,
+          title: product.title,
+          descriptionHtml: resolveProductDescriptionHtml(product),
+          vendor: product.vendor,
+          sku: product.sku || product.partNumber,
+          productType: product.productType || product.product_type || "",
+          product_type: product.product_type || product.productType || ""
+        });
 
     const merged = {
       ...product,
@@ -288,6 +490,11 @@ export function buildLlmProductSummary(rankedProducts = []) {
       is_best_pick: product.isBest === true,
       inStock: product.inStock === true,
       filterType: product.filterType || null,
+      productCategory: product.productCategory || null,
+      fragrance: product.fragrance || null,
+      durationDays:
+        typeof product.durationDays === "number" ? product.durationDays : null,
+      hasOdorEliminator: product.hasOdorEliminator === true ? true : null,
       vendor: product.vendor || null,
       ...(pdfUrl
         ? {
@@ -321,6 +528,8 @@ export function buildProductListingMetadata(rankedProducts = []) {
 
 export default {
   buildCompareAttributes,
+  isFreshenerProduct,
+  resolveProductDescriptionHtml,
   scoreProductForComparison,
   enrichProductsWithComparison,
   resolveProductVariantId,
