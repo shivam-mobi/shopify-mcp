@@ -624,6 +624,45 @@
   border-bottom-left-radius: 6px;
 }
 
+.shop-ai-message.assistant.has-speak {
+  position: relative;
+  padding-right: 36px;
+  padding-bottom: 30px;
+}
+
+.shop-ai-speak-btn {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #6B7280;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.shop-ai-speak-btn:hover {
+  color: var(--shop-ai-brand);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.shop-ai-speak-btn.is-speaking {
+  color: var(--shop-ai-brand);
+  background: var(--shop-ai-brand-border);
+}
+
+.shop-ai-speak-btn:focus-visible {
+  outline: 2px solid var(--shop-ai-brand);
+  outline-offset: 2px;
+}
+
 .shop-ai-message.assistant:empty {
   display: none;
 }

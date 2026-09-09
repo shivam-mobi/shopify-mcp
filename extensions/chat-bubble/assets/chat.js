@@ -736,6 +736,7 @@
           document.body.classList.remove('shop-ai-chat-open');
           this.scheduleViewportHeightRefresh();
           ShopAIChat.Voice.stop();
+          ShopAIChat.Speak.stop();
         }
 
         this.syncChatOpenState();
@@ -750,6 +751,7 @@
         chatWindow.classList.remove('active');
 
         ShopAIChat.Voice.stop();
+        ShopAIChat.Speak.stop();
 
         // On mobile, blur input to hide keyboard and enable body scrolling
         if (this.isMobile) {
@@ -1047,6 +1049,7 @@
 
         if (this.isResponding) {
           ShopAIChat.Voice.stop();
+          ShopAIChat.Speak.stop();
         }
       },
 
@@ -1712,6 +1715,7 @@
 
         // Apply the formatted HTML
         element.innerHTML = processedText;
+        ShopAIChat.Speak.attachButton(element);
       },
 
       /**
@@ -2016,8 +2020,10 @@
               messagesContainer,
               updateCurrentElement
             );
-            currentMessageElement.textContent =
+            currentMessageElement.dataset.rawText =
               "Sorry, I couldn't complete that right now. Please try again in a moment.";
+            currentMessageElement.textContent = currentMessageElement.dataset.rawText;
+            ShopAIChat.Speak.attachButton(currentMessageElement);
             break;
 
           case 'tool_error':
@@ -2663,6 +2669,8 @@
       start: function(elements) {
         if (!this.recognition || this.isListening) return;
 
+        ShopAIChat.Speak.stop();
+
         this.elements = elements;
         this.manualStop = false;
         this.keepListening = true;
@@ -2826,6 +2834,215 @@
           clearTimeout(this.statusTimer);
           this.statusTimer = null;
         }
+      }
+    },
+
+    /**
+     * Browser text-to-speech for assistant replies
+     */
+    Speak: {
+      utterance: null,
+      activeButton: null,
+      speakTimer: null,
+
+      getLabel: function(key, fallback) {
+        return window.shopChatConfig?.[key] || fallback;
+      },
+
+      isSupported: function() {
+        return Boolean(
+          typeof window !== 'undefined' &&
+          window.speechSynthesis &&
+          typeof window.SpeechSynthesisUtterance === 'function'
+        );
+      },
+
+      stripForSpeech: function(text) {
+        let source = String(text || '');
+        if (ShopAIChat.Formatting?.stripBestPickFromReply) {
+          source = ShopAIChat.Formatting.stripBestPickFromReply(source);
+        }
+
+        source = source
+          .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+          .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+          .replace(/^\s*Stock:\s*.*$/gim, '')
+          .replace(/^\s*Variant ID:\s*.*$/gim, '')
+          .replace(/gid:\/\/shopify\/ProductVariant\/\d+/gi, '')
+          .replace(/[*_`#>~]/g, '')
+          .replace(/^\s*[-*]\s+/gm, '')
+          .replace(/^\s*\d+\.\s+/gm, '')
+          .replace(/\n{2,}/g, '. ')
+          .replace(/\n/g, ' ')
+          .replace(/\s{2,}/g, ' ')
+          .trim();
+
+        return source;
+      },
+
+      plainTextFromMessage: function(element) {
+        if (!element) return '';
+
+        if (element.dataset?.rawText) {
+          return this.stripForSpeech(element.dataset.rawText);
+        }
+
+        const clone = element.cloneNode(true);
+        clone.querySelectorAll('.shop-ai-speak-btn').forEach((btn) => btn.remove());
+        return this.stripForSpeech(clone.textContent || '');
+      },
+
+      speakIconHtml: function() {
+        return (
+          '<svg class="shop-ai-speak-icon shop-ai-speak-icon--play" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+          '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>' +
+          '<path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>' +
+          '<path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>' +
+          '</svg>' +
+          '<svg class="shop-ai-speak-icon shop-ai-speak-icon--stop" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" hidden>' +
+          '<rect x="6" y="6" width="12" height="12" rx="1"></rect>' +
+          '</svg>'
+        );
+      },
+
+      attachButton: function(element) {
+        if (!element || !element.classList.contains('assistant')) return;
+
+        if (this.activeButton && !this.activeButton.isConnected) {
+          this.stop();
+        }
+
+        if (!this.isSupported()) {
+          element.classList.remove('has-speak');
+          return;
+        }
+
+        const text = this.plainTextFromMessage(element);
+        const existing = element.querySelector('.shop-ai-speak-btn');
+
+        if (!text) {
+          if (existing) existing.remove();
+          element.classList.remove('has-speak');
+          return;
+        }
+
+        if (existing) {
+          element.classList.add('has-speak');
+          return;
+        }
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'shop-ai-speak-btn';
+        button.innerHTML = this.speakIconHtml();
+
+        const startLabel = this.getLabel('speakStartLabel', 'Listen to response');
+        button.setAttribute('aria-label', startLabel);
+        button.setAttribute('title', startLabel);
+
+        button.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.toggle(element, button);
+        });
+
+        element.appendChild(button);
+        element.classList.add('has-speak');
+      },
+
+      toggle: function(element, button) {
+        if (!button) return;
+
+        const isActive =
+          this.activeButton === button &&
+          window.speechSynthesis &&
+          (window.speechSynthesis.speaking || window.speechSynthesis.pending);
+
+        if (isActive) {
+          this.stop();
+          return;
+        }
+
+        this.speak(element, button);
+      },
+
+      speak: function(element, button) {
+        if (!this.isSupported() || !element || !button) return;
+
+        const text = this.plainTextFromMessage(element);
+        if (!text) return;
+
+        if (ShopAIChat.Voice?.isListening || ShopAIChat.Voice?.keepListening) {
+          ShopAIChat.Voice.stop({ skipSubmit: true });
+        }
+
+        this.stop();
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = document.documentElement.lang || navigator.language || 'en-US';
+
+        utterance.onend = () => {
+          if (this.utterance === utterance) {
+            this.clearSpeakingState();
+          }
+        };
+        utterance.onerror = () => {
+          if (this.utterance === utterance) {
+            this.clearSpeakingState();
+          }
+        };
+
+        this.utterance = utterance;
+        this.activeButton = button;
+        this.setSpeakingState(button, true);
+
+        clearTimeout(this.speakTimer);
+        this.speakTimer = setTimeout(() => {
+          try {
+            window.speechSynthesis.speak(utterance);
+          } catch (error) {
+            this.clearSpeakingState();
+          }
+        }, 40);
+      },
+
+      stop: function() {
+        clearTimeout(this.speakTimer);
+        this.speakTimer = null;
+
+        if (typeof window !== 'undefined' && window.speechSynthesis) {
+          try {
+            window.speechSynthesis.cancel();
+          } catch (error) {
+            // ignore cancel errors
+          }
+        }
+
+        this.clearSpeakingState();
+      },
+
+      setSpeakingState: function(button, speaking) {
+        if (!button) return;
+
+        button.classList.toggle('is-speaking', speaking);
+        const playIcon = button.querySelector('.shop-ai-speak-icon--play');
+        const stopIcon = button.querySelector('.shop-ai-speak-icon--stop');
+        if (playIcon) playIcon.hidden = speaking;
+        if (stopIcon) stopIcon.hidden = !speaking;
+
+        const label = speaking
+          ? this.getLabel('speakStopLabel', 'Stop listening')
+          : this.getLabel('speakStartLabel', 'Listen to response');
+        button.setAttribute('aria-label', label);
+        button.setAttribute('title', label);
+      },
+
+      clearSpeakingState: function() {
+        if (this.activeButton) {
+          this.setSpeakingState(this.activeButton, false);
+        }
+        this.activeButton = null;
+        this.utterance = null;
       }
     },
 

@@ -24,6 +24,8 @@
     "voiceError": "Voice input failed. Please try again.",
     "voiceNoSpeech": "No speech detected. Try again.",
     "voiceDenied": "Microphone access denied. Allow mic permission in browser settings.",
-    "voiceReview": "Sending your message…"
+    "voiceReview": "Sending your message…",
+    "speakStart": "Listen to response",
+    "speakStop": "Stop listening"
   }
 }
