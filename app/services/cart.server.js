@@ -1270,7 +1270,8 @@ export function buildActiveCartContextMessage(cartId) {
   return {
     role: "system",
     content:
-      "This conversation has an active cart. Use add_to_cart, remove_from_cart (one product only), clear_my_cart (remove all), get_my_cart, " +
+      "This conversation has an active cart. Use add_to_cart (one product), remove_from_cart (one product), " +
+      "update_cart_items (multiple products in one call), clear_my_cart (remove all), get_my_cart, " +
       "set_cart_shipping, remove_cart_shipping, apply_discount_code — NOT create_cart, update_cart, or get_cart."
   };
 }

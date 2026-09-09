@@ -1064,10 +1064,12 @@
       },
 
       /**
-       * Show typing indicator in the chat
+       * Show typing indicator in the chat (at most one at a time).
        */
       showTypingIndicator: function() {
         const { messagesContainer } = this.elements;
+
+        this.removeTypingIndicator();
 
         const typingIndicator = document.createElement('div');
         typingIndicator.classList.add('shop-ai-typing-indicator');
@@ -1077,15 +1079,14 @@
       },
 
       /**
-       * Remove typing indicator from the chat
+       * Remove all typing indicators from the chat
        */
       removeTypingIndicator: function() {
         const { messagesContainer } = this.elements;
 
-        const typingIndicator = messagesContainer.querySelector('.shop-ai-typing-indicator');
-        if (typingIndicator) {
-          typingIndicator.remove();
-        }
+        messagesContainer
+          .querySelectorAll('.shop-ai-typing-indicator')
+          .forEach((el) => el.remove());
       },
 
       /**

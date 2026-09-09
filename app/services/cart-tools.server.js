@@ -43,6 +43,7 @@ const SHIPPING_ASK_LIST_TEXT =
 export const CART_MUTATION_TOOL_NAMES = new Set([
   "add_to_cart",
   "remove_from_cart",
+  "update_cart_items",
   "clear_my_cart"
 ]);
 
@@ -69,6 +70,7 @@ const RAW_CART_TOOL_NAMES = new Set([
 export const CART_WRAPPER_TOOL_NAMES = [
   "add_to_cart",
   "remove_from_cart",
+  "update_cart_items",
   "get_my_cart",
   "set_cart_shipping",
   "remove_cart_shipping",
@@ -81,10 +83,12 @@ export function getCartWrapperTools() {
     {
       name: "add_to_cart",
       description:
-        "Add one product to the customer's cart. Always keeps existing cart items. " +
+        "Add ONE product to the customer's cart (or increase that one product's qty). Always keeps existing cart items. " +
         "Pass variant_id from the latest fitment/catalog products[] (gid://shopify/ProductVariant/...). " +
         "If the customer message includes variant_id: gid://..., use that EXACT id — do not swap to a different scent or product. " +
         "When they name a product/scent (e.g. Black Rock), match products[].title and use that row's variant_id. " +
+        "For changing MULTIPLE products at once (increase each qty, set several qtys, remove several items), " +
+        "call update_cart_items ONCE — do NOT call add_to_cart repeatedly. " +
         "Server handles merge — never call create_cart or update_cart directly.",
       input_schema: {
         type: "object",
@@ -105,6 +109,7 @@ export function getCartWrapperTools() {
       name: "remove_from_cart",
       description:
         "Reduce quantity or remove ONE specific product line. Do NOT use for remove-all / empty-cart — use clear_my_cart instead. " +
+        "Do NOT use for multiple products — use update_cart_items once instead. " +
         "DEFAULT reduces quantity by 1 (does NOT remove the whole line). " +
         "For 'reduce 1 qty' / 'remove one' / 'decrease quantity': pass quantity:1 (or omit quantity — default is 1). " +
         "ONLY to delete one product entirely (customer names one product), pass remove_all:true. " +
@@ -129,6 +134,60 @@ export function getCartWrapperTools() {
             type: "boolean",
             description:
               "Set true ONLY to remove the entire product line from the cart. Do not set this for quantity reduce requests."
+          }
+        }
+      }
+    },
+    {
+      name: "update_cart_items",
+      description:
+        "Change MULTIPLE cart lines in ONE call (single Shopify cart update + checkout sync). " +
+        "Use when the customer wants to update more than one product: " +
+        "increase/decrease qty for each item, set several quantities, or remove several products. " +
+        "Prefer adjust_all_delta:+1 when they say increase qty for each / every product. " +
+        "Or pass items[] with variant_id (from cart/get_my_cart) plus quantity (absolute), " +
+        "quantity_delta (+/-), or remove:true / quantity:0 to delete that line. " +
+        "Do NOT call add_to_cart or remove_from_cart in a loop for multi-line changes. " +
+        "For emptying the entire cart, use clear_my_cart. For a single product only, prefer add_to_cart / remove_from_cart.",
+      input_schema: {
+        type: "object",
+        properties: {
+          adjust_all_delta: {
+            type: "integer",
+            description:
+              "Add this amount to EVERY current cart line qty (e.g. 1 = +1 each, -1 = -1 each). " +
+              "Lines that reach 0 are removed. Use alone or together with items[]."
+          },
+          items: {
+            type: "array",
+            description: "Per-line changes. Prefer variant_id from the current cart.",
+            items: {
+              type: "object",
+              properties: {
+                variant_id: {
+                  type: "string",
+                  description: "ProductVariant GID for a cart line"
+                },
+                product_title: {
+                  type: "string",
+                  description: "Fallback match if variant_id unknown"
+                },
+                quantity: {
+                  type: "integer",
+                  description:
+                    "Absolute final quantity for this line. 0 removes the line. Prefer this when the customer gives an exact qty."
+                },
+                quantity_delta: {
+                  type: "integer",
+                  description:
+                    "Relative change (+1 / -2). Ignored if quantity or remove is set."
+                },
+                remove: {
+                  type: "boolean",
+                  description: "Set true to remove this entire product line"
+                }
+              }
+            }
           }
         }
       }
@@ -266,6 +325,8 @@ export async function callCartWrapperTool(
       return addToCart(mcpClient, conversationId, toolArgs);
     case "remove_from_cart":
       return removeFromCart(mcpClient, conversationId, toolArgs, context);
+    case "update_cart_items":
+      return updateCartItems(mcpClient, conversationId, toolArgs);
     case "get_my_cart":
       return getMyCart(mcpClient, conversationId);
     case "set_cart_shipping":
@@ -363,8 +424,10 @@ export function buildActiveCartWrapperContextMessage(cartId) {
   return {
     role: "system",
     content:
-      "This conversation has an active cart. Use add_to_cart to add products or increase qty, " +
-      "remove_from_cart for one product or reduce qty (NOT for remove-all), " +
+      "This conversation has an active cart. Use add_to_cart to add products or increase qty for ONE product, " +
+      "remove_from_cart for ONE product or reduce that product's qty (NOT for remove-all), " +
+      "update_cart_items ONCE for multi-product qty changes or multi-product removes " +
+      "(e.g. increase each qty, set several qtys, remove several items — never loop add_to_cart), " +
       "clear_my_cart to remove all products / empty cart, " +
       "get_my_cart to show contents, set_cart_shipping to save address, remove_cart_shipping to clear address, " +
       "apply_discount_code when they give a promo/coupon code. " +
@@ -584,6 +647,222 @@ async function removeFromCart(
 }
 
 /**
+ * Bulk cart line updates in one Shopify update_cart + one checkout sync.
+ * Supports adjust-all delta and per-line set / delta / remove.
+ */
+async function updateCartItems(mcpClient, conversationId, toolArgs = {}) {
+  const live = await fetchLiveCart(mcpClient, conversationId);
+  if (!live?.cart?.line_items?.length) {
+    return toolError("Cart is empty.");
+  }
+
+  const adjustments = Array.isArray(toolArgs.items) ? toolArgs.items : [];
+  const adjustAllRaw = toolArgs.adjust_all_delta;
+  const adjustAllDelta =
+    adjustAllRaw == null || adjustAllRaw === ""
+      ? null
+      : Number(adjustAllRaw);
+
+  if (
+    !adjustments.length &&
+    (adjustAllDelta == null || !Number.isFinite(adjustAllDelta) || adjustAllDelta === 0)
+  ) {
+    return toolError(
+      "Pass adjust_all_delta (e.g. 1 to increase every line) and/or items[] with variant_id + quantity / quantity_delta / remove."
+    );
+  }
+
+  /** @type {Map<string, { quantity: number, item: { id: string }, title?: string }>} */
+  const byVariant = new Map();
+  for (const line of live.cart.line_items) {
+    const variantId = line?.item?.id;
+    if (!variantId) continue;
+    byVariant.set(variantId, {
+      quantity: Math.max(1, Number(line.quantity) || 1),
+      item: { id: variantId },
+      title: line.item?.title || "Product"
+    });
+  }
+
+  const changes = [];
+  const issues = [];
+
+  const applyQty = (variantId, nextQty, title) => {
+    const prev = byVariant.get(variantId);
+    const previousQuantity = prev ? prev.quantity : 0;
+    const safeNext = Math.max(0, Number(nextQty) || 0);
+
+    if (safeNext <= 0) {
+      byVariant.delete(variantId);
+      changes.push({
+        variant_id: variantId,
+        title: title || prev?.title || "Product",
+        action: "removed",
+        previous_quantity: previousQuantity,
+        new_quantity: 0
+      });
+      return;
+    }
+
+    byVariant.set(variantId, {
+      quantity: safeNext,
+      item: { id: variantId },
+      title: title || prev?.title || "Product"
+    });
+    changes.push({
+      variant_id: variantId,
+      title: title || prev?.title || "Product",
+      action: previousQuantity === 0 ? "added" : "updated",
+      previous_quantity: previousQuantity,
+      new_quantity: safeNext
+    });
+  };
+
+  if (adjustAllDelta != null && Number.isFinite(adjustAllDelta) && adjustAllDelta !== 0) {
+    const snapshot = Array.from(byVariant.entries());
+    for (const [variantId, entry] of snapshot) {
+      applyQty(variantId, entry.quantity + adjustAllDelta, entry.title);
+    }
+  }
+
+  for (const raw of adjustments) {
+    if (!raw || typeof raw !== "object") continue;
+
+    const targetId =
+      resolveRemoveVariantId(live.cart.line_items, {
+        variant_id: raw.variant_id,
+        product_title: raw.product_title
+      }) || normalizeVariantId(raw.variant_id);
+
+    if (!targetId || !byVariant.has(targetId)) {
+      // Already removed by adjust_all_delta — ignore further remove on same line.
+      if (raw.remove === true || Number(raw.quantity) === 0) continue;
+      issues.push(
+        `Could not find product in cart: ${raw.variant_id || raw.product_title || "unknown"}`
+      );
+      continue;
+    }
+
+    const current = byVariant.get(targetId);
+    const title = current?.title || "Product";
+
+    if (raw.remove === true || Number(raw.quantity) === 0) {
+      applyQty(targetId, 0, title);
+      continue;
+    }
+
+    if (raw.quantity != null && raw.quantity !== "") {
+      applyQty(targetId, Number(raw.quantity), title);
+      continue;
+    }
+
+    if (raw.quantity_delta != null && raw.quantity_delta !== "") {
+      const delta = Number(raw.quantity_delta);
+      if (!Number.isFinite(delta) || delta === 0) continue;
+      applyQty(targetId, current.quantity + delta, title);
+      continue;
+    }
+
+    issues.push(`No quantity / quantity_delta / remove for: ${title}`);
+  }
+
+  if (!changes.length) {
+    return toolResult({
+      success: false,
+      issues: issues.length ? issues : ["No cart lines were changed."],
+      instruction:
+        "Nothing changed. If products were not found, call get_my_cart then retry update_cart_items with exact variant_id values."
+    });
+  }
+
+  const lineItems = Array.from(byVariant.values()).map((entry) => ({
+    quantity: entry.quantity,
+    item: { id: entry.item.id }
+  }));
+
+  if (!lineItems.length) {
+    const cleared = await clearMyCart(mcpClient, conversationId);
+    const clearedData = extractToolResultData(cleared) || {};
+    return toolResult({
+      ...clearedData,
+      success: true,
+      empty: true,
+      items: [],
+      changes,
+      issues: issues.length ? issues : undefined,
+      action: "bulk_updated",
+      instruction:
+        "All listed products were removed and the cart is now empty. " +
+        "Base your reply on changes[]. Do not invent remaining items."
+    });
+  }
+
+  const response = await updateCartLineItems(
+    mcpClient,
+    conversationId,
+    live.cartId,
+    live.cart,
+    lineItems
+  );
+
+  let cartForSummary = extractCartPayload(response);
+  let rawForSummary = response;
+
+  // Verify expected line count / qtys; re-fetch only if Shopify response looks incomplete.
+  const expectedByVariant = new Map(
+    lineItems.map((line) => [line.item.id, line.quantity])
+  );
+  const actualLines = cartForSummary?.line_items || [];
+  const looksComplete =
+    actualLines.length === expectedByVariant.size &&
+    actualLines.every((line) => {
+      const id = line?.item?.id;
+      if (!id || !expectedByVariant.has(id)) return false;
+      return Number(line.quantity) === expectedByVariant.get(id);
+    });
+
+  if (!looksComplete) {
+    const verified = await fetchLiveCart(mcpClient, conversationId);
+    if (verified?.cart) {
+      cartForSummary = verified.cart;
+      rawForSummary = verified.raw;
+    }
+  }
+
+  console.log("[cart-wrapper] update_cart_items", {
+    conversationId,
+    adjustAllDelta,
+    changeCount: changes.length,
+    remainingLines: lineItems.length,
+    reFetched: !looksComplete,
+    issues
+  });
+
+  const summary = await summarizeCartWithShipping(
+    mcpClient,
+    conversationId,
+    cartForSummary,
+    rawForSummary
+  );
+
+  return toolResult({
+    ...summary,
+    success: true,
+    action: "bulk_updated",
+    changes,
+    issues: issues.length ? issues : undefined,
+    instruction: [
+      "Cart was updated in one bulk operation. State quantities ONLY from items[].",
+      "Summarize changes[] briefly. Do not call add_to_cart/remove_from_cart again for this request.",
+      issues.length ? `Note issues: ${issues.join("; ")}` : null,
+      summary.instruction
+    ]
+      .filter(Boolean)
+      .join(" ")
+  });
+}
+
+/**
  * After cart mutation tools finish in an assistant turn, inject one authoritative cart
  * snapshot from the last mutation tool payload (already synced) — no second get_my_cart.
  */
@@ -613,7 +892,7 @@ export async function appendFinalCartSnapshot(
   const content =
     "FINAL CART SNAPSHOT after cart updates in this turn. " +
     "When replying to the customer, state EVERY product quantity ONLY from snapshot.items[].quantity below. " +
-    "Ignore items[] from earlier add_to_cart/remove_from_cart tool results in this same turn. " +
+    "Ignore items[] from earlier add_to_cart/remove_from_cart/update_cart_items tool results in this same turn. " +
     (snapshot.checkout_url
       ? `CRITICAL: If you share a checkout link, use ONLY this exact snapshot.checkout_url: ${snapshot.checkout_url} ` +
         "as [click here to proceed to checkout](URL). " +
