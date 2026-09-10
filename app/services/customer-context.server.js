@@ -5,7 +5,8 @@
 import {
   getConversationCustomerProfile,
   setConversationCustomerProfile,
-  claimConversationForCustomer
+  claimConversationForCustomer,
+  bindConversationShopper
 } from "../db.server";
 
 export function normalizeCustomerName(value) {
@@ -23,6 +24,9 @@ export function parseCustomerContextFromBody(body = {}) {
   const shopDomain = String(body.shop || body.shop_domain || "")
     .trim()
     .toLowerCase();
+  const anonymousShopperId = String(
+    body.shopper_id || body.anonymous_shopper_id || ""
+  ).trim();
 
   return {
     firstName,
@@ -30,7 +34,8 @@ export function parseCustomerContextFromBody(body = {}) {
     loggedIn: loggedIn || Boolean(shopifyCustomerId),
     hasName: Boolean(firstName || lastName),
     shopifyCustomerId: shopifyCustomerId || null,
-    shopDomain: shopDomain || null
+    shopDomain: shopDomain || null,
+    anonymousShopperId: anonymousShopperId || null
   };
 }
 
@@ -68,7 +73,10 @@ export async function syncCustomerContextFromRequest(conversationId, body = {}) 
       merged.loggedIn ||
       merged.shopifyCustomerId)
   ) {
-    await setConversationCustomerProfile(conversationId, merged);
+    await setConversationCustomerProfile(conversationId, {
+      ...merged,
+      anonymousShopperId: incoming.anonymousShopperId
+    });
   }
 
   // Guest session → login: attach this conversation to the customer
@@ -79,6 +87,23 @@ export async function syncCustomerContextFromRequest(conversationId, body = {}) 
       firstName: merged.firstName,
       lastName: merged.lastName
     });
+  }
+
+  // Shared cart/checkout/address across conversations for this shopper.
+  // Failures are non-fatal — conversation-local cart still works.
+  try {
+    await bindConversationShopper(conversationId, {
+      shopifyCustomerId: merged.shopifyCustomerId || incoming.shopifyCustomerId,
+      anonymousShopperId: incoming.anonymousShopperId,
+      firstName: merged.firstName,
+      lastName: merged.lastName,
+      loggedIn: merged.loggedIn
+    });
+  } catch (error) {
+    console.warn(
+      "[shopper-cart] bind from request failed:",
+      error?.message || error
+    );
   }
 
   return merged;

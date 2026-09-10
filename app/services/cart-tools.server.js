@@ -911,6 +911,170 @@ export async function appendFinalCartSnapshot(
   return snapshot;
 }
 
+/**
+ * Merge storefront theme cart lines into the conversation UCP cart.
+ * Rule: per variant qty = max(chatQty, themeQty) so neither side loses items.
+ * Empty theme payload is a no-op (does not wipe chat cart).
+ */
+export async function mergeThemeCartIntoConversation(
+  mcpClient,
+  conversationId,
+  themeItems = []
+) {
+  const incoming = [];
+  const seen = new Map();
+
+  (Array.isArray(themeItems) ? themeItems : []).forEach((item) => {
+    const variantId = normalizeVariantId(item?.variant_id || item?.variantId || item?.id);
+    const qty = Math.max(0, Number(item?.quantity) || 0);
+    if (!variantId || qty <= 0) return;
+    seen.set(variantId, (seen.get(variantId) || 0) + qty);
+  });
+
+  seen.forEach((quantity, variantId) => {
+    incoming.push({ quantity, item: { id: variantId } });
+  });
+
+  if (!incoming.length) {
+    const live = await fetchLiveCart(mcpClient, conversationId);
+    const items = (live?.cart?.line_items || []).map((line) => ({
+      title: line.item?.title || "Product",
+      quantity: line.quantity || 1,
+      variant_id: line.item?.id
+    }));
+    return {
+      success: true,
+      merged: false,
+      empty: !items.length,
+      items,
+      message: "No theme cart items to import."
+    };
+  }
+
+  const live = await fetchLiveCart(mcpClient, conversationId);
+
+  if (!live) {
+    const response = await mcpClient.callTool("create_cart", {
+      cart: withAiraAttribution({ line_items: toWritableLineItems(incoming) }, conversationId)
+    });
+    await persistCartFromResponse(conversationId, response);
+    const cart = extractCartPayload(response);
+    const items = (cart?.line_items || []).map((line) => ({
+      title: line.item?.title || "Product",
+      quantity: line.quantity || 1,
+      variant_id: line.item?.id
+    }));
+
+    console.log("[cart-wrapper] theme_cart_import created cart", {
+      conversationId,
+      itemCount: items.length
+    });
+
+    return {
+      success: true,
+      merged: true,
+      created: true,
+      empty: !items.length,
+      items
+    };
+  }
+
+  const byVariant = new Map();
+  (live.cart.line_items || []).forEach((line) => {
+    const id = line?.item?.id;
+    if (!id) return;
+    byVariant.set(id, {
+      quantity: Math.max(1, Number(line.quantity) || 1),
+      item: { id },
+      title: line.item?.title || "Product"
+    });
+  });
+
+  let changed = false;
+  incoming.forEach((item) => {
+    const id = item.item.id;
+    const themeQty = Math.max(1, Number(item.quantity) || 1);
+    const existing = byVariant.get(id);
+    if (!existing) {
+      byVariant.set(id, {
+        quantity: themeQty,
+        item: { id },
+        title: "Product"
+      });
+      changed = true;
+      return;
+    }
+    if (themeQty > existing.quantity) {
+      existing.quantity = themeQty;
+      changed = true;
+    }
+  });
+
+  if (!changed) {
+    const items = Array.from(byVariant.values()).map((entry) => ({
+      title: entry.title,
+      quantity: entry.quantity,
+      variant_id: entry.item.id
+    }));
+    return {
+      success: true,
+      merged: false,
+      empty: !items.length,
+      items,
+      message: "Chat cart already includes theme items."
+    };
+  }
+
+  const lineItems = Array.from(byVariant.values()).map((entry) => ({
+    quantity: entry.quantity,
+    item: { id: entry.item.id }
+  }));
+
+  const response = await updateCartLineItems(
+    mcpClient,
+    conversationId,
+    live.cartId,
+    live.cart,
+    lineItems
+  );
+
+  let cart = extractCartPayload(response);
+  const expected = new Map(lineItems.map((line) => [line.item.id, line.quantity]));
+  const looksComplete =
+    Array.isArray(cart?.line_items) &&
+    cart.line_items.length === expected.size &&
+    cart.line_items.every((line) => {
+      const id = line?.item?.id;
+      return id && expected.has(id) && Number(line.quantity) === expected.get(id);
+    });
+
+  if (!looksComplete) {
+    const verified = await fetchLiveCart(mcpClient, conversationId);
+    if (verified?.cart) cart = verified.cart;
+  }
+
+  // Skip checkout sync here — next add/remove/get_my_cart will align checkout.
+  const items = (cart?.line_items || []).map((line) => ({
+    title: line.item?.title || "Product",
+    quantity: line.quantity || 1,
+    variant_id: line.item?.id
+  }));
+
+  console.log("[cart-wrapper] theme_cart_import merged", {
+    conversationId,
+    themeCount: incoming.length,
+    itemCount: items.length,
+    changed
+  });
+
+  return {
+    success: true,
+    merged: true,
+    empty: !items.length,
+    items
+  };
+}
+
 function extractToolResultData(toolResponse) {
   if (toolResponse?.structuredContent) {
     return toolResponse.structuredContent;
@@ -2777,11 +2941,15 @@ async function clearMyCart(mcpClient, conversationId) {
 }
 
 function normalizeVariantId(id) {
-  if (!id || typeof id !== "string") {
+  if (id == null || id === "") {
     return null;
   }
 
-  const trimmed = id.trim();
+  const trimmed = String(id).trim();
+  if (!trimmed) {
+    return null;
+  }
+
   if (trimmed.includes("ProductVariant")) {
     return trimmed;
   }
@@ -3409,6 +3577,7 @@ export default {
   filterCartToolsForLlm,
   callCartWrapperTool,
   appendFinalCartSnapshot,
+  mergeThemeCartIntoConversation,
   buildActiveCartWrapperContextMessage,
   buildShippingEmailHintMessage
 };

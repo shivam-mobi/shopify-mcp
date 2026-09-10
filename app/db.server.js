@@ -217,6 +217,487 @@ export async function getConversationHistory(conversationId) {
 }
 
 /**
+ * Resolve the shopper id used as ShopperCart.id (localStorage shopper id).
+ * Never use conversation id — that would create one cart per chat.
+ */
+export function resolveShopperId({ anonymousShopperId = null } = {}) {
+  const anonId = String(anonymousShopperId || "").trim();
+  return anonId || null;
+}
+
+/** @deprecated use resolveShopperId — kept for older imports */
+export function buildShopperKey(args = {}) {
+  return resolveShopperId(args);
+}
+
+async function getConversationShopperMeta(conversationId) {
+  if (!conversationId) return null;
+  return prisma.conversation.findUnique({
+    where: { id: conversationId },
+    select: { shopperId: true }
+  });
+}
+
+async function upsertShopperCartFields(shopperId, fields = {}, meta = {}) {
+  if (!shopperId) return null;
+
+  const data = { ...fields };
+  if (meta.shopifyCustomerId != null) {
+    data.shopifyCustomerId = String(meta.shopifyCustomerId).trim() || null;
+  }
+  if (meta.customerFirstName != null) {
+    data.customerFirstName = String(meta.customerFirstName).trim() || null;
+  }
+  if (meta.customerLastName != null) {
+    data.customerLastName = String(meta.customerLastName).trim() || null;
+  }
+  if (meta.customerLoggedIn != null) {
+    data.customerLoggedIn = Boolean(meta.customerLoggedIn);
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  delete data.createdAt;
+  delete data.updatedAt;
+  delete data.id;
+
+  return prisma.shopperCart.upsert({
+    where: { id: shopperId },
+    create: {
+      id: shopperId,
+      shopifyCustomerId:
+        data.shopifyCustomerId ??
+        (meta.shopifyCustomerId ? String(meta.shopifyCustomerId).trim() : null),
+      customerFirstName: data.customerFirstName ?? null,
+      customerLastName: data.customerLastName ?? null,
+      customerLoggedIn: Boolean(data.customerLoggedIn),
+      activeConversationId: data.activeConversationId ?? null,
+      activeCartId: data.activeCartId ?? null,
+      activeCheckoutId: data.activeCheckoutId ?? null,
+      checkoutUrl: data.checkoutUrl ?? null,
+      shippingAddress: data.shippingAddress ?? null,
+      createdAt: nowSec,
+      updatedAt: nowSec
+    },
+    update: {
+      ...data,
+      updatedAt: nowSec
+    }
+  });
+}
+
+/**
+ * Ensure conversation is linked to an existing ShopperCart.
+ * Does not create a per-conversation shopper id.
+ */
+async function ensureConversationShopperKey(conversationId) {
+  if (!conversationId) return null;
+
+  await createOrUpdateConversation(conversationId);
+  const existing = await getConversationShopperMeta(conversationId);
+  if (existing?.shopperId) {
+    await upsertShopperCartFields(existing.shopperId, {});
+    return { shopperId: existing.shopperId };
+  }
+
+  console.warn(
+    "[shopper-cart] conversation has no shopperId yet; bind shopper_id before cart writes",
+    { conversationId }
+  );
+  return null;
+}
+
+async function resolveCartStateForConversation(conversationId) {
+  const empty = {
+    activeCartId: null,
+    activeCheckoutId: null,
+    checkoutUrl: null,
+    shippingAddress: null,
+    shopperId: null
+  };
+
+  if (!conversationId) return empty;
+
+  const meta = await getConversationShopperMeta(conversationId);
+  const shopperId = meta?.shopperId || null;
+  if (!shopperId) return empty;
+
+  const shared = await prisma.shopperCart.findUnique({
+    where: { id: shopperId }
+  });
+  if (!shared) {
+    return { ...empty, shopperId };
+  }
+
+  return {
+    activeCartId: shared.activeCartId || null,
+    activeCheckoutId: shared.activeCheckoutId || null,
+    checkoutUrl: shared.checkoutUrl || null,
+    shippingAddress: shared.shippingAddress || null,
+    shopperId
+  };
+}
+
+async function writeCartStateForConversation(conversationId, fields = {}) {
+  if (!conversationId) return null;
+
+  const ensured = await ensureConversationShopperKey(conversationId);
+  const shopperId = ensured?.shopperId;
+  if (!shopperId) return null;
+
+  await upsertShopperCartFields(shopperId, fields);
+  return shopperId;
+}
+
+/**
+ * Merge cart/profile from one shopper id into another; remount conversations.
+ */
+async function mergeShopperCartIds(fromId, toId) {
+  if (!fromId || !toId || fromId === toId) return;
+
+  const from = await prisma.shopperCart.findUnique({ where: { id: fromId } });
+  if (!from) {
+    await prisma.conversation.updateMany({
+      where: { shopperId: fromId },
+      data: { shopperId: toId }
+    });
+    return;
+  }
+
+  const to = await prisma.shopperCart.findUnique({ where: { id: toId } });
+  const merged = {
+    activeCartId: to?.activeCartId || from.activeCartId || null,
+    activeCheckoutId: to?.activeCheckoutId || from.activeCheckoutId || null,
+    checkoutUrl: to?.checkoutUrl || from.checkoutUrl || null,
+    shippingAddress: to?.shippingAddress || from.shippingAddress || null,
+    shopifyCustomerId: to?.shopifyCustomerId || from.shopifyCustomerId || null,
+    customerFirstName: to?.customerFirstName || from.customerFirstName || null,
+    customerLastName: to?.customerLastName || from.customerLastName || null,
+    customerLoggedIn: Boolean(to?.customerLoggedIn || from.customerLoggedIn),
+    activeConversationId:
+      to?.activeConversationId || from.activeConversationId || null
+  };
+
+  await upsertShopperCartFields(toId, merged);
+  await prisma.conversation.updateMany({
+    where: { shopperId: fromId },
+    data: { shopperId: toId }
+  });
+
+  try {
+    await prisma.shopperCart.delete({ where: { id: fromId } });
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Link a conversation to a shopper id (ShopperCart.id).
+ */
+export async function bindConversationShopper(
+  conversationId,
+  {
+    shopifyCustomerId = null,
+    anonymousShopperId = null,
+    firstName = null,
+    lastName = null,
+    loggedIn = null
+  } = {}
+) {
+  if (!conversationId) return null;
+
+  try {
+    await createOrUpdateConversation(conversationId);
+    const existing = await getConversationShopperMeta(conversationId);
+    const previousId = existing?.shopperId || null;
+    let previousProfile = null;
+    if (previousId) {
+      previousProfile = await prisma.shopperCart.findUnique({
+        where: { id: previousId }
+      });
+    }
+
+    // Prefer localStorage shopper_id. Never keep shopperId === conversationId.
+    let targetId = resolveShopperId({ anonymousShopperId });
+    if (!targetId && previousId && previousId !== conversationId) {
+      targetId = previousId;
+    }
+    if (!targetId || targetId === conversationId) {
+      console.warn("[shopper-cart] bind skipped: missing shopper_id", {
+        conversationId,
+        previousId
+      });
+      return null;
+    }
+
+    if (previousId && previousId !== targetId) {
+      await mergeShopperCartIds(previousId, targetId);
+    }
+
+    const profilePatch = {
+      activeConversationId: conversationId
+    };
+    const customerId = String(
+      shopifyCustomerId || previousProfile?.shopifyCustomerId || ""
+    ).trim();
+    if (customerId) profilePatch.shopifyCustomerId = customerId;
+    if (firstName != null && String(firstName).trim()) {
+      profilePatch.customerFirstName = String(firstName).trim();
+    }
+    if (lastName != null && String(lastName).trim()) {
+      profilePatch.customerLastName = String(lastName).trim();
+    }
+    if (loggedIn === true || customerId) {
+      profilePatch.customerLoggedIn = true;
+    }
+
+    await upsertShopperCartFields(targetId, profilePatch);
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { shopperId: targetId }
+    });
+
+    return targetId;
+  } catch (error) {
+    console.error("[shopper-cart] bind failed:", error?.message || error);
+    return null;
+  }
+}
+
+/**
+ * Resolve or create the active conversation for a shopper (localStorage shopper id).
+ */
+export async function resolveShopperSession({
+  anonymousShopperId = null,
+  shopifyCustomerId = null,
+  firstName = null,
+  lastName = null,
+  action = "get",
+  conversationId = null
+} = {}) {
+  const shopperId = resolveShopperId({ anonymousShopperId });
+  if (!shopperId) {
+    return { ok: false, error: "shopper_id_required" };
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  let shopper = await prisma.shopperCart.findUnique({ where: { id: shopperId } });
+
+  if (!shopper) {
+    shopper = await prisma.shopperCart.create({
+      data: {
+        id: shopperId,
+        shopifyCustomerId: shopifyCustomerId ? String(shopifyCustomerId).trim() : null,
+        customerFirstName: firstName ? String(firstName).trim() : null,
+        customerLastName: lastName ? String(lastName).trim() : null,
+        customerLoggedIn: Boolean(shopifyCustomerId),
+        createdAt: nowSec,
+        updatedAt: nowSec
+      }
+    });
+  } else if (shopifyCustomerId) {
+    shopper = await prisma.shopperCart.update({
+      where: { id: shopperId },
+      data: {
+        shopifyCustomerId: String(shopifyCustomerId).trim(),
+        customerLoggedIn: true,
+        ...(firstName ? { customerFirstName: String(firstName).trim() } : {}),
+        ...(lastName ? { customerLastName: String(lastName).trim() } : {}),
+        updatedAt: nowSec
+      }
+    });
+
+    // Same logged-in customer may have older browser shopper rows — merge them.
+    const otherShoppers = await prisma.shopperCart.findMany({
+      where: {
+        shopifyCustomerId: String(shopifyCustomerId).trim(),
+        NOT: { id: shopperId }
+      },
+      select: { id: true }
+    });
+    for (const other of otherShoppers) {
+      await mergeShopperCartIds(other.id, shopperId);
+    }
+    shopper = await prisma.shopperCart.findUnique({ where: { id: shopperId } });
+  }
+
+  const normalizedAction = String(action || "get").toLowerCase();
+
+  if (normalizedAction === "new") {
+    const newId = String(Date.now());
+    await createOrUpdateConversation(newId);
+    await prisma.conversation.update({
+      where: { id: newId },
+      data: { shopperId }
+    });
+    shopper = await prisma.shopperCart.update({
+      where: { id: shopperId },
+      data: {
+        activeConversationId: newId,
+        updatedAt: nowSec
+      }
+    });
+  } else if (normalizedAction === "activate" && conversationId) {
+    const targetId = String(conversationId).trim();
+    const owned = await prisma.conversation.findFirst({
+      where: { id: targetId, shopperId },
+      select: { id: true }
+    });
+    if (!owned) {
+      return { ok: false, error: "conversation_not_found" };
+    }
+    shopper = await prisma.shopperCart.update({
+      where: { id: shopperId },
+      data: { activeConversationId: targetId, updatedAt: nowSec }
+    });
+  } else {
+    let activeId = shopper.activeConversationId
+      ? String(shopper.activeConversationId)
+      : null;
+
+    if (activeId) {
+      const exists = await prisma.conversation.findFirst({
+        where: { id: activeId, shopperId },
+        select: { id: true }
+      });
+      const msgCount = exists
+        ? await prisma.message.count({ where: { conversationId: activeId } })
+        : 0;
+      if (!exists || msgCount === 0) activeId = null;
+    }
+
+    // Do not invent empty conversations on get — only reuse chats that have messages.
+    if (!activeId) {
+      const linked = await prisma.conversation.findMany({
+        where: { shopperId },
+        orderBy: { updatedAt: "desc" },
+        select: { id: true }
+      });
+      for (const row of linked) {
+        const count = await prisma.message.count({
+          where: { conversationId: row.id }
+        });
+        if (count > 0) {
+          activeId = row.id;
+          break;
+        }
+      }
+    }
+
+    shopper = await prisma.shopperCart.update({
+      where: { id: shopperId },
+      data: {
+        activeConversationId: activeId || null,
+        updatedAt: nowSec
+      }
+    });
+  }
+
+  const sessions = await listConversationsForShopperId(shopperId);
+
+  return {
+    ok: true,
+    shopper_id: shopperId,
+    conversation_id: shopper.activeConversationId || null,
+    sessions
+  };
+}
+
+/**
+ * List chat sessions linked to a shopper id.
+ */
+export async function listConversationsForShopperId(shopperId, { limit = null } = {}) {
+  const id = String(shopperId || "").trim();
+  if (!id) return [];
+
+  const parsedLimit = limit == null || limit === "" ? null : Number(limit);
+  const take =
+    parsedLimit == null || !Number.isFinite(parsedLimit) || parsedLimit <= 0
+      ? null
+      : Math.floor(parsedLimit);
+
+  try {
+    const conversations = await prisma.conversation.findMany({
+      where: { shopperId: id },
+      orderBy: { updatedAt: "desc" },
+      ...(take ? { take } : {}),
+      select: { id: true, updatedAt: true, createdAt: true }
+    });
+
+    if (!conversations.length) return [];
+
+    const ids = conversations.map((row) => row.id);
+    const messages = await prisma.message.findMany({
+      where: { conversationId: { in: ids } },
+      orderBy: { createdAt: "asc" },
+      select: {
+        conversationId: true,
+        role: true,
+        content: true,
+        createdAt: true
+      }
+    });
+
+    const byConversation = new Map();
+    for (const message of messages) {
+      const bucket = byConversation.get(message.conversationId) || {
+        firstUser: null,
+        lastUser: null,
+        lastActivityAt: null
+      };
+
+      const activityMs = message.createdAt?.getTime?.() || 0;
+      if (!bucket.lastActivityAt || activityMs > bucket.lastActivityAt) {
+        bucket.lastActivityAt = activityMs;
+      }
+
+      if (message.role === "user") {
+        const text = extractPlainUserText(message.content);
+        if (text) {
+          if (!bucket.firstUser) bucket.firstUser = text;
+          bucket.lastUser = text;
+        }
+      }
+
+      byConversation.set(message.conversationId, bucket);
+    }
+
+    const sessions = conversations
+      .map((row) => {
+        const meta = byConversation.get(row.id);
+        // Hide empty threads (created on open / abandoned new chat).
+        if (!meta?.lastActivityAt && !meta?.firstUser && !meta?.lastUser) {
+          return null;
+        }
+        const titleSource = meta?.firstUser || "Chat";
+        const previewSource = meta?.lastUser || meta?.firstUser || "";
+        const updatedAt =
+          meta?.lastActivityAt ||
+          row.updatedAt?.getTime?.() ||
+          row.createdAt?.getTime?.() ||
+          Date.now();
+
+        return {
+          id: row.id,
+          title: truncateSessionText(titleSource, 48) || "Chat",
+          preview: truncateSessionText(previewSource, 80),
+          updatedAt
+        };
+      })
+      .filter(Boolean);
+
+    return sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  } catch (error) {
+    console.error("Error listing conversations for shopper:", error);
+    return [];
+  }
+}
+
+/** @deprecated alias */
+export async function listConversationsForShopperKey(shopperKey, opts) {
+  return listConversationsForShopperId(shopperKey, opts);
+}
+
+/**
  * Get the active Shopify cart id for a conversation, if any.
  */
 export async function getConversationCartId(conversationId) {
@@ -225,12 +706,8 @@ export async function getConversationCartId(conversationId) {
   }
 
   try {
-    const conversation = await prisma.conversation.findUnique({
-      where: { id: conversationId },
-      select: { activeCartId: true }
-    });
-
-    return conversation?.activeCartId || null;
+    const state = await resolveCartStateForConversation(conversationId);
+    return state.activeCartId || null;
   } catch (error) {
     console.error("Error retrieving conversation cart id:", error);
     return null;
@@ -246,11 +723,10 @@ export async function setConversationCartId(conversationId, cartId) {
   }
 
   try {
-    await createOrUpdateConversation(conversationId);
-    return await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { activeCartId: String(cartId) }
+    await writeCartStateForConversation(conversationId, {
+      activeCartId: String(cartId)
     });
+    return { id: conversationId, activeCartId: String(cartId) };
   } catch (error) {
     console.error("Error storing conversation cart id:", error);
     return null;
@@ -266,10 +742,8 @@ export async function clearConversationCartId(conversationId) {
   }
 
   try {
-    return await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { activeCartId: null }
-    });
+    await writeCartStateForConversation(conversationId, { activeCartId: null });
+    return { id: conversationId, activeCartId: null };
   } catch (error) {
     console.error("Error clearing conversation cart id:", error);
     return null;
@@ -285,16 +759,14 @@ export async function getConversationShippingAddress(conversationId) {
   }
 
   try {
-    const conversation = await prisma.conversation.findUnique({
-      where: { id: conversationId },
-      select: { shippingAddress: true }
-    });
-
-    if (!conversation?.shippingAddress) {
+    const state = await resolveCartStateForConversation(conversationId);
+    if (!state.shippingAddress) {
       return null;
     }
 
-    return JSON.parse(conversation.shippingAddress);
+    return typeof state.shippingAddress === "string"
+      ? JSON.parse(state.shippingAddress)
+      : state.shippingAddress;
   } catch (error) {
     console.error("Error retrieving conversation shipping address:", error);
     return null;
@@ -310,17 +782,22 @@ export async function setConversationShippingAddress(conversationId, address) {
   }
 
   try {
-    await createOrUpdateConversation(conversationId);
-    const data = { shippingAddress: JSON.stringify(address) };
+    const shippingAddress = JSON.stringify(address);
+    await writeCartStateForConversation(conversationId, { shippingAddress });
+
     const firstName = String(address.first_name || "").trim();
     const lastName = String(address.last_name || "").trim();
-    if (firstName) data.customerFirstName = firstName;
-    if (lastName) data.customerLastName = lastName;
+    if (firstName || lastName) {
+      const ensured = await ensureConversationShopperKey(conversationId);
+      if (ensured?.shopperId) {
+        await upsertShopperCartFields(ensured.shopperId, {
+          ...(firstName ? { customerFirstName: firstName } : {}),
+          ...(lastName ? { customerLastName: lastName } : {})
+        });
+      }
+    }
 
-    return await prisma.conversation.update({
-      where: { id: conversationId },
-      data
-    });
+    return { id: conversationId, shippingAddress };
   } catch (error) {
     console.error("Error storing conversation shipping address:", error);
     return null;
@@ -336,10 +813,10 @@ export async function clearConversationShippingAddress(conversationId) {
   }
 
   try {
-    return await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { shippingAddress: null }
+    await writeCartStateForConversation(conversationId, {
+      shippingAddress: null
     });
+    return { id: conversationId, shippingAddress: null };
   } catch (error) {
     console.error("Error clearing conversation shipping address:", error);
     return null;
@@ -347,7 +824,7 @@ export async function clearConversationShippingAddress(conversationId) {
 }
 
 /**
- * Get stored customer profile for LLM context (storefront login / shipping).
+ * Get stored shopper profile for LLM context (shared across conversations).
  */
 export async function getConversationCustomerProfile(conversationId) {
   if (!conversationId) {
@@ -355,27 +832,37 @@ export async function getConversationCustomerProfile(conversationId) {
   }
 
   try {
-    const conversation = await prisma.conversation.findUnique({
-      where: { id: conversationId },
-      select: {
-        customerFirstName: true,
-        customerLastName: true,
-        customerLoggedIn: true,
-        shopifyCustomerId: true,
-        shopDomain: true
-      }
+    const meta = await getConversationShopperMeta(conversationId);
+    if (!meta?.shopperId) {
+      return {
+        firstName: null,
+        lastName: null,
+        loggedIn: false,
+        shopifyCustomerId: null,
+        shopDomain: null
+      };
+    }
+
+    const shopper = await prisma.shopperCart.findUnique({
+      where: { id: meta.shopperId }
     });
 
-    if (!conversation) {
-      return null;
+    if (!shopper) {
+      return {
+        firstName: null,
+        lastName: null,
+        loggedIn: false,
+        shopifyCustomerId: null,
+        shopDomain: null
+      };
     }
 
     return {
-      firstName: conversation.customerFirstName || null,
-      lastName: conversation.customerLastName || null,
-      loggedIn: Boolean(conversation.customerLoggedIn),
-      shopifyCustomerId: conversation.shopifyCustomerId || null,
-      shopDomain: conversation.shopDomain || null
+      firstName: shopper.customerFirstName || null,
+      lastName: shopper.customerLastName || null,
+      loggedIn: Boolean(shopper.customerLoggedIn),
+      shopifyCustomerId: shopper.shopifyCustomerId || null,
+      shopDomain: null
     };
   } catch (error) {
     console.error("Error retrieving conversation customer profile:", error);
@@ -384,7 +871,7 @@ export async function getConversationCustomerProfile(conversationId) {
 }
 
 /**
- * Persist customer profile fields for a conversation.
+ * Persist shopper profile fields (shared across conversations via ShopperCart).
  */
 export async function setConversationCustomerProfile(
   conversationId,
@@ -393,7 +880,8 @@ export async function setConversationCustomerProfile(
     lastName = null,
     loggedIn = false,
     shopifyCustomerId = null,
-    shopDomain = null
+    shopDomain = null,
+    anonymousShopperId = null
   } = {}
 ) {
   if (!conversationId) {
@@ -401,27 +889,40 @@ export async function setConversationCustomerProfile(
   }
 
   try {
-    await createOrUpdateConversation(conversationId);
-    const data = {};
     const normalizedFirst = String(firstName || "").trim();
     const normalizedLast = String(lastName || "").trim();
     const normalizedCustomerId = String(shopifyCustomerId || "").trim();
-    const normalizedShop = String(shopDomain || "").trim().toLowerCase();
+    const anonId = String(anonymousShopperId || "").trim();
 
+    void shopDomain; // single-shop; kept for caller compatibility
+
+    // Only re-key when we have a real shopper identity (customer or anon).
+    // Never force a conversation-only re-key here when identity is missing —
+    // that would break shared carts. Pass anonymousShopperId/customer id to re-key.
+    if (normalizedCustomerId || anonId) {
+      await bindConversationShopper(conversationId, {
+        shopifyCustomerId: normalizedCustomerId || null,
+        anonymousShopperId: anonId || null,
+        firstName: normalizedFirst || null,
+        lastName: normalizedLast || null,
+        loggedIn: loggedIn || Boolean(normalizedCustomerId)
+      });
+    }
+
+    const ensured = await ensureConversationShopperKey(conversationId);
+    if (!ensured?.shopperId) return null;
+
+    const data = {};
     if (normalizedFirst) data.customerFirstName = normalizedFirst;
     if (normalizedLast) data.customerLastName = normalizedLast;
-    if (loggedIn) data.customerLoggedIn = true;
+    if (loggedIn || normalizedCustomerId) data.customerLoggedIn = true;
     if (normalizedCustomerId) data.shopifyCustomerId = normalizedCustomerId;
-    if (normalizedShop) data.shopDomain = normalizedShop;
 
     if (Object.keys(data).length === 0) {
       return null;
     }
 
-    return await prisma.conversation.update({
-      where: { id: conversationId },
-      data
-    });
+    return await upsertShopperCartFields(ensured.shopperId, data);
   } catch (error) {
     console.error("Error storing conversation customer profile:", error);
     return null;
@@ -465,7 +966,7 @@ function extractPlainUserText(content) {
 /**
  * Attach a guest (or same-customer) conversation to a logged-in Shopify customer.
  * Refuses to steal a conversation already owned by a different customer.
- * Does not bump activity time when only linking ownership.
+ * Profile is stored on ShopperCart (shared), not on Conversation.
  */
 export async function claimConversationForCustomer(
   conversationId,
@@ -478,61 +979,35 @@ export async function claimConversationForCustomer(
   }
 
   try {
-    const existing = await prisma.conversation.findUnique({
-      where: { id },
-      select: {
-        shopifyCustomerId: true,
-        shopDomain: true,
-        customerFirstName: true,
-        customerLastName: true,
-        customerLoggedIn: true
-      }
-    });
+    void shopDomain; // single-shop; kept for caller compatibility
+    await createOrUpdateConversation(id);
 
-    const ownedBy = existing?.shopifyCustomerId
-      ? String(existing.shopifyCustomerId).trim()
+    const profile = await getConversationCustomerProfile(id);
+    const ownedBy = profile?.shopifyCustomerId
+      ? String(profile.shopifyCustomerId).trim()
       : "";
 
     if (ownedBy && ownedBy !== customerId) {
       return { ok: false, reason: "owned_by_other" };
     }
 
-    const normalizedShop = String(shopDomain || "").trim().toLowerCase() || null;
     const normalizedFirst = String(firstName || "").trim() || null;
     const normalizedLast = String(lastName || "").trim() || null;
 
-    // Already linked to this customer — skip write so @updatedAt stays unchanged
-    if (
+    const alreadyLinked =
       ownedBy === customerId &&
-      existing?.customerLoggedIn === true &&
-      (!normalizedShop || existing.shopDomain === normalizedShop) &&
-      (!normalizedFirst || existing.customerFirstName === normalizedFirst) &&
-      (!normalizedLast || existing.customerLastName === normalizedLast)
-    ) {
-      return { ok: true, conversationId: id, claimed: false };
-    }
+      profile?.loggedIn === true &&
+      (!normalizedFirst || profile.firstName === normalizedFirst) &&
+      (!normalizedLast || profile.lastName === normalizedLast);
 
-    const data = {
+    await bindConversationShopper(id, {
       shopifyCustomerId: customerId,
-      customerLoggedIn: true
-    };
-    if (normalizedShop) data.shopDomain = normalizedShop;
-    if (normalizedFirst) data.customerFirstName = normalizedFirst;
-    if (normalizedLast) data.customerLastName = normalizedLast;
-
-    if (!existing) {
-      await prisma.conversation.create({
-        data: { id, ...data }
-      });
-      return { ok: true, conversationId: id, claimed: true };
-    }
-
-    await prisma.conversation.update({
-      where: { id },
-      data
+      firstName: normalizedFirst,
+      lastName: normalizedLast,
+      loggedIn: true
     });
 
-    return { ok: true, conversationId: id, claimed: !ownedBy };
+    return { ok: true, conversationId: id, claimed: !alreadyLinked && !ownedBy };
   } catch (error) {
     console.error("Error claiming conversation for customer:", error);
     return { ok: false, reason: "error" };
@@ -551,19 +1026,25 @@ export async function listConversationsForCustomer(
   const customerId = String(shopifyCustomerId || "").trim();
   if (!customerId) return [];
 
+  void shopDomain; // single-shop
+
   const parsedLimit = limit == null || limit === "" ? null : Number(limit);
   const take =
     parsedLimit == null || !Number.isFinite(parsedLimit) || parsedLimit <= 0
       ? null
       : Math.floor(parsedLimit);
-  const shop = String(shopDomain || "").trim().toLowerCase();
 
   try {
+    const shoppers = await prisma.shopperCart.findMany({
+      where: { shopifyCustomerId: customerId },
+      select: { id: true }
+    });
+    const shopperIds = shoppers.map((row) => row.id).filter(Boolean);
+
+    if (!shopperIds.length) return [];
+
     const conversations = await prisma.conversation.findMany({
-      where: {
-        shopifyCustomerId: customerId,
-        ...(shop ? { shopDomain: shop } : {})
-      },
+      where: { shopperId: { in: shopperIds } },
       orderBy: { updatedAt: "desc" },
       ...(take ? { take } : {}),
       select: { id: true, updatedAt: true, createdAt: true }
@@ -641,12 +1122,8 @@ export async function getConversationCheckoutId(conversationId) {
   }
 
   try {
-    const conversation = await prisma.conversation.findUnique({
-      where: { id: conversationId },
-      select: { activeCheckoutId: true }
-    });
-
-    return conversation?.activeCheckoutId || null;
+    const state = await resolveCartStateForConversation(conversationId);
+    return state.activeCheckoutId || null;
   } catch (error) {
     console.error("Error retrieving conversation checkout id:", error);
     return null;
@@ -662,12 +1139,8 @@ export async function getConversationCheckoutUrl(conversationId) {
   }
 
   try {
-    const conversation = await prisma.conversation.findUnique({
-      where: { id: conversationId },
-      select: { checkoutUrl: true }
-    });
-
-    return conversation?.checkoutUrl || null;
+    const state = await resolveCartStateForConversation(conversationId);
+    return state.checkoutUrl || null;
   } catch (error) {
     console.error("Error retrieving conversation checkout url:", error);
     return null;
@@ -683,11 +1156,10 @@ export async function setConversationCheckoutId(conversationId, checkoutId) {
   }
 
   try {
-    await createOrUpdateConversation(conversationId);
-    return await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { activeCheckoutId: String(checkoutId) }
+    await writeCartStateForConversation(conversationId, {
+      activeCheckoutId: String(checkoutId)
     });
+    return { id: conversationId, activeCheckoutId: String(checkoutId) };
   } catch (error) {
     console.error("Error storing conversation checkout id:", error);
     return null;
@@ -708,17 +1180,12 @@ export async function setConversationCheckoutUrl(conversationId, checkoutUrl) {
   }
 
   try {
-    await createOrUpdateConversation(conversationId);
-    const existing = await prisma.conversation.findUnique({
-      where: { id: conversationId },
-      select: { checkoutUrl: true }
-    });
-    const previous = existing?.checkoutUrl || null;
+    const previousState = await resolveCartStateForConversation(conversationId);
+    const previous = previousState.checkoutUrl || null;
     const changed = Boolean(previous && previous !== nextUrl);
 
-    await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { checkoutUrl: nextUrl }
+    await writeCartStateForConversation(conversationId, {
+      checkoutUrl: nextUrl
     });
 
     return { ok: true, changed, checkoutUrl: nextUrl, previousUrl: previous };
@@ -738,10 +1205,10 @@ export async function clearConversationCheckoutId(conversationId) {
   }
 
   try {
-    return await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { activeCheckoutId: null }
+    await writeCartStateForConversation(conversationId, {
+      activeCheckoutId: null
     });
+    return { id: conversationId, activeCheckoutId: null };
   } catch (error) {
     console.error("Error clearing conversation checkout id:", error);
     return null;
@@ -757,10 +1224,11 @@ export async function clearConversationCheckout(conversationId) {
   }
 
   try {
-    return await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { activeCheckoutId: null, checkoutUrl: null }
+    await writeCartStateForConversation(conversationId, {
+      activeCheckoutId: null,
+      checkoutUrl: null
     });
+    return { id: conversationId, activeCheckoutId: null, checkoutUrl: null };
   } catch (error) {
     console.error("Error clearing conversation checkout:", error);
     return null;

@@ -54,21 +54,33 @@ model CodeVerifier {
 }
 
 model Conversation {
-  id                String    @id
-  activeCartId      String?
-  activeCheckoutId  String?
-  checkoutUrl       String?   // Latest Shopify checkout continue_url for this conversation
-  shippingAddress   String?   // JSON string of last saved Shopify shipping destination
-  customerFirstName String?
-  customerLastName  String?
-  customerLoggedIn  Boolean   @default(false)
-  shopifyCustomerId String?   // Storefront customer id for cross-device session sync
-  shopDomain        String?   // e.g. pureairflow.myshopify.com
-  messages          Message[]
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id         String    @id
+  shopperId  String? // ShopperCart.id (localStorage shopper id)
+  messages   Message[]
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
-  @@index([shopifyCustomerId, shopDomain, updatedAt])
+  @@index([shopperId])
+}
+
+/// Shared shopper profile + cart/checkout/shipping (single shop).
+/// id = browser shopper id from localStorage (no separate shopperKey column).
+model ShopperCart {
+  id                   String  @id // shopper id from localStorage
+  shopifyCustomerId    String?
+  customerFirstName    String?
+  customerLastName     String?
+  customerLoggedIn     Boolean @default(false)
+  activeConversationId String? // current chat thread for this shopper
+  activeCartId         String?
+  activeCheckoutId     String?
+  checkoutUrl          String?
+  shippingAddress      String? // JSON string of last saved shipping destination
+  createdAt            Int // unix epoch seconds
+  updatedAt            Int // unix epoch seconds
+
+  @@index([shopifyCustomerId])
+  @@index([activeConversationId])
 }
 
 model Message {

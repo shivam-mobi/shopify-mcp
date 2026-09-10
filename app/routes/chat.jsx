@@ -15,6 +15,7 @@ import {
   isCartMutationTool,
   callCartWrapperTool,
   appendFinalCartSnapshot,
+  mergeThemeCartIntoConversation,
   filterCartToolsForLlm,
   buildShippingAddressHintMessage,
   buildShippingEmailHintMessage
@@ -329,6 +330,24 @@ async function handleChatSession({
       console.log(`Connected to UCP MCP with ${ucpMcpTools.length} tools`);
     } catch (error) {
       console.warn('Failed to connect to UCP MCP server:', error.message);
+    }
+
+    // Merge storefront theme cart → UCP before tools run so chat→theme sync won't wipe manual items.
+    if (Array.isArray(body?.theme_cart_items) && body.theme_cart_items.length > 0) {
+      try {
+        const importResult = await mergeThemeCartIntoConversation(
+          mcpClient,
+          conversationId,
+          body.theme_cart_items
+        );
+        console.log("[chat] theme_cart_import", {
+          conversationId,
+          merged: importResult?.merged,
+          itemCount: importResult?.items?.length || 0
+        });
+      } catch (error) {
+        console.warn("[chat] theme_cart_import failed:", error?.message || error);
+      }
     }
 
     try {
@@ -711,12 +730,25 @@ async function handleChatSession({
       );
 
       if (cartMutatedThisTurn) {
-        await appendFinalCartSnapshot(
+        const snapshot = await appendFinalCartSnapshot(
           mcpClient,
           conversationId,
           conversationHistory,
           lastCartMutationResponse
         );
+
+        // Tell the storefront to mirror chat cart → theme Ajax cart (/cart.js).
+        stream.sendMessage({
+          type: "theme_cart_sync",
+          empty: Boolean(snapshot?.empty) || !(snapshot?.items || []).length,
+          items: Array.isArray(snapshot?.items)
+            ? snapshot.items.map((item) => ({
+                title: item.title || null,
+                quantity: Math.max(0, Number(item.quantity) || 0),
+                variant_id: item.variant_id || null
+              }))
+            : []
+        });
       }
 
       if (stopAfterToolError) {

@@ -31,11 +31,61 @@
     };
   }
 
-  const CONVERSATION_ID_KEY = 'shopAiConversationId';
   const CHAT_EXPANDED_KEY = 'shopAiChatExpanded';
-  const SESSIONS_INDEX_KEY = 'shopAiSessionsIndex';
   const BUBBLE_CALLOUT_KEY = 'shopAiBubbleCalloutSeen';
+  const SHOPPER_ID_KEY = 'shopAiShopperId';
+  // Per-shopper cache so home/recent chats paint before shopper-session returns.
+  const SESSIONS_CACHE_PREFIX = 'shopAiSessions:';
+  const ACTIVE_CONVERSATION_PREFIX = 'shopAiActiveConversation:';
+  // Legacy unscoped keys — cleared once; replaced by shopper-scoped cache above.
+  const LEGACY_CONVERSATION_ID_KEY = 'shopAiConversationId';
+  const LEGACY_SESSIONS_INDEX_KEY = 'shopAiSessionsIndex';
   let conversationStorageMode = 'localStorage';
+  let activeConversationId = null;
+  let sessionsMemory = [];
+
+  function getBrowserStore() {
+    try {
+      return conversationStorageMode === 'sessionStorage' ? sessionStorage : localStorage;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function getOrCreateShopperId() {
+    try {
+      let id = localStorage.getItem(SHOPPER_ID_KEY);
+      if (!id || !String(id).trim()) {
+        id =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `anon_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        localStorage.setItem(SHOPPER_ID_KEY, id);
+      }
+      return String(id).trim();
+    } catch (e) {
+      return `anon_${Date.now()}`;
+    }
+  }
+
+  function sessionsCacheKey(shopperId = getOrCreateShopperId()) {
+    return SESSIONS_CACHE_PREFIX + String(shopperId || '').trim();
+  }
+
+  function activeConversationCacheKey(shopperId = getOrCreateShopperId()) {
+    return ACTIVE_CONVERSATION_PREFIX + String(shopperId || '').trim();
+  }
+
+  function clearLegacyConversationStorage() {
+    try {
+      localStorage.removeItem(LEGACY_CONVERSATION_ID_KEY);
+      sessionStorage.removeItem(LEGACY_CONVERSATION_ID_KEY);
+      localStorage.removeItem(LEGACY_SESSIONS_INDEX_KEY);
+      sessionStorage.removeItem(LEGACY_SESSIONS_INDEX_KEY);
+    } catch (e) {
+      // ignore
+    }
+  }
 
   function resolveConversationStorageMode(mode) {
     return String(mode || '').toLowerCase() === 'sessionstorage'
@@ -43,35 +93,121 @@
       : 'localStorage';
   }
 
-  function getConversationStorage() {
-    return resolveConversationStorageMode(conversationStorageMode) === 'sessionStorage'
-      ? sessionStorage
-      : localStorage;
+  function normalizeSessionEntry(s) {
+    if (!s || !s.id) return null;
+    return {
+      id: String(s.id),
+      title: s.title || 'Chat',
+      preview: s.preview || '',
+      updatedAt: Number(s.updatedAt) || Date.now()
+    };
+  }
+
+  function persistSessionsToStorage(sessions) {
+    const store = getBrowserStore();
+    if (!store) return;
+    try {
+      const list = (Array.isArray(sessions) ? sessions : [])
+        .map(normalizeSessionEntry)
+        .filter(Boolean);
+      store.setItem(sessionsCacheKey(), JSON.stringify(list));
+    } catch (e) {
+      // ignore quota / private mode
+    }
+  }
+
+  function loadSessionsFromStorage() {
+    const store = getBrowserStore();
+    if (!store) return [];
+    try {
+      const raw = store.getItem(sessionsCacheKey());
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(normalizeSessionEntry).filter(Boolean);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function persistActiveConversationToStorage(id) {
+    const store = getBrowserStore();
+    if (!store) return;
+    try {
+      const key = activeConversationCacheKey();
+      if (id) store.setItem(key, String(id));
+      else store.removeItem(key);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function loadActiveConversationFromStorage() {
+    const store = getBrowserStore();
+    if (!store) return null;
+    try {
+      const id = store.getItem(activeConversationCacheKey());
+      return id && String(id).trim() ? String(id).trim() : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function hydrateShopperCacheFromStorage() {
+    sessionsMemory = loadSessionsFromStorage();
+    const cachedId = loadActiveConversationFromStorage();
+    if (cachedId) {
+      activeConversationId = cachedId;
+    }
   }
 
   function getConversationId() {
-    const storage = getConversationStorage();
-    let id = storage.getItem(CONVERSATION_ID_KEY);
-
-    // Migrate an existing per-tab session id into localStorage when upgrading
-    if (!id && storage === localStorage) {
-      id = sessionStorage.getItem(CONVERSATION_ID_KEY);
-      if (id) {
-        localStorage.setItem(CONVERSATION_ID_KEY, id);
-        sessionStorage.removeItem(CONVERSATION_ID_KEY);
-      }
-    }
-
-    return id;
+    return activeConversationId || null;
   }
 
   function setConversationId(id) {
-    getConversationStorage().setItem(CONVERSATION_ID_KEY, id);
+    activeConversationId = id ? String(id) : null;
+    persistActiveConversationToStorage(activeConversationId);
   }
 
   function clearConversationId() {
-    getConversationStorage().removeItem(CONVERSATION_ID_KEY);
-    sessionStorage.removeItem(CONVERSATION_ID_KEY);
+    activeConversationId = null;
+    persistActiveConversationToStorage(null);
+  }
+
+  async function resolveShopperSessionFromServer(options = {}) {
+    const apiBaseUrl = getApiBaseUrl();
+    const payload = {
+      ...getCustomerContextPayload(),
+      action: options.action || 'get',
+      ...(options.conversation_id
+        ? { conversation_id: options.conversation_id }
+        : {})
+    };
+
+    const response = await fetch(`${apiBaseUrl}/chat/shopper-session`, {
+      method: 'POST',
+      headers: getApiHeaders({
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      }),
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`shopper-session ${response.status} ${text}`.trim());
+    }
+
+    const data = await response.json();
+    if (Object.prototype.hasOwnProperty.call(data, 'conversation_id')) {
+      setConversationId(data.conversation_id || null);
+    }
+    if (Array.isArray(data.sessions)) {
+      sessionsMemory = data.sessions.map(normalizeSessionEntry).filter(Boolean);
+      persistSessionsToStorage(sessionsMemory);
+    }
+    return data;
   }
 
   function getCustomerContextPayload() {
@@ -96,6 +232,10 @@
     }
     if (shopDomain) {
       payload.shop = shopDomain;
+    }
+    const shopperId = getOrCreateShopperId();
+    if (shopperId) {
+      payload.shopper_id = shopperId;
     }
 
     return payload;
@@ -245,17 +385,12 @@
   }
 
   function readSessionsIndex() {
-    try {
-      const raw = localStorage.getItem(SESSIONS_INDEX_KEY);
-      const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
+    return Array.isArray(sessionsMemory) ? sessionsMemory.slice() : [];
   }
 
   function writeSessionsIndex(sessions) {
-    localStorage.setItem(SESSIONS_INDEX_KEY, JSON.stringify(Array.isArray(sessions) ? sessions : []));
+    sessionsMemory = Array.isArray(sessions) ? sessions.slice() : [];
+    persistSessionsToStorage(sessionsMemory);
   }
 
   function formatSessionDate(timestamp) {
@@ -731,6 +866,7 @@
           this.renderSessionsList();
           // Always scroll messages to bottom when opening
           this.scrollToBottom();
+          ShopAIChat.ThemeCart.importThemeCartIntoChat({ reason: 'chat-open' }).catch(() => {});
         } else {
           // Remove body class when closing
           document.body.classList.remove('shop-ai-chat-open');
@@ -927,15 +1063,13 @@
         this.updateGreeting();
         this.renderSessionsList();
 
-        if (isCustomerLoggedIn() && getLoggedInCustomerId()) {
-          Sessions.syncFromServer()
-            .then(() => {
-              if (this.currentView === 'home') {
-                this.renderSessionsList();
-              }
-            })
-            .catch(() => {});
-        }
+        resolveShopperSessionFromServer({ action: 'get' })
+          .then(() => {
+            if (this.currentView === 'home') {
+              this.renderSessionsList();
+            }
+          })
+          .catch(() => {});
       },
 
       showChatView: function() {
@@ -1007,11 +1141,20 @@
         if (!conversationId) return;
 
         this.pendingNewChat = false;
-        setConversationId(conversationId);
+        try {
+          await resolveShopperSessionFromServer({
+            action: 'activate',
+            conversation_id: conversationId
+          });
+        } catch (error) {
+          console.warn('[ShopAIChat] activate session failed', error?.message || error);
+          setConversationId(conversationId);
+        }
         this.clearMessages();
         this.showChatView();
-        await ShopAIChat.API.fetchChatHistory(conversationId, this.elements.messagesContainer);
+        await ShopAIChat.API.fetchChatHistory(getConversationId() || conversationId, this.elements.messagesContainer);
         this.renderSessionsList();
+        ShopAIChat.ThemeCart.importThemeCartIntoChat({ reason: 'load-session' }).catch(() => {});
       },
 
       /**
@@ -1557,13 +1700,19 @@
             ShopAIChat.UI.currentView === 'home' || ShopAIChat.UI.pendingNewChat;
 
           if (startingFromHome) {
-            conversationId = Date.now().toString();
-            setConversationId(conversationId);
+            const session = await resolveShopperSessionFromServer({ action: 'new' });
+            conversationId = session.conversation_id || getConversationId();
+            if (!conversationId) {
+              throw new Error('shopper-session did not return conversation_id');
+            }
             ShopAIChat.UI.clearMessages();
             ShopAIChat.UI.pendingNewChat = false;
           } else if (!conversationId) {
-            conversationId = Date.now().toString();
-            setConversationId(conversationId);
+            const session = await resolveShopperSessionFromServer({ action: 'get' });
+            conversationId = session.conversation_id || getConversationId();
+            if (!conversationId) {
+              throw new Error('shopper-session did not return conversation_id');
+            }
           }
 
           ShopAIChat.UI.showChatView();
@@ -1734,30 +1883,8 @@
           storefrontOrigin
         );
 
-        // Process Markdown links
-        const markdownLinkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
-        processedText = processedText.replace(markdownLinkRegex, (match, text, url) => {
-          const href = this.toAbsoluteUrl(String(url || '').trim());
-          if (!href) {
-            return text;
-          }
-
-          // Check if it's an auth URL
-          if (href.includes('shopify.com/authentication') &&
-             (href.includes('oauth/authorize') || href.includes('authentication'))) {
-            // Store the auth URL in a global variable for later use - this avoids issues with onclick handlers
-            window.shopAuthUrl = href;
-            // Just return normal link that will be handled by the document click handler
-            return '<a href="#auth" class="shop-auth-trigger">' + text + '</a>';
-          }
-          // If it's a checkout link, replace the text
-          else if (href.includes('/cart') || href.includes('checkout')) {
-            return '<a href="' + href + '" target="_blank" rel="noopener noreferrer">click here to proceed to checkout</a>';
-          } else {
-            // For normal links, preserve the original text
-            return '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + text + '</a>';
-          }
-        });
+        // Process Markdown links (including LLM typos that omit the closing ")").
+        processedText = this.replaceMarkdownLinks(processedText);
 
         // Convert text to HTML with proper list handling
         processedText = this.convertMarkdownToHtml(processedText);
@@ -1825,6 +1952,75 @@
         if (url.startsWith('/')) return window.location.origin + url;
         if (url.startsWith('mailto:') || url.startsWith('tel:')) return url;
         return url;
+      },
+
+      /**
+       * Strip trailing sentence punctuation the model often glues onto URLs.
+       */
+      cleanMarkdownHref: function(url) {
+        return String(url || '')
+          .trim()
+          .replace(/^<|>$/g, '')
+          .replace(/[.,;:!?'"”)\]\s]+$/g, '');
+      },
+
+      escapeHtmlAttr: function(value) {
+        return String(value || '')
+          .replace(/&/g, '&amp;')
+          .replace(/"/g, '&quot;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+      },
+
+      renderMarkdownAnchor: function(label, url) {
+        const href = this.toAbsoluteUrl(this.cleanMarkdownHref(url));
+        if (!href) return label;
+
+        if (
+          href.includes('shopify.com/authentication') &&
+          (href.includes('oauth/authorize') || href.includes('authentication'))
+        ) {
+          window.shopAuthUrl = href;
+          return '<a href="#auth" class="shop-auth-trigger">' + label + '</a>';
+        }
+
+        const safeHref = this.escapeHtmlAttr(href);
+        if (href.includes('/cart') || href.includes('checkout')) {
+          return (
+            '<a href="' +
+            safeHref +
+            '" target="_blank" rel="noopener noreferrer">click here to proceed to checkout</a>'
+          );
+        }
+
+        return (
+          '<a href="' +
+          safeHref +
+          '" target="_blank" rel="noopener noreferrer">' +
+          label +
+          '</a>'
+        );
+      },
+
+      /**
+       * Convert [text](url) to anchors. Also handles missing closing ")" on long URLs.
+       */
+      replaceMarkdownLinks: function(text) {
+        let processedText = String(text || '');
+
+        // Well-formed: [label](url)
+        processedText = processedText.replace(
+          /\[([^\]]+)\]\(([^)\s]+)\)/g,
+          (match, label, url) => this.renderMarkdownAnchor(label, url)
+        );
+
+        // Malformed / truncated: [label](https://... without ")"
+        processedText = processedText.replace(
+          /\[([^\]]+)\]\((https?:\/\/[^\s<\]]+)/g,
+          (match, label, url) => this.renderMarkdownAnchor(label, url)
+        );
+
+        return processedText;
       },
 
       /**
@@ -1914,6 +2110,14 @@
 
         try {
           const promptType = window.shopChatConfig?.promptType || "standardAssistant";
+          // Snapshot theme cart so the server can merge before any cart tools run.
+          let themeCartItems = [];
+          try {
+            themeCartItems = await ShopAIChat.ThemeCart.getThemeCartItems();
+          } catch (themeError) {
+            console.warn('[ShopAIChat] theme cart snapshot skipped', themeError?.message || themeError);
+          }
+
           const requestBody = JSON.stringify({
             ...(isInit ? { init: true } : { message: userMessage }),
             conversation_id: conversationId,
@@ -1921,6 +2125,7 @@
             ...(isInit && window.shopChatConfig?.welcomeMessage
               ? { welcome_template: window.shopChatConfig.welcomeMessage }
               : {}),
+            ...(themeCartItems.length ? { theme_cart_items: themeCartItems } : {}),
             ...getCustomerContextPayload()
           });
 
@@ -2110,6 +2315,12 @@
 
           case 'install_resources':
             ShopAIChat.UI.displayInstallResources(data);
+            break;
+
+          case 'theme_cart_sync':
+            ShopAIChat.ThemeCart.syncFromChatCart(data).catch((error) => {
+              console.warn('[ShopAIChat] theme cart sync failed', error?.message || error);
+            });
             break;
 
           case 'tool_use':
@@ -3339,6 +3550,409 @@
     },
 
     /**
+     * Mirror chat/UCP cart onto the Shopify theme Ajax cart (/cart.js).
+     * Already-removed theme lines are treated as no-ops (qty 0 / missing).
+     * Also imports theme → chat (merge) so manual theme items are not wiped.
+     */
+    ThemeCart: {
+      syncing: false,
+      importing: false,
+      suppressImportUntil: 0,
+      _listenersBound: false,
+      _importTimer: null,
+
+      cartRoot: function() {
+        const root = window.Shopify?.routes?.root;
+        if (typeof root === 'string' && root.length) {
+          return root.endsWith('/') ? root : `${root}/`;
+        }
+        return '/';
+      },
+
+      cartUrl: function(path) {
+        return `${this.cartRoot()}${String(path || '').replace(/^\//, '')}`;
+      },
+
+      toNumericVariantId: function(value) {
+        const raw = String(value || '').trim();
+        if (!raw) return null;
+        if (/^\d+$/.test(raw)) return raw;
+        const match = raw.match(/ProductVariant\/(\d+)/i);
+        return match ? match[1] : null;
+      },
+
+      ensureListeners: function() {
+        if (this._listenersBound) return;
+        this._listenersBound = true;
+
+        const onThemeCartEvent = (event) => {
+          const detail = event?.detail;
+          if (detail && typeof detail === 'object' && detail.source === 'shop-ai-chat') {
+            return;
+          }
+          this.scheduleImportFromTheme('theme-event');
+        };
+
+        document.addEventListener('cart:updated', onThemeCartEvent);
+        document.documentElement.addEventListener('cart:updated', onThemeCartEvent);
+        document.addEventListener('cart:refresh', onThemeCartEvent);
+      },
+
+      scheduleImportFromTheme: function(reason) {
+        if (this.syncing || this.importing) return;
+        if (Date.now() < (this.suppressImportUntil || 0)) return;
+
+        clearTimeout(this._importTimer);
+        this._importTimer = setTimeout(() => {
+          this.importThemeCartIntoChat({ reason: reason || 'scheduled' }).catch((error) => {
+            console.warn('[ShopAIChat] theme→chat import failed', error?.message || error);
+          });
+        }, 450);
+      },
+
+      getThemeCartItems: async function() {
+        const cart = await this.fetchThemeCart();
+        const byVariant = new Map();
+        (cart.items || []).forEach((line) => {
+          const id = this.toNumericVariantId(line.variant_id);
+          const qty = Math.max(0, Number(line.quantity) || 0);
+          if (!id || qty <= 0) return;
+          byVariant.set(id, (byVariant.get(id) || 0) + qty);
+        });
+        return Array.from(byVariant.entries()).map(([variant_id, quantity]) => ({
+          variant_id,
+          quantity
+        }));
+      },
+
+      /**
+       * Merge current theme Ajax cart into the conversation UCP cart (max qty per variant).
+       * Empty theme cart is a no-op (does not clear chat cart).
+       */
+      importThemeCartIntoChat: async function(options = {}) {
+        if (this.importing || this.syncing) return null;
+        if (Date.now() < (this.suppressImportUntil || 0) && !options.force) return null;
+
+        const conversationId = getConversationId();
+        if (!conversationId) return null;
+
+        this.importing = true;
+        try {
+          let items = [];
+          try {
+            items = await this.getThemeCartItems();
+          } catch (error) {
+            console.warn('[ShopAIChat] theme cart read failed', error?.message || error);
+            return null;
+          }
+
+          if (!items.length && !options.force) {
+            return { success: true, merged: false, empty: true, items: [] };
+          }
+
+          const apiBaseUrl = getApiBaseUrl();
+          const shopId = window.shopId;
+          const shopDomain = window.shopDomain;
+          const response = await fetch(`${apiBaseUrl}/chat/theme-cart-import`, {
+            method: 'POST',
+            headers: getApiHeaders({
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              'X-Shopify-Shop-Id': shopId,
+              ...(shopDomain ? { 'X-Shopify-Shop-Domain': shopDomain } : {})
+            }),
+            body: JSON.stringify({
+              conversation_id: conversationId,
+              items,
+              shop: shopDomain || undefined,
+              ...getCustomerContextPayload()
+            })
+          });
+
+          if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`theme-cart-import ${response.status} ${text}`.trim());
+          }
+
+          const result = await response.json();
+          console.log('[ShopAIChat] theme→chat import', {
+            reason: options.reason || null,
+            merged: result?.merged,
+            itemCount: result?.items?.length || 0
+          });
+
+          // If chat qty rose above theme (union max), bump theme without wiping extras.
+          if (result?.merged && Array.isArray(result.items) && result.items.length) {
+            await this.bumpThemeQuantitiesFromChat(result.items);
+          }
+
+          return result;
+        } finally {
+          this.importing = false;
+        }
+      },
+
+      /**
+       * Raise theme line qtys to match chat/UCP (never remove theme lines).
+       */
+      bumpThemeQuantitiesFromChat: async function(items) {
+        const desired = new Map();
+        (Array.isArray(items) ? items : []).forEach((item) => {
+          const id = this.toNumericVariantId(item?.variant_id);
+          const qty = Math.max(0, Number(item?.quantity) || 0);
+          if (!id || qty <= 0) return;
+          desired.set(id, (desired.get(id) || 0) + qty);
+        });
+        if (!desired.size) return;
+
+        this.suppressImportUntil = Date.now() + 2000;
+        const prevSyncing = this.syncing;
+        this.syncing = true;
+        try {
+          let cart = await this.fetchThemeCart();
+          const updates = {};
+          const present = new Set();
+
+          (cart.items || []).forEach((line) => {
+            const vid = String(line.variant_id);
+            present.add(vid);
+            if (desired.has(vid) && desired.get(vid) > Number(line.quantity || 0)) {
+              updates[vid] = desired.get(vid);
+            }
+          });
+
+          if (Object.keys(updates).length) {
+            cart = await this.postJson(this.cartUrl('cart/update.js'), { updates });
+          }
+
+          const toAdd = [];
+          desired.forEach((qty, vid) => {
+            if (!present.has(String(vid)) && qty > 0) {
+              toAdd.push({ id: Number(vid), quantity: qty });
+            }
+          });
+
+          if (toAdd.length) {
+            try {
+              await this.postJson(this.cartUrl('cart/add.js'), { items: toAdd });
+            } catch (addError) {
+              for (const item of toAdd) {
+                try {
+                  await this.postJson(this.cartUrl('cart/add.js'), { items: [item] });
+                } catch (oneError) {
+                  console.warn('[ShopAIChat] theme bump add skipped', item.id, oneError?.message || oneError);
+                }
+              }
+            }
+            cart = await this.fetchThemeCart();
+          }
+
+          await this.notifyThemeCartChanged(cart);
+        } finally {
+          this.syncing = prevSyncing;
+        }
+      },
+
+      /**
+       * @param {{ empty?: boolean, items?: Array<{ variant_id?: string, quantity?: number }> }} payload
+       */
+      syncFromChatCart: async function(payload) {
+        if (this.syncing) return;
+        this.syncing = true;
+        this.suppressImportUntil = Date.now() + 2000;
+
+        try {
+          const desired = new Map();
+          const sourceItems = Array.isArray(payload?.items) ? payload.items : [];
+
+          if (!payload?.empty) {
+            sourceItems.forEach((item) => {
+              const id = this.toNumericVariantId(item?.variant_id);
+              const qty = Math.max(0, Number(item?.quantity) || 0);
+              if (!id || qty <= 0) return;
+              desired.set(id, (desired.get(id) || 0) + qty);
+            });
+          }
+
+          // Empty chat cart → clear theme cart (no-op if already empty).
+          if (!desired.size) {
+            await this.clearThemeCart();
+            await this.notifyThemeCartChanged();
+            console.log('[ShopAIChat] theme cart synced (cleared)');
+            return;
+          }
+
+          let cart = await this.fetchThemeCart();
+          const updates = {};
+
+          (cart.items || []).forEach((line) => {
+            const vid = String(line.variant_id);
+            updates[vid] = desired.has(vid) ? desired.get(vid) : 0;
+          });
+
+          if (Object.keys(updates).length) {
+            cart = await this.postJson(this.cartUrl('cart/update.js'), { updates });
+          }
+
+          // Add variants that chat has but theme does not (or were already removed manually).
+          const toAdd = [];
+          desired.forEach((qty, vid) => {
+            const line = (cart.items || []).find((item) => String(item.variant_id) === String(vid));
+            if (!line && qty > 0) {
+              toAdd.push({ id: Number(vid), quantity: qty });
+            }
+          });
+
+          if (toAdd.length) {
+            try {
+              await this.postJson(this.cartUrl('cart/add.js'), { items: toAdd });
+            } catch (addError) {
+              console.warn('[ShopAIChat] theme cart bulk add failed, trying one-by-one', addError?.message || addError);
+              for (const item of toAdd) {
+                try {
+                  await this.postJson(this.cartUrl('cart/add.js'), { items: [item] });
+                } catch (oneError) {
+                  // Unavailable / already handled — ignore
+                  console.warn('[ShopAIChat] theme add skipped', item.id, oneError?.message || oneError);
+                }
+              }
+            }
+            cart = await this.fetchThemeCart();
+          }
+
+          await this.notifyThemeCartChanged(cart);
+          console.log('[ShopAIChat] theme cart synced', {
+            desired: Array.from(desired.entries()).map(([id, quantity]) => ({ id, quantity })),
+            themeCount: (cart.items || []).length
+          });
+        } finally {
+          this.syncing = false;
+        }
+      },
+
+      fetchThemeCart: async function() {
+        const response = await fetch(this.cartUrl('cart.js'), {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          credentials: 'same-origin'
+        });
+        if (!response.ok) {
+          throw new Error(`cart.js failed: ${response.status}`);
+        }
+        return response.json();
+      },
+
+      clearThemeCart: async function() {
+        try {
+          await this.postJson(this.cartUrl('cart/clear.js'), {});
+        } catch (error) {
+          // Already empty / theme without clear — try zeroing lines
+          const cart = await this.fetchThemeCart();
+          if (!(cart.items || []).length) return cart;
+          const updates = {};
+          (cart.items || []).forEach((line) => {
+            updates[String(line.variant_id)] = 0;
+          });
+          return this.postJson(this.cartUrl('cart/update.js'), { updates });
+        }
+        return this.fetchThemeCart();
+      },
+
+      postJson: async function(url, body) {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json'
+          },
+          credentials: 'same-origin',
+          body: JSON.stringify(body || {})
+        });
+        if (!response.ok) {
+          let detail = '';
+          try {
+            detail = await response.text();
+          } catch (e) {
+            // ignore
+          }
+          throw new Error(`${url} failed: ${response.status} ${detail}`.trim());
+        }
+        try {
+          return await response.json();
+        } catch (e) {
+          return {};
+        }
+      },
+
+      notifyThemeCartChanged: async function(cart) {
+        this.suppressImportUntil = Date.now() + 2000;
+
+        let latest = cart;
+        try {
+          if (!latest || !Array.isArray(latest.items)) {
+            latest = await this.fetchThemeCart();
+          }
+        } catch (e) {
+          latest = cart || null;
+        }
+
+        // Mark as our event so theme→chat import listeners ignore the echo.
+        if (latest && typeof latest === 'object') {
+          try {
+            latest.source = 'shop-ai-chat';
+          } catch (e) {
+            // ignore
+          }
+        }
+
+        try {
+          document.documentElement.dispatchEvent(
+            new CustomEvent('cart:updated', { bubbles: true, detail: latest })
+          );
+          document.dispatchEvent(
+            new CustomEvent('cart:updated', { bubbles: true, detail: latest })
+          );
+          document.dispatchEvent(
+            new CustomEvent('cart:refresh', { bubbles: true, detail: latest })
+          );
+        } catch (e) {
+          // ignore
+        }
+
+        // Common theme hooks
+        try {
+          if (typeof window.publish === 'function' && window.PUB_SUB_EVENTS?.cartUpdate) {
+            window.publish(window.PUB_SUB_EVENTS.cartUpdate, { cart: latest, source: 'shop-ai-chat' });
+          }
+        } catch (e) {
+          // ignore
+        }
+
+        try {
+          if (window.Shopify?.theme?.cart?.update) {
+            window.Shopify.theme.cart.update(latest);
+          }
+        } catch (e) {
+          // ignore
+        }
+
+        // Refresh cart count bubbles if present
+        try {
+          const count = latest?.item_count;
+          if (typeof count === 'number') {
+            document.querySelectorAll('[data-cart-count], .cart-count, .cart-count-bubble span').forEach((el) => {
+              if (el.childElementCount === 0 || el.matches('span')) {
+                el.textContent = String(count);
+              }
+            });
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+    },
+
+    /**
      * Product-related functionality
      */
     Product: {
@@ -3821,36 +4435,24 @@
 
       this.UI.init(container);
       await this.Config.load();
+      this.ThemeCart.ensureListeners();
+      clearLegacyConversationStorage();
 
-      // Logged-in: sync addresses to DB, then claim/load cross-device sessions
+      // Paint home/recent chats from local cache immediately (keyed by shopAiShopperId).
+      hydrateShopperCacheFromStorage();
+      this.UI.showHomeView();
+
+      // Logged-in address sync in background; session list refresh already started in showHomeView.
       if (isCustomerLoggedIn() && getLoggedInCustomerId()) {
-        await syncCustomerAddressesToServer();
-        await Sessions.syncFromServer();
+        syncCustomerAddressesToServer()
+          .then(() => resolveShopperSessionFromServer({ action: 'get' }))
+          .then(() => {
+            if (this.UI.currentView === 'home') {
+              this.UI.renderSessionsList();
+            }
+          })
+          .catch(() => {});
       }
-
-      const conversationId = getConversationId();
-      const sessions = Sessions.list();
-
-      // Register current session in index if missing
-      if (conversationId && !sessions.some((s) => s.id === conversationId)) {
-        Sessions.upsert(conversationId, { title: 'Chat', updatedAt: Date.now() });
-      }
-
-      if (conversationId) {
-        // Load history in background; show home until user picks a session or sends a message
-        const hasMessages = await this.API.sessionHasHistory(conversationId);
-        if (hasMessages) {
-          this.UI.pendingNewChat = false;
-          this.UI.showChatView();
-          await this.API.fetchChatHistory(conversationId, this.UI.elements.messagesContainer);
-        } else {
-          this.UI.showHomeView();
-        }
-      } else {
-        this.UI.showHomeView();
-      }
-
-      this.UI.renderSessionsList();
     }
   };
 
