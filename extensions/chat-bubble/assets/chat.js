@@ -43,6 +43,7 @@
   let conversationStorageMode = 'localStorage';
   let activeConversationId = null;
   let sessionsMemory = [];
+  let shopperSessionFetched = false;
 
   function getBrowserStore() {
     try {
@@ -208,6 +209,25 @@
       persistSessionsToStorage(sessionsMemory);
     }
     return data;
+  }
+
+  /**
+   * Fetch shopper-session at most once per page load.
+   * Conversation switches / new chats use localStorage + chat API bind.
+   */
+  async function resolveShopperSessionOnceOnLoad() {
+    if (shopperSessionFetched) return null;
+    shopperSessionFetched = true;
+    try {
+      return await resolveShopperSessionFromServer({ action: 'get' });
+    } catch (error) {
+      shopperSessionFetched = false;
+      throw error;
+    }
+  }
+
+  function createLocalConversationId() {
+    return String(Date.now());
   }
 
   function getCustomerContextPayload() {
@@ -1062,14 +1082,6 @@
         this.pendingNewChat = true;
         this.updateGreeting();
         this.renderSessionsList();
-
-        resolveShopperSessionFromServer({ action: 'get' })
-          .then(() => {
-            if (this.currentView === 'home') {
-              this.renderSessionsList();
-            }
-          })
-          .catch(() => {});
       },
 
       showChatView: function() {
@@ -1141,19 +1153,16 @@
         if (!conversationId) return;
 
         this.pendingNewChat = false;
-        try {
-          await resolveShopperSessionFromServer({
-            action: 'activate',
-            conversation_id: conversationId
-          });
-        } catch (error) {
-          console.warn('[ShopAIChat] activate session failed', error?.message || error);
-          setConversationId(conversationId);
-        }
+        // Use cached conversation id — history only; no shopper-session call.
+        setConversationId(conversationId);
         this.clearMessages();
         this.showChatView();
-        await ShopAIChat.API.fetchChatHistory(getConversationId() || conversationId, this.elements.messagesContainer);
         this.renderSessionsList();
+
+        await ShopAIChat.API.fetchChatHistory(
+          conversationId,
+          this.elements.messagesContainer
+        );
         ShopAIChat.ThemeCart.importThemeCartIntoChat({ reason: 'load-session' }).catch(() => {});
       },
 
@@ -1700,19 +1709,16 @@
             ShopAIChat.UI.currentView === 'home' || ShopAIChat.UI.pendingNewChat;
 
           if (startingFromHome) {
-            const session = await resolveShopperSessionFromServer({ action: 'new' });
-            conversationId = session.conversation_id || getConversationId();
-            if (!conversationId) {
-              throw new Error('shopper-session did not return conversation_id');
-            }
+            // New thread locally — chat API binds shopper_id / activeConversationId.
+            conversationId = createLocalConversationId();
+            setConversationId(conversationId);
+            Sessions.upsert(conversationId, { title: 'New chat', updatedAt: Date.now() });
             ShopAIChat.UI.clearMessages();
             ShopAIChat.UI.pendingNewChat = false;
           } else if (!conversationId) {
-            const session = await resolveShopperSessionFromServer({ action: 'get' });
-            conversationId = session.conversation_id || getConversationId();
-            if (!conversationId) {
-              throw new Error('shopper-session did not return conversation_id');
-            }
+            conversationId = createLocalConversationId();
+            setConversationId(conversationId);
+            Sessions.upsert(conversationId, { title: 'New chat', updatedAt: Date.now() });
           }
 
           ShopAIChat.UI.showChatView();
@@ -4442,16 +4448,19 @@
       hydrateShopperCacheFromStorage();
       this.UI.showHomeView();
 
-      // Logged-in address sync in background; session list refresh already started in showHomeView.
+      // One shopper-session call per page load — then rely on localStorage + chat bind.
+      resolveShopperSessionOnceOnLoad()
+        .then(() => {
+          if (this.UI.currentView === 'home') {
+            this.UI.renderSessionsList();
+          }
+        })
+        .catch((error) => {
+          console.warn('[ShopAIChat] shopper session resolve failed', error?.message || error);
+        });
+
       if (isCustomerLoggedIn() && getLoggedInCustomerId()) {
-        syncCustomerAddressesToServer()
-          .then(() => resolveShopperSessionFromServer({ action: 'get' }))
-          .then(() => {
-            if (this.UI.currentView === 'home') {
-              this.UI.renderSessionsList();
-            }
-          })
-          .catch(() => {});
+        syncCustomerAddressesToServer().catch(() => {});
       }
     }
   };
