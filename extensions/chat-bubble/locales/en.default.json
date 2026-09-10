@@ -26,6 +26,11 @@
     "voiceDenied": "Microphone access denied. Allow mic permission in browser settings.",
     "voiceReview": "Sending your message…",
     "speakStart": "Listen to response",
-    "speakStop": "Stop listening"
+    "speakStop": "Stop listening",
+    "copyMessage": "Copy",
+    "copyMessageDone": "Copied",
+    "messageTimeJustNow": "Just now",
+    "messageTimeMinuteAgo": "1m ago",
+    "messageTimeMinutesAgo": "{n}m ago"
   }
 }

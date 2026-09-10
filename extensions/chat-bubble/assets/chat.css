@@ -624,43 +624,54 @@
   border-bottom-left-radius: 6px;
 }
 
-.shop-ai-message.assistant.has-speak {
-  position: relative;
-  padding-right: 36px;
-  padding-bottom: 30px;
+.shop-ai-message-actions {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 88%;
+  margin: -4px 0 2px 4px;
+  min-height: 28px;
 }
 
-.shop-ai-speak-btn {
-  position: absolute;
-  right: 8px;
-  bottom: 6px;
+.shop-ai-message-action-btn {
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 999px;
+  border-radius: 8px;
   background: transparent;
-  color: #6B7280;
+  color: #9CA3AF;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   padding: 0;
+  flex-shrink: 0;
   transition: color 0.15s ease, background-color 0.15s ease;
 }
 
-.shop-ai-speak-btn:hover {
-  color: var(--shop-ai-brand);
+.shop-ai-message-action-btn:hover {
+  color: #4B5563;
   background: rgba(0, 0, 0, 0.04);
 }
 
-.shop-ai-speak-btn.is-speaking {
+.shop-ai-message-action-btn.is-speaking,
+.shop-ai-message-action-btn.is-copied {
   color: var(--shop-ai-brand);
-  background: var(--shop-ai-brand-border);
 }
 
-.shop-ai-speak-btn:focus-visible {
+.shop-ai-message-action-btn:focus-visible {
   outline: 2px solid var(--shop-ai-brand);
   outline-offset: 2px;
+}
+
+.shop-ai-message-time {
+  margin-left: 6px;
+  font-size: 11px;
+  line-height: 1;
+  color: #9CA3AF;
+  white-space: nowrap;
+  user-select: none;
 }
 
 .shop-ai-message.assistant:empty {

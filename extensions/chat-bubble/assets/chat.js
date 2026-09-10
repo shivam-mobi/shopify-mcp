@@ -1325,7 +1325,18 @@
           node = node.nextSibling;
         }
 
+        const actionsEl =
+          textEl.nextElementSibling &&
+          textEl.nextElementSibling.classList.contains('shop-ai-message-actions')
+            ? textEl.nextElementSibling
+            : null;
+
         lastProducts.parentNode.insertBefore(textEl, lastProducts);
+        if (actionsEl) {
+          lastProducts.parentNode.insertBefore(actionsEl, lastProducts);
+        } else if (ShopAIChat.Speak?.attachButton) {
+          ShopAIChat.Speak.attachButton(textEl);
+        }
       },
 
       isNonEmptyAssistant: function(el) {
@@ -1354,6 +1365,12 @@
         if (!el || !el.parentNode) return;
         if (!el.classList.contains('assistant')) return;
         if (String(el.dataset.rawText || el.textContent || '').trim()) return;
+        const actionsEl =
+          el.nextElementSibling &&
+          el.nextElementSibling.classList.contains('shop-ai-message-actions')
+            ? el.nextElementSibling
+            : null;
+        if (actionsEl) actionsEl.remove();
         el.remove();
       },
 
@@ -1374,6 +1391,7 @@
 
       appendHistoryMessage: function(message, messagesContainer) {
         const role = message.role === 'assistant' ? 'assistant' : 'user';
+        const createdAt = message.createdAt || message.created_at || null;
         let blocks = null;
 
         try {
@@ -1385,13 +1403,15 @@
 
         if (!blocks) {
           const text = String(message.content || '').trim();
-          if (text) ShopAIChat.Message.add(text, role, messagesContainer);
+          if (text) {
+            ShopAIChat.Message.add(text, role, messagesContainer, { createdAt });
+          }
           return;
         }
 
         blocks.forEach((contentBlock) => {
           if (contentBlock.type === 'text' && String(contentBlock.text || '').trim()) {
-            ShopAIChat.Message.add(contentBlock.text, role, messagesContainer);
+            ShopAIChat.Message.add(contentBlock.text, role, messagesContainer, { createdAt });
           } else if (contentBlock.type === 'product_results' && Array.isArray(contentBlock.products)) {
             this.displayProductResults(contentBlock.products);
           } else if (contentBlock.type === 'tool_use' && contentBlock.name) {
@@ -1400,6 +1420,25 @@
               messagesContainer
             );
           }
+        });
+      },
+
+      /**
+       * Ensure copy/speak/time rows exist under every assistant bubble (history reload safe).
+       */
+      reattachAssistantActions: function(messagesContainer) {
+        const root = messagesContainer || this.elements?.messagesContainer;
+        if (!root || !ShopAIChat.Speak?.attachButton) return;
+
+        root.querySelectorAll('.shop-ai-message.assistant').forEach((el) => {
+          const raw = String(el.dataset.rawText || '').trim();
+          const visible = String(el.textContent || '').trim();
+          if (!raw && !visible) return;
+          if (visible === 'Loading conversation history...') return;
+          if (!el.dataset.rawText && visible) {
+            el.dataset.rawText = visible;
+          }
+          ShopAIChat.Speak.attachButton(el);
         });
       },
 
@@ -1558,21 +1597,30 @@
        * @param {HTMLElement} messagesContainer - The messages container
        * @returns {HTMLElement} The created message element
        */
-      add: function(text, sender, messagesContainer) {
+      add: function(text, sender, messagesContainer, options = {}) {
         if (!String(text || '').trim()) return null;
 
         const messageElement = document.createElement('div');
         messageElement.classList.add('shop-ai-message', sender);
 
+        if (options.createdAt) {
+          const ts = new Date(options.createdAt).getTime();
+          if (!Number.isNaN(ts)) {
+            messageElement.dataset.messageAt = String(ts);
+          }
+        }
+
         if (sender === 'assistant') {
           messageElement.dataset.rawText = text;
+          // Append first so Speak actions can attach as a sibling under the bubble.
+          messagesContainer.appendChild(messageElement);
           ShopAIChat.Formatting.formatMessageContent(messageElement);
         } else {
           // Still send full text (with variant_id) to the API; hide GIDs in the bubble.
           messageElement.textContent = stripVariantIdForDisplay(text);
+          messagesContainer.appendChild(messageElement);
         }
 
-        messagesContainer.appendChild(messageElement);
         ShopAIChat.UI.scrollToBottom();
 
         return messageElement;
@@ -2173,6 +2221,9 @@
           data.messages.forEach(message => {
             ShopAIChat.UI.appendHistoryMessage(message, messagesContainer);
           });
+
+          // History / session switches can miss action rows — re-attach after full render.
+          ShopAIChat.UI.reattachAssistantActions(messagesContainer);
 
           // Scroll to bottom
           ShopAIChat.UI.scrollToBottom();
@@ -2839,23 +2890,43 @@
     },
 
     /**
-     * Browser text-to-speech for assistant replies
+     * Assistant read-aloud: prefers Edge TTS via /chat/speak, falls back to browser TTS.
      */
     Speak: {
       utterance: null,
       activeButton: null,
       speakTimer: null,
+      audio: null,
+      audioUrl: null,
+      speakRequestId: 0,
 
       getLabel: function(key, fallback) {
         return window.shopChatConfig?.[key] || fallback;
       },
 
-      isSupported: function() {
+      isBrowserTtsSupported: function() {
         return Boolean(
           typeof window !== 'undefined' &&
           window.speechSynthesis &&
           typeof window.SpeechSynthesisUtterance === 'function'
         );
+      },
+
+      /** Always show speaker — Edge TTS works even when browser voices are missing. */
+      isSupported: function() {
+        return true;
+      },
+
+      isPlaying: function() {
+        if (this.audio && !this.audio.paused && !this.audio.ended) return true;
+        if (
+          typeof window !== 'undefined' &&
+          window.speechSynthesis &&
+          (window.speechSynthesis.speaking || window.speechSynthesis.pending)
+        ) {
+          return true;
+        }
+        return false;
       },
 
       stripForSpeech: function(text) {
@@ -2889,8 +2960,17 @@
         }
 
         const clone = element.cloneNode(true);
-        clone.querySelectorAll('.shop-ai-speak-btn').forEach((btn) => btn.remove());
+        clone.querySelectorAll('.shop-ai-message-actions, .shop-ai-speak-btn, .shop-ai-message-action-btn').forEach((btn) => btn.remove());
         return this.stripForSpeech(clone.textContent || '');
+      },
+
+      copyIconHtml: function() {
+        return (
+          '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+          '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>' +
+          '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>' +
+          '</svg>'
+        );
       },
 
       speakIconHtml: function() {
@@ -2906,58 +2986,173 @@
         );
       },
 
+      formatMessageTime: function(timestamp) {
+        const date = new Date(Number(timestamp) || Date.now());
+        if (Number.isNaN(date.getTime())) return '';
+
+        const diffMs = Date.now() - date.getTime();
+        if (diffMs < 45 * 1000) {
+          return this.getLabel('messageTimeJustNowLabel', 'Just now');
+        }
+        if (diffMs < 60 * 60 * 1000) {
+          const mins = Math.max(1, Math.floor(diffMs / 60000));
+          return mins === 1
+            ? this.getLabel('messageTimeMinuteAgoLabel', '1m ago')
+            : String(this.getLabel('messageTimeMinutesAgoLabel', '{n}m ago')).replace('{n}', String(mins));
+        }
+
+        try {
+          return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        } catch (error) {
+          return date.toLocaleTimeString();
+        }
+      },
+
+      getActionsRow: function(element) {
+        if (!element || !element.parentNode) return null;
+        const next = element.nextElementSibling;
+        if (next && next.classList.contains('shop-ai-message-actions')) {
+          return next;
+        }
+        return null;
+      },
+
+      removeActionsRow: function(element) {
+        const row = this.getActionsRow(element);
+        if (row) row.remove();
+        if (element) element.classList.remove('has-speak');
+      },
+
+      /**
+       * Claude-style row under the bubble: copy, speak, time (outside the message).
+       */
       attachButton: function(element) {
-        if (!element || !element.classList.contains('assistant')) return;
+        if (!element || !element.classList.contains('assistant') || !element.parentNode) return;
 
         if (this.activeButton && !this.activeButton.isConnected) {
           this.stop();
         }
 
-        if (!this.isSupported()) {
-          element.classList.remove('has-speak');
-          return;
-        }
-
         const text = this.plainTextFromMessage(element);
-        const existing = element.querySelector('.shop-ai-speak-btn');
-
         if (!text) {
-          if (existing) existing.remove();
-          element.classList.remove('has-speak');
+          this.removeActionsRow(element);
           return;
         }
 
-        if (existing) {
+        if (!element.dataset.messageAt) {
+          element.dataset.messageAt = String(Date.now());
+        }
+
+        let actions = this.getActionsRow(element);
+        if (!actions) {
+          actions = document.createElement('div');
+          actions.className = 'shop-ai-message-actions';
+          element.parentNode.insertBefore(actions, element.nextSibling);
+        }
+
+        // Copy
+        let copyBtn = actions.querySelector('.shop-ai-copy-btn');
+        if (!copyBtn) {
+          copyBtn = document.createElement('button');
+          copyBtn.type = 'button';
+          copyBtn.className = 'shop-ai-message-action-btn shop-ai-copy-btn';
+          copyBtn.innerHTML = this.copyIconHtml();
+          const copyLabel = this.getLabel('copyMessageLabel', 'Copy');
+          copyBtn.setAttribute('aria-label', copyLabel);
+          copyBtn.setAttribute('title', copyLabel);
+          copyBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.copyMessage(element, copyBtn);
+          });
+          actions.appendChild(copyBtn);
+        }
+
+        // Speak (only when TTS is available)
+        let speakBtn = actions.querySelector('.shop-ai-speak-btn');
+        if (this.isSupported()) {
+          if (!speakBtn) {
+            speakBtn = document.createElement('button');
+            speakBtn.type = 'button';
+            speakBtn.className = 'shop-ai-message-action-btn shop-ai-speak-btn';
+            speakBtn.innerHTML = this.speakIconHtml();
+            const startLabel = this.getLabel('speakStartLabel', 'Listen to response');
+            speakBtn.setAttribute('aria-label', startLabel);
+            speakBtn.setAttribute('title', startLabel);
+            speakBtn.addEventListener('click', (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              this.toggle(element, speakBtn);
+            });
+            actions.appendChild(speakBtn);
+          }
           element.classList.add('has-speak');
+        } else if (speakBtn) {
+          speakBtn.remove();
+          element.classList.remove('has-speak');
+        }
+
+        // Time
+        let timeEl = actions.querySelector('.shop-ai-message-time');
+        if (!timeEl) {
+          timeEl = document.createElement('span');
+          timeEl.className = 'shop-ai-message-time';
+          actions.appendChild(timeEl);
+        }
+        timeEl.textContent = this.formatMessageTime(element.dataset.messageAt);
+      },
+
+      copyMessage: function(element, button) {
+        const text = this.plainTextFromMessage(element);
+        if (!text) return;
+
+        const doneLabel = this.getLabel('copyMessageDoneLabel', 'Copied');
+        const copyLabel = this.getLabel('copyMessageLabel', 'Copy');
+
+        const markCopied = () => {
+          if (!button) return;
+          button.classList.add('is-copied');
+          button.setAttribute('aria-label', doneLabel);
+          button.setAttribute('title', doneLabel);
+          clearTimeout(button._copyResetTimer);
+          button._copyResetTimer = setTimeout(() => {
+            button.classList.remove('is-copied');
+            button.setAttribute('aria-label', copyLabel);
+            button.setAttribute('title', copyLabel);
+          }, 1600);
+        };
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(markCopied).catch(() => {
+            this.copyMessageFallback(text, markCopied);
+          });
           return;
         }
 
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'shop-ai-speak-btn';
-        button.innerHTML = this.speakIconHtml();
+        this.copyMessageFallback(text, markCopied);
+      },
 
-        const startLabel = this.getLabel('speakStartLabel', 'Listen to response');
-        button.setAttribute('aria-label', startLabel);
-        button.setAttribute('title', startLabel);
-
-        button.addEventListener('click', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          this.toggle(element, button);
-        });
-
-        element.appendChild(button);
-        element.classList.add('has-speak');
+      copyMessageFallback: function(text, onDone) {
+        try {
+          const area = document.createElement('textarea');
+          area.value = text;
+          area.setAttribute('readonly', '');
+          area.style.position = 'fixed';
+          area.style.left = '-9999px';
+          document.body.appendChild(area);
+          area.select();
+          document.execCommand('copy');
+          area.remove();
+          if (typeof onDone === 'function') onDone();
+        } catch (error) {
+          // ignore copy failures
+        }
       },
 
       toggle: function(element, button) {
         if (!button) return;
 
-        const isActive =
-          this.activeButton === button &&
-          window.speechSynthesis &&
-          (window.speechSynthesis.speaking || window.speechSynthesis.pending);
+        const isActive = this.activeButton === button && this.isPlaying();
 
         if (isActive) {
           this.stop();
@@ -2968,7 +3163,7 @@
       },
 
       speak: function(element, button) {
-        if (!this.isSupported() || !element || !button) return;
+        if (!element || !button) return;
 
         const text = this.plainTextFromMessage(element);
         if (!text) return;
@@ -2978,6 +3173,77 @@
         }
 
         this.stop();
+
+        this.activeButton = button;
+        this.setSpeakingState(button, true);
+        const requestId = ++this.speakRequestId;
+
+        this.speakWithEdge(text, button, requestId).then((ok) => {
+          if (requestId !== this.speakRequestId) return;
+          if (ok) return;
+
+          if (this.isBrowserTtsSupported()) {
+            this.speakWithBrowser(text, button, requestId);
+          } else {
+            this.clearSpeakingState();
+          }
+        });
+      },
+
+      speakWithEdge: async function(text, button, requestId) {
+        try {
+          const apiBaseUrl = getApiBaseUrl();
+          const response = await fetch(`${apiBaseUrl}/chat/speak`, {
+            method: 'POST',
+            headers: getApiHeaders({
+              'Content-Type': 'application/json',
+              Accept: 'audio/mpeg'
+            }),
+            body: JSON.stringify({ text })
+          });
+
+          if (requestId !== this.speakRequestId) return false;
+
+          if (!response.ok) {
+            console.warn('[Speak] Edge TTS HTTP', response.status);
+            return false;
+          }
+
+          const blob = await response.blob();
+          if (requestId !== this.speakRequestId) return false;
+          if (!blob || !blob.size) return false;
+
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          this.audio = audio;
+          this.audioUrl = url;
+
+          audio.onended = () => {
+            if (this.audio === audio) {
+              this.clearAudio();
+              this.clearSpeakingState();
+            }
+          };
+          audio.onerror = () => {
+            if (this.audio === audio) {
+              this.clearAudio();
+              this.clearSpeakingState();
+            }
+          };
+
+          await audio.play();
+          return true;
+        } catch (error) {
+          console.warn('[Speak] Edge TTS failed', error?.message || error);
+          return false;
+        }
+      },
+
+      speakWithBrowser: function(text, button, requestId) {
+        if (!this.isBrowserTtsSupported()) {
+          this.clearSpeakingState();
+          return;
+        }
 
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = document.documentElement.lang || navigator.language || 'en-US';
@@ -2999,6 +3265,7 @@
 
         clearTimeout(this.speakTimer);
         this.speakTimer = setTimeout(() => {
+          if (requestId !== this.speakRequestId) return;
           try {
             window.speechSynthesis.speak(utterance);
           } catch (error) {
@@ -3007,9 +3274,32 @@
         }, 40);
       },
 
+      clearAudio: function() {
+        if (this.audio) {
+          try {
+            this.audio.pause();
+            this.audio.removeAttribute('src');
+            this.audio.load();
+          } catch (error) {
+            // ignore
+          }
+          this.audio = null;
+        }
+        if (this.audioUrl) {
+          try {
+            URL.revokeObjectURL(this.audioUrl);
+          } catch (error) {
+            // ignore
+          }
+          this.audioUrl = null;
+        }
+      },
+
       stop: function() {
+        this.speakRequestId += 1;
         clearTimeout(this.speakTimer);
         this.speakTimer = null;
+        this.clearAudio();
 
         if (typeof window !== 'undefined' && window.speechSynthesis) {
           try {
@@ -3019,6 +3309,7 @@
           }
         }
 
+        this.utterance = null;
         this.clearSpeakingState();
       },
 
