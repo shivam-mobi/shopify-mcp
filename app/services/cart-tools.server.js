@@ -461,7 +461,25 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
   }
 
   const merged = mergeLineItems(live.cart.line_items || [], [newItem]);
-  const response = await updateCartLineItems(
+  const expectedQty =
+    merged.find((line) => normalizeVariantId(line?.item?.id) === variantId)?.quantity ||
+    qty;
+
+  console.log("[cart-wrapper] add_to_cart merge", {
+    conversationId,
+    variantId,
+    beforeLines: (live.cart.line_items || []).map((line) => ({
+      id: line?.item?.id,
+      quantity: line?.quantity
+    })),
+    merged: merged.map((line) => ({
+      id: line?.item?.id,
+      quantity: line?.quantity
+    })),
+    expectedQty
+  });
+
+  let response = await updateCartLineItems(
     mcpClient,
     conversationId,
     live.cartId,
@@ -473,17 +491,65 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
   // (some responses omit new lines / stale fulfillment).
   let verified = null;
   let verifiedCart = extractCartPayload(response);
-  let added = (verifiedCart?.line_items || []).some(
-    (line) => line?.item?.id === variantId
-  );
+  let addedQty = totalQtyForVariant(verifiedCart?.line_items, variantId);
+  const duplicateLines = (verifiedCart?.line_items || []).filter(
+    (line) => normalizeVariantId(line?.item?.id) === variantId
+  ).length;
 
-  if (!added) {
+  // Shopify sometimes returns duplicate lines (qty 1 + qty 1) instead of one line qty 2.
+  // Coalesce and write back so cart/checkout stay correct.
+  if (
+    verifiedCart &&
+    (duplicateLines > 1 || addedQty < expectedQty)
+  ) {
+    const coalesced = mergeLineItems(verifiedCart.line_items || [], []);
+    const target = coalesced.find(
+      (line) => normalizeVariantId(line?.item?.id) === variantId
+    );
+    if (target && target.quantity < expectedQty) {
+      target.quantity = expectedQty;
+    }
+    response = await updateCartLineItems(
+      mcpClient,
+      conversationId,
+      live.cartId,
+      verifiedCart,
+      coalesced
+    );
+    verifiedCart = extractCartPayload(response) || verifiedCart;
+    addedQty = totalQtyForVariant(verifiedCart?.line_items, variantId);
+  }
+
+  if (addedQty < expectedQty) {
     verified = await fetchLiveCart(mcpClient, conversationId);
     verifiedCart = verified?.cart || verifiedCart;
-    added = (verifiedCart?.line_items || []).some(
-      (line) => line?.item?.id === variantId
-    );
+    addedQty = totalQtyForVariant(verifiedCart?.line_items, variantId);
+
+    if (verifiedCart && addedQty < expectedQty) {
+      const coalesced = mergeLineItems(
+        [...(verifiedCart.line_items || []), newItem],
+        []
+      );
+      const target = coalesced.find(
+        (line) => normalizeVariantId(line?.item?.id) === variantId
+      );
+      if (target && target.quantity < expectedQty) {
+        target.quantity = expectedQty;
+      }
+      response = await updateCartLineItems(
+        mcpClient,
+        conversationId,
+        live.cartId,
+        verifiedCart,
+        coalesced
+      );
+      verified = await fetchLiveCart(mcpClient, conversationId);
+      verifiedCart = verified?.cart || extractCartPayload(response);
+      addedQty = totalQtyForVariant(verifiedCart?.line_items, variantId);
+    }
   }
+
+  const added = addedQty >= expectedQty;
 
   console.log("[cart-wrapper] add_to_cart", {
     conversationId,
@@ -491,19 +557,22 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
     before: live.cart.line_items?.length || 0,
     merged: merged.length,
     after: verifiedCart?.line_items?.length || 0,
+    expectedQty,
+    addedQty,
     added,
     reFetched: Boolean(verified)
   });
 
   if (!added) {
+    const aggregated = sumQuantitiesByVariant(verifiedCart?.line_items || []);
     return toolResult({
       success: false,
       shipping_saved: false,
       variant_id: variantId,
-      items: (verifiedCart?.line_items || []).map((line) => ({
-        title: line.item?.title || "Product",
-        quantity: line.quantity || 1,
-        variant_id: line.item?.id
+      items: Array.from(aggregated.values()).map((entry) => ({
+        title: entry.title || "Product",
+        quantity: entry.quantity,
+        variant_id: entry.item.id
       })),
       issues: [
         "Shopify did not add that product to the cart. It may be unavailable for purchase right now."
@@ -546,10 +615,10 @@ async function removeFromCart(
     );
   }
 
-  const targetLine = live.cart.line_items.find(
-    (line) => line?.item?.id === removeVariantId
-  );
-  const currentQty = Math.max(1, Number(targetLine?.quantity) || 1);
+  // Sum across Buy X Get Y split lines for this variant.
+  const coalesced = sumQuantitiesByVariant(live.cart.line_items);
+  const targetEntry = coalesced.get(removeVariantId);
+  const currentQty = Math.max(1, Number(targetEntry?.quantity) || 1);
   const userMessage = String(context.userMessage || "");
 
   // Default: reduce by 1. Full delete only with remove_all:true (or clear intent in user text).
@@ -569,19 +638,21 @@ async function removeFromCart(
 
   let lineItems;
   if (nextQty <= 0) {
-    lineItems = toWritableLineItems(
-      live.cart.line_items.filter((line) => line?.item?.id !== removeVariantId)
-    );
+    coalesced.delete(removeVariantId);
+    lineItems = Array.from(coalesced.values()).map((entry) => ({
+      quantity: entry.quantity,
+      item: { id: entry.item.id }
+    }));
   } else {
-    lineItems = toWritableLineItems(
-      live.cart.line_items.map((line) => {
-        if (line?.item?.id !== removeVariantId) return line;
-        return {
-          ...line,
-          quantity: nextQty
-        };
-      })
-    );
+    coalesced.set(removeVariantId, {
+      quantity: nextQty,
+      item: { id: removeVariantId },
+      title: targetEntry?.title || "Product"
+    });
+    lineItems = Array.from(coalesced.values()).map((entry) => ({
+      quantity: entry.quantity,
+      item: { id: entry.item.id }
+    }));
   }
 
   const response = await updateCartLineItems(
@@ -595,13 +666,9 @@ async function removeFromCart(
   // Prefer update_cart payload; re-fetch only if Shopify response doesn't reflect the change.
   let cartForSummary = extractCartPayload(response);
   let rawForSummary = response;
-  const targetAfter = (cartForSummary?.line_items || []).find(
-    (line) => line?.item?.id === removeVariantId
-  );
+  const qtyAfter = totalQtyForVariant(cartForSummary?.line_items, removeVariantId);
   const qtyMatches =
-    nextQty <= 0
-      ? !targetAfter
-      : Number(targetAfter?.quantity) === nextQty;
+    nextQty <= 0 ? qtyAfter === 0 : qtyAfter === Math.max(0, nextQty);
 
   if (!qtyMatches) {
     const verified = await fetchLiveCart(mcpClient, conversationId);
@@ -673,29 +740,23 @@ async function updateCartItems(mcpClient, conversationId, toolArgs = {}) {
   }
 
   /** @type {Map<string, { quantity: number, item: { id: string }, title?: string }>} */
-  const byVariant = new Map();
-  for (const line of live.cart.line_items) {
-    const variantId = line?.item?.id;
-    if (!variantId) continue;
-    byVariant.set(variantId, {
-      quantity: Math.max(1, Number(line.quantity) || 1),
-      item: { id: variantId },
-      title: line.item?.title || "Product"
-    });
-  }
+  // Buy X Get Y can return multiple CartLines for one variant — sum, never overwrite.
+  const byVariant = sumQuantitiesByVariant(live.cart.line_items);
 
   const changes = [];
   const issues = [];
 
   const applyQty = (variantId, nextQty, title) => {
-    const prev = byVariant.get(variantId);
+    const id = normalizeVariantId(variantId);
+    if (!id) return;
+    const prev = byVariant.get(id);
     const previousQuantity = prev ? prev.quantity : 0;
     const safeNext = Math.max(0, Number(nextQty) || 0);
 
     if (safeNext <= 0) {
-      byVariant.delete(variantId);
+      byVariant.delete(id);
       changes.push({
-        variant_id: variantId,
+        variant_id: id,
         title: title || prev?.title || "Product",
         action: "removed",
         previous_quantity: previousQuantity,
@@ -704,13 +765,13 @@ async function updateCartItems(mcpClient, conversationId, toolArgs = {}) {
       return;
     }
 
-    byVariant.set(variantId, {
+    byVariant.set(id, {
       quantity: safeNext,
-      item: { id: variantId },
+      item: { id },
       title: title || prev?.title || "Product"
     });
     changes.push({
-      variant_id: variantId,
+      variant_id: id,
       title: title || prev?.title || "Product",
       action: previousQuantity === 0 ? "added" : "updated",
       previous_quantity: previousQuantity,
@@ -808,17 +869,16 @@ async function updateCartItems(mcpClient, conversationId, toolArgs = {}) {
   let cartForSummary = extractCartPayload(response);
   let rawForSummary = response;
 
-  // Verify expected line count / qtys; re-fetch only if Shopify response looks incomplete.
+  // Verify expected TOTAL qty per variant (Shopify may re-split discount lines).
   const expectedByVariant = new Map(
-    lineItems.map((line) => [line.item.id, line.quantity])
+    lineItems.map((line) => [normalizeVariantId(line.item.id), line.quantity])
   );
-  const actualLines = cartForSummary?.line_items || [];
+  const actualByVariant = sumQuantitiesByVariant(cartForSummary?.line_items || []);
   const looksComplete =
-    actualLines.length === expectedByVariant.size &&
-    actualLines.every((line) => {
-      const id = line?.item?.id;
-      if (!id || !expectedByVariant.has(id)) return false;
-      return Number(line.quantity) === expectedByVariant.get(id);
+    actualByVariant.size === expectedByVariant.size &&
+    Array.from(expectedByVariant.entries()).every(([id, qty]) => {
+      const actual = actualByVariant.get(id);
+      return actual && Number(actual.quantity) === Number(qty);
     });
 
   if (!looksComplete) {
@@ -912,9 +972,11 @@ export async function appendFinalCartSnapshot(
 }
 
 /**
- * Merge storefront theme cart lines into the conversation UCP cart.
- * Rule: per variant qty = max(chatQty, themeQty) so neither side loses items.
- * Empty theme payload is a no-op (does not wipe chat cart).
+ * Sync storefront theme cart → conversation UCP cart.
+ * Theme cart is the source of truth for this direction:
+ * - empty theme cart → clear chatbot cart
+ * - otherwise chatbot cart is replaced to match theme variants/qty
+ * Chat → theme still happens separately via theme_cart_sync after chat adds.
  */
 export async function mergeThemeCartIntoConversation(
   mcpClient,
@@ -935,23 +997,39 @@ export async function mergeThemeCartIntoConversation(
     incoming.push({ quantity, item: { id: variantId } });
   });
 
+  // Theme empty → customer cleared the store cart → clear chatbot cart too.
   if (!incoming.length) {
     const live = await fetchLiveCart(mcpClient, conversationId);
-    const items = (live?.cart?.line_items || []).map((line) => ({
-      title: line.item?.title || "Product",
-      quantity: line.quantity || 1,
-      variant_id: line.item?.id
-    }));
+    if (!live?.cart?.line_items?.length) {
+      return {
+        success: true,
+        merged: false,
+        empty: true,
+        cleared: false,
+        items: [],
+        message: "Theme cart and chat cart are both empty."
+      };
+    }
+
+    await clearMyCart(mcpClient, conversationId);
+    console.log("[cart-wrapper] theme_cart_import cleared chat cart (theme empty)", {
+      conversationId
+    });
+
     return {
       success: true,
-      merged: false,
-      empty: !items.length,
-      items,
-      message: "No theme cart items to import."
+      merged: true,
+      empty: true,
+      cleared: true,
+      items: [],
+      message: "Theme cart was empty — chatbot cart cleared."
     };
   }
 
   const live = await fetchLiveCart(mcpClient, conversationId);
+  const themeByVariant = new Map(
+    incoming.map((item) => [item.item.id, Math.max(1, Number(item.quantity) || 1)])
+  );
 
   if (!live) {
     const response = await mcpClient.callTool("create_cart", {
@@ -979,55 +1057,43 @@ export async function mergeThemeCartIntoConversation(
     };
   }
 
-  const byVariant = new Map();
+  const chatByVariant = new Map();
   (live.cart.line_items || []).forEach((line) => {
-    const id = line?.item?.id;
+    const id = normalizeVariantId(line?.item?.id);
     if (!id) return;
-    byVariant.set(id, {
-      quantity: Math.max(1, Number(line.quantity) || 1),
-      item: { id },
-      title: line.item?.title || "Product"
-    });
+    const qty = Math.max(1, Number(line.quantity) || 1);
+    chatByVariant.set(id, (chatByVariant.get(id) || 0) + qty);
   });
 
-  let changed = false;
-  incoming.forEach((item) => {
-    const id = item.item.id;
-    const themeQty = Math.max(1, Number(item.quantity) || 1);
-    const existing = byVariant.get(id);
-    if (!existing) {
-      byVariant.set(id, {
-        quantity: themeQty,
-        item: { id },
-        title: "Product"
-      });
-      changed = true;
-      return;
+  let changed = chatByVariant.size !== themeByVariant.size;
+  if (!changed) {
+    for (const [id, qty] of themeByVariant.entries()) {
+      if (Number(chatByVariant.get(id) || 0) !== qty) {
+        changed = true;
+        break;
+      }
     }
-    if (themeQty > existing.quantity) {
-      existing.quantity = themeQty;
-      changed = true;
-    }
-  });
+  }
 
   if (!changed) {
-    const items = Array.from(byVariant.values()).map((entry) => ({
-      title: entry.title,
-      quantity: entry.quantity,
-      variant_id: entry.item.id
+    const items = (live.cart.line_items || []).map((line) => ({
+      title: line.item?.title || "Product",
+      quantity: line.quantity || 1,
+      variant_id: line.item?.id
     }));
     return {
       success: true,
       merged: false,
       empty: !items.length,
       items,
-      message: "Chat cart already includes theme items."
+      message: "Chat cart already matches theme cart."
     };
   }
 
-  const lineItems = Array.from(byVariant.values()).map((entry) => ({
-    quantity: entry.quantity,
-    item: { id: entry.item.id }
+  // Replace chat cart with exact theme contents (priority to theme).
+  const lineItems = Array.from(themeByVariant.entries()).map(([id, quantity]) => ({
+    quantity,
+    item: { id }
   }));
 
   const response = await updateCartLineItems(
@@ -1044,7 +1110,7 @@ export async function mergeThemeCartIntoConversation(
     Array.isArray(cart?.line_items) &&
     cart.line_items.length === expected.size &&
     cart.line_items.every((line) => {
-      const id = line?.item?.id;
+      const id = normalizeVariantId(line?.item?.id);
       return id && expected.has(id) && Number(line.quantity) === expected.get(id);
     });
 
@@ -1053,14 +1119,13 @@ export async function mergeThemeCartIntoConversation(
     if (verified?.cart) cart = verified.cart;
   }
 
-  // Skip checkout sync here — next add/remove/get_my_cart will align checkout.
   const items = (cart?.line_items || []).map((line) => ({
     title: line.item?.title || "Product",
     quantity: line.quantity || 1,
     variant_id: line.item?.id
   }));
 
-  console.log("[cart-wrapper] theme_cart_import merged", {
+  console.log("[cart-wrapper] theme_cart_import replaced chat from theme", {
     conversationId,
     themeCount: incoming.length,
     itemCount: items.length,
@@ -2950,22 +3015,71 @@ function normalizeVariantId(id) {
     return null;
   }
 
-  if (trimmed.includes("ProductVariant")) {
-    return trimmed;
+  if (trimmed.startsWith("gid://shopify/ProductVariant/")) {
+    return trimmed.split("?")[0];
   }
 
   if (/^\d+$/.test(trimmed)) {
     return `gid://shopify/ProductVariant/${trimmed}`;
   }
 
-  return trimmed;
+  const match = trimmed.match(/ProductVariant\/(\d+)/);
+  if (match) {
+    return `gid://shopify/ProductVariant/${match[1]}`;
+  }
+
+  return trimmed.split("?")[0];
+}
+
+/**
+ * Buy X Get Y (and similar) can split one ProductVariant across multiple CartLines.
+ * Always sum by variant id — never let Map.set overwrite and drop qty.
+ */
+function sumQuantitiesByVariant(lineItems = []) {
+  /** @type {Map<string, { quantity: number, item: { id: string }, title?: string }>} */
+  const byVariant = new Map();
+
+  for (const line of lineItems || []) {
+    const variantId = normalizeVariantId(line?.item?.id || line?.variant_id);
+    if (!variantId) continue;
+    const qty = Math.max(1, Number(line.quantity) || 1);
+    const existing = byVariant.get(variantId);
+    if (existing) {
+      existing.quantity += qty;
+      if (!existing.title && line?.item?.title) {
+        existing.title = line.item.title;
+      }
+    } else {
+      byVariant.set(variantId, {
+        quantity: qty,
+        item: { id: variantId },
+        title: line?.item?.title || "Product"
+      });
+    }
+  }
+
+  return byVariant;
+}
+
+function totalQtyForVariant(lineItems, variantId) {
+  const normalized = normalizeVariantId(variantId);
+  if (!normalized) return 0;
+  let total = 0;
+  for (const line of lineItems || []) {
+    if (normalizeVariantId(line?.item?.id) === normalized) {
+      total += Math.max(1, Number(line.quantity) || 1);
+    }
+  }
+  return total;
 }
 
 function resolveRemoveVariantId(lineItems, { variant_id, product_title }) {
   if (variant_id) {
     const normalized = normalizeVariantId(variant_id);
-    const match = lineItems.find((line) => line?.item?.id === normalized);
-    return match?.item?.id || null;
+    const match = (lineItems || []).find(
+      (line) => normalizeVariantId(line?.item?.id) === normalized
+    );
+    return normalizeVariantId(match?.item?.id) || normalized;
   }
 
   if (!product_title) {
@@ -3000,7 +3114,7 @@ function resolveRemoveVariantId(lineItems, { variant_id, product_title }) {
     return null;
   }
 
-  return best.line.item?.id || null;
+  return normalizeVariantId(best.line.item?.id) || null;
 }
 
 const SHIPPING_FIELD_LABELS = {

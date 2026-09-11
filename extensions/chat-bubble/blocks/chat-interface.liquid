@@ -1,4 +1,4 @@
-<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=top-cards-1">
+<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=cart-qty-fix-1">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
 {% assign brand_color = block.settings.chat_bubble_color | default: '#00BCF2' %}
@@ -13,7 +13,7 @@
 
 <div
   class="shop-ai-chat-container"
-  data-shop-ai-assets="top-cards-1"
+  data-shop-ai-assets="cart-qty-fix-1"
   style="--shop-ai-brand: {{ brand_color }};"
 >
   <!-- Floating launcher -->
@@ -165,7 +165,7 @@
   </div>
 </div>
 
-<script src="{{ 'chat.js' | asset_url }}?v=top-cards-1" defer></script>
+<script src="{{ 'chat.js' | asset_url }}?v=cart-clear-add-1" defer></script>
 <script>
   window.shopChatConfig = {
     apiUrl: "https://struggle-throwing-recycled.ngrok-free.dev",

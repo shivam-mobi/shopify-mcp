@@ -158,10 +158,13 @@ export function buildCustomerContextHintMessage(profile = {}) {
     );
   } else {
     parts.push(
-      "Saved shipping addresses: NOT available for guests (get_customer_addresses is not in your tools). " +
+      "Cart and checkout: available for guests — no sign-in required. " +
+        "When they ask what is in the cart / show cart / checkout, ALWAYS call get_my_cart. " +
+        "NEVER say the cart requires login or that they must sign in to view cart. " +
+        "Saved shipping addresses: NOT available for guests (get_customer_addresses is not in your tools). " +
         "If they ask to show or use saved addresses, reply in 1-2 short friendly sentences: " +
         "saved addresses are available after they sign in; they can type a new shipping address here in chat, or sign in to their account to use saved ones. " +
-        "Do NOT say only \"I'm unable to show stored addresses\". Do NOT invent a select UI or fake addresses."
+        "Do NOT confuse cart with saved addresses. Do NOT say only \"I'm unable to show stored addresses\". Do NOT invent a select UI or fake addresses."
     );
   }
 

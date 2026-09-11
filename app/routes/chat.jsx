@@ -320,8 +320,8 @@ async function handleChatSession({
       console.warn('Failed to connect to UCP MCP server:', error.message);
     }
 
-    // Merge storefront theme cart → UCP before tools run so chat→theme sync won't wipe manual items.
-    if (Array.isArray(body?.theme_cart_items) && body.theme_cart_items.length > 0) {
+    // Theme cart is source of truth here (empty theme → clear chatbot cart).
+    if (Array.isArray(body?.theme_cart_items)) {
       try {
         const importResult = await mergeThemeCartIntoConversation(
           mcpClient,
@@ -331,6 +331,7 @@ async function handleChatSession({
         console.log("[chat] theme_cart_import", {
           conversationId,
           merged: importResult?.merged,
+          cleared: importResult?.cleared || false,
           itemCount: importResult?.items?.length || 0
         });
       } catch (error) {
@@ -684,16 +685,32 @@ async function handleChatSession({
         );
 
         // Tell the storefront to mirror chat cart → theme Ajax cart (/cart.js).
+        // Aggregate duplicate variant lines so theme gets total qty (not max of 1+1).
+        const themeSyncItems = [];
+        const themeSyncByVariant = new Map();
+        if (Array.isArray(snapshot?.items)) {
+          for (const item of snapshot.items) {
+            const variantId = String(item.variant_id || "").trim();
+            const quantity = Math.max(0, Number(item.quantity) || 0);
+            if (!variantId || quantity <= 0) continue;
+            const prev = themeSyncByVariant.get(variantId);
+            if (prev) {
+              prev.quantity += quantity;
+            } else {
+              themeSyncByVariant.set(variantId, {
+                title: item.title || null,
+                quantity,
+                variant_id: variantId
+              });
+            }
+          }
+          themeSyncItems.push(...themeSyncByVariant.values());
+        }
+
         stream.sendMessage({
           type: "theme_cart_sync",
-          empty: Boolean(snapshot?.empty) || !(snapshot?.items || []).length,
-          items: Array.isArray(snapshot?.items)
-            ? snapshot.items.map((item) => ({
-                title: item.title || null,
-                quantity: Math.max(0, Number(item.quantity) || 0),
-                variant_id: item.variant_id || null
-              }))
-            : []
+          empty: Boolean(snapshot?.empty) || themeSyncItems.length === 0,
+          items: themeSyncItems
         });
       }
 

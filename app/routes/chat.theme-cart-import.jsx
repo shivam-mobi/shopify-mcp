@@ -1,5 +1,6 @@
 /**
- * Import storefront theme cart lines into the conversation UCP cart.
+ * Import storefront theme cart into the conversation UCP cart.
+ * Theme cart is source of truth: empty theme clears the chatbot cart.
  * POST /chat/theme-cart-import
  * Body: { conversation_id, items: [{ variant_id, quantity }] }
  */

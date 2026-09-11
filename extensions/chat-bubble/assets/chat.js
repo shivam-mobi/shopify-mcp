@@ -359,6 +359,18 @@
       .trim();
   }
 
+  /**
+   * Only cart/checkout/shipping intents need a theme /cart.js snapshot.
+   * Product search and general chat should not hit cart.js every turn.
+   */
+  function shouldSnapshotThemeCart(userMessage) {
+    const text = String(userMessage || '').trim();
+    if (!text) return false;
+    return /\b(cart|checkout|check\s*out|add\s+to\s+cart|buy|purchase|shipping|ship\s+to|deliver(?:y|ies)?|address|postal|zip|checkout\s*url|remove\s+from\s+cart|empty\s+(?:my\s+)?cart|clear\s+(?:my\s+)?cart|what(?:'s| is)\s+in\s+my\s+cart|my\s+cart|proceed\s+to\s+checkout|pay\s+now)\b/i.test(
+      text
+    ) || /variant_id\s*:\s*gid:\/\/shopify\/ProductVariant\//i.test(text);
+  }
+
   function getStaticWelcomeFallback() {
     return window.shopChatConfig?.welcomeMessage || "I can help you find products, add them to your cart, and answer store questions.";
   }
@@ -1971,12 +1983,15 @@
 
         try {
           const promptType = window.shopChatConfig?.promptType || "standardAssistant";
-          // Snapshot theme cart so the server can merge before any cart tools run.
-          let themeCartItems = [];
-          try {
-            themeCartItems = await ShopAIChat.ThemeCart.getThemeCartItems();
-          } catch (themeError) {
-            console.warn('[ShopAIChat] theme cart snapshot skipped', themeError?.message || themeError);
+          // Theme /cart.js only for cart/checkout/shipping turns (not every message).
+          // Open/session load and theme cart events still sync via ThemeCart.importThemeCartIntoChat.
+          let themeCartItems = null;
+          if (!isInit && shouldSnapshotThemeCart(userMessage)) {
+            try {
+              themeCartItems = await ShopAIChat.ThemeCart.getThemeCartItems();
+            } catch (themeError) {
+              console.warn('[ShopAIChat] theme cart snapshot skipped', themeError?.message || themeError);
+            }
           }
 
           const requestBody = JSON.stringify({
@@ -1986,7 +2001,7 @@
             ...(isInit && window.shopChatConfig?.welcomeMessage
               ? { welcome_template: window.shopChatConfig.welcomeMessage }
               : {}),
-            ...(themeCartItems.length ? { theme_cart_items: themeCartItems } : {}),
+            ...(Array.isArray(themeCartItems) ? { theme_cart_items: themeCartItems } : {}),
             ...getCustomerContextPayload()
           });
 
@@ -3448,6 +3463,9 @@
       suppressImportUntil: 0,
       _listenersBound: false,
       _importTimer: null,
+      _importQueued: null,
+      _lastSyncFingerprint: null,
+      _lastSyncAt: 0,
 
       cartRoot: function() {
         const root = window.Shopify?.routes?.root;
@@ -3467,6 +3485,41 @@
         if (/^\d+$/.test(raw)) return raw;
         const match = raw.match(/ProductVariant\/(\d+)/i);
         return match ? match[1] : null;
+      },
+
+      themeLineVariantId: function(line) {
+        if (!line || typeof line !== 'object') return null;
+        return this.toNumericVariantId(line.variant_id || line.variantId || line.id);
+      },
+
+      /**
+       * Map of numeric variant id → quantity already in the theme Ajax cart.
+       */
+      themeVariantQtyMap: function(cart) {
+        const map = new Map();
+        (cart?.items || []).forEach((line) => {
+          const id = this.themeLineVariantId(line);
+          const qty = Math.max(0, Number(line.quantity) || 0);
+          if (!id || qty <= 0) return;
+          map.set(id, (map.get(id) || 0) + qty);
+        });
+        return map;
+      },
+
+      /** Stable fingerprint for variant→qty maps (sums already applied). */
+      variantQtyFingerprint: function(map) {
+        return Array.from(map?.entries?.() || [])
+          .map(([id, qty]) => `${id}:${qty}`)
+          .sort()
+          .join('|');
+      },
+
+      variantQtyMapsEqual: function(a, b) {
+        if (!a || !b || a.size !== b.size) return false;
+        for (const [id, qty] of a) {
+          if ((b.get(id) || 0) !== qty) return false;
+        }
+        return true;
       },
 
       ensureListeners: function() {
@@ -3492,6 +3545,8 @@
 
         clearTimeout(this._importTimer);
         this._importTimer = setTimeout(() => {
+          if (this.syncing || this.importing) return;
+          if (Date.now() < (this.suppressImportUntil || 0)) return;
           this.importThemeCartIntoChat({ reason: reason || 'scheduled' }).catch((error) => {
             console.warn('[ShopAIChat] theme→chat import failed', error?.message || error);
           });
@@ -3500,25 +3555,21 @@
 
       getThemeCartItems: async function() {
         const cart = await this.fetchThemeCart();
-        const byVariant = new Map();
-        (cart.items || []).forEach((line) => {
-          const id = this.toNumericVariantId(line.variant_id);
-          const qty = Math.max(0, Number(line.quantity) || 0);
-          if (!id || qty <= 0) return;
-          byVariant.set(id, (byVariant.get(id) || 0) + qty);
-        });
-        return Array.from(byVariant.entries()).map(([variant_id, quantity]) => ({
+        return Array.from(this.themeVariantQtyMap(cart).entries()).map(([variant_id, quantity]) => ({
           variant_id,
           quantity
         }));
       },
 
       /**
-       * Merge current theme Ajax cart into the conversation UCP cart (max qty per variant).
-       * Empty theme cart is a no-op (does not clear chat cart).
+       * Sync theme Ajax cart → chatbot cart (theme is source of truth).
+       * Empty theme cart clears the chatbot cart. Chat→theme still uses syncFromChatCart.
        */
       importThemeCartIntoChat: async function(options = {}) {
-        if (this.importing || this.syncing) return null;
+        if (this.importing || this.syncing) {
+          this._importQueued = options;
+          return null;
+        }
         if (Date.now() < (this.suppressImportUntil || 0) && !options.force) return null;
 
         const conversationId = getConversationId();
@@ -3532,10 +3583,6 @@
           } catch (error) {
             console.warn('[ShopAIChat] theme cart read failed', error?.message || error);
             return null;
-          }
-
-          if (!items.length && !options.force) {
-            return { success: true, merged: false, empty: true, items: [] };
           }
 
           const apiBaseUrl = getApiBaseUrl();
@@ -3566,88 +3613,38 @@
           console.log('[ShopAIChat] theme→chat import', {
             reason: options.reason || null,
             merged: result?.merged,
+            cleared: result?.cleared || false,
             itemCount: result?.items?.length || 0
           });
-
-          // If chat qty rose above theme (union max), bump theme without wiping extras.
-          if (result?.merged && Array.isArray(result.items) && result.items.length) {
-            await this.bumpThemeQuantitiesFromChat(result.items);
-          }
 
           return result;
         } finally {
           this.importing = false;
+          const queued = this._importQueued;
+          this._importQueued = null;
+          if (queued) {
+            this.importThemeCartIntoChat(queued).catch((error) => {
+              console.warn('[ShopAIChat] queued theme→chat import failed', error?.message || error);
+            });
+          }
         }
       },
 
       /**
-       * Raise theme line qtys to match chat/UCP (never remove theme lines).
-       */
-      bumpThemeQuantitiesFromChat: async function(items) {
-        const desired = new Map();
-        (Array.isArray(items) ? items : []).forEach((item) => {
-          const id = this.toNumericVariantId(item?.variant_id);
-          const qty = Math.max(0, Number(item?.quantity) || 0);
-          if (!id || qty <= 0) return;
-          desired.set(id, (desired.get(id) || 0) + qty);
-        });
-        if (!desired.size) return;
-
-        this.suppressImportUntil = Date.now() + 2000;
-        const prevSyncing = this.syncing;
-        this.syncing = true;
-        try {
-          let cart = await this.fetchThemeCart();
-          const updates = {};
-          const present = new Set();
-
-          (cart.items || []).forEach((line) => {
-            const vid = String(line.variant_id);
-            present.add(vid);
-            if (desired.has(vid) && desired.get(vid) > Number(line.quantity || 0)) {
-              updates[vid] = desired.get(vid);
-            }
-          });
-
-          if (Object.keys(updates).length) {
-            cart = await this.postJson(this.cartUrl('cart/update.js'), { updates });
-          }
-
-          const toAdd = [];
-          desired.forEach((qty, vid) => {
-            if (!present.has(String(vid)) && qty > 0) {
-              toAdd.push({ id: Number(vid), quantity: qty });
-            }
-          });
-
-          if (toAdd.length) {
-            try {
-              await this.postJson(this.cartUrl('cart/add.js'), { items: toAdd });
-            } catch (addError) {
-              for (const item of toAdd) {
-                try {
-                  await this.postJson(this.cartUrl('cart/add.js'), { items: [item] });
-                } catch (oneError) {
-                  console.warn('[ShopAIChat] theme bump add skipped', item.id, oneError?.message || oneError);
-                }
-              }
-            }
-            cart = await this.fetchThemeCart();
-          }
-
-          await this.notifyThemeCartChanged(cart);
-        } finally {
-          this.syncing = prevSyncing;
-        }
-      },
-
-      /**
+       * Replace theme Ajax cart from chat: clear.js then add.js.
+       * Avoids update.js on Buy X Get Y split lines (same variant_id, multiple keys),
+       * which can inflate qty when the same absolute updates payload is posted twice.
+       *
        * @param {{ empty?: boolean, items?: Array<{ variant_id?: string, quantity?: number }> }} payload
        */
       syncFromChatCart: async function(payload) {
         if (this.syncing) return;
         this.syncing = true;
-        this.suppressImportUntil = Date.now() + 2000;
+        // Keep theme→chat import suppressed long enough that a stale theme snapshot
+        // cannot overwrite a qty increase we just wrote from chat.
+        clearTimeout(this._importTimer);
+        this._importTimer = null;
+        this.suppressImportUntil = Date.now() + 5000;
 
         try {
           const desired = new Map();
@@ -3655,66 +3652,88 @@
 
           if (!payload?.empty) {
             sourceItems.forEach((item) => {
-              const id = this.toNumericVariantId(item?.variant_id);
+              const id = this.toNumericVariantId(item?.variant_id || item?.variantId || item?.id);
               const qty = Math.max(0, Number(item?.quantity) || 0);
               if (!id || qty <= 0) return;
+              // Sum duplicate variant rows from chat (two lines qty 1 → theme qty 2).
               desired.set(id, (desired.get(id) || 0) + qty);
             });
           }
 
+          const desiredFp = this.variantQtyFingerprint(desired);
+          // Ignore duplicate sync of the same cart within a short window (double SSE).
+          if (
+            desiredFp &&
+            desiredFp === this._lastSyncFingerprint &&
+            Date.now() < (this._lastSyncAt || 0) + 2000
+          ) {
+            console.log('[ShopAIChat] theme cart sync skipped (duplicate)');
+            return;
+          }
+
           // Empty chat cart → clear theme cart (no-op if already empty).
           if (!desired.size) {
+            const emptyCart = await this.fetchThemeCart().catch(() => ({ items: [] }));
+            if (!(emptyCart.items || []).length) {
+              this._lastSyncFingerprint = '';
+              this._lastSyncAt = Date.now();
+              return;
+            }
             await this.clearThemeCart();
             await this.notifyThemeCartChanged();
+            this._lastSyncFingerprint = '';
+            this._lastSyncAt = Date.now();
             console.log('[ShopAIChat] theme cart synced (cleared)');
             return;
           }
 
           let cart = await this.fetchThemeCart();
-          const updates = {};
-
-          (cart.items || []).forEach((line) => {
-            const vid = String(line.variant_id);
-            updates[vid] = desired.has(vid) ? desired.get(vid) : 0;
-          });
-
-          if (Object.keys(updates).length) {
-            cart = await this.postJson(this.cartUrl('cart/update.js'), { updates });
+          const present = this.themeVariantQtyMap(cart);
+          if (this.variantQtyMapsEqual(desired, present)) {
+            this._lastSyncFingerprint = desiredFp;
+            this._lastSyncAt = Date.now();
+            console.log('[ShopAIChat] theme cart sync skipped (already matched)');
+            return;
           }
 
-          // Add variants that chat has but theme does not (or were already removed manually).
-          const toAdd = [];
-          desired.forEach((qty, vid) => {
-            const line = (cart.items || []).find((item) => String(item.variant_id) === String(vid));
-            if (!line && qty > 0) {
-              toAdd.push({ id: Number(vid), quantity: qty });
-            }
-          });
-
-          if (toAdd.length) {
-            try {
-              await this.postJson(this.cartUrl('cart/add.js'), { items: toAdd });
-            } catch (addError) {
-              console.warn('[ShopAIChat] theme cart bulk add failed, trying one-by-one', addError?.message || addError);
-              for (const item of toAdd) {
-                try {
-                  await this.postJson(this.cartUrl('cart/add.js'), { items: [item] });
-                } catch (oneError) {
-                  // Unavailable / already handled — ignore
-                  console.warn('[ShopAIChat] theme add skipped', item.id, oneError?.message || oneError);
-                }
-              }
-            }
-            cart = await this.fetchThemeCart();
-          }
+          // Clear then re-add exact chat quantities (BXGY-safe).
+          await this.clearThemeCart();
+          const toAdd = Array.from(desired.entries()).map(([vid, quantity]) => ({
+            id: Number(vid),
+            quantity
+          }));
+          await this.addThemeItems(toAdd);
+          cart = await this.fetchThemeCart();
 
           await this.notifyThemeCartChanged(cart);
-          console.log('[ShopAIChat] theme cart synced', {
+          this.suppressImportUntil = Date.now() + 5000;
+          this._lastSyncFingerprint = desiredFp;
+          this._lastSyncAt = Date.now();
+          console.log('[ShopAIChat] theme cart synced (clear+add)', {
             desired: Array.from(desired.entries()).map(([id, quantity]) => ({ id, quantity })),
-            themeCount: (cart.items || []).length
+            themeCount: (cart.items || []).length,
+            themeUnits: (cart.item_count != null ? cart.item_count : null)
           });
         } finally {
           this.syncing = false;
+        }
+      },
+
+      /** Bulk add with one-by-one fallback. */
+      addThemeItems: async function(items) {
+        const list = Array.isArray(items) ? items.filter((i) => i && i.id && i.quantity > 0) : [];
+        if (!list.length) return;
+        try {
+          await this.postJson(this.cartUrl('cart/add.js'), { items: list });
+        } catch (addError) {
+          console.warn('[ShopAIChat] theme cart bulk add failed, trying one-by-one', addError?.message || addError);
+          for (const item of list) {
+            try {
+              await this.postJson(this.cartUrl('cart/add.js'), { items: [item] });
+            } catch (oneError) {
+              console.warn('[ShopAIChat] theme add skipped', item.id, oneError?.message || oneError);
+            }
+          }
         }
       },
 
@@ -3734,13 +3753,15 @@
         try {
           await this.postJson(this.cartUrl('cart/clear.js'), {});
         } catch (error) {
-          // Already empty / theme without clear — try zeroing lines
+          // Already empty / theme without clear — zero by line key (safer with BXGY splits).
           const cart = await this.fetchThemeCart();
           if (!(cart.items || []).length) return cart;
           const updates = {};
           (cart.items || []).forEach((line) => {
-            updates[String(line.variant_id)] = 0;
+            if (line.key) updates[String(line.key)] = 0;
+            else if (line.variant_id != null) updates[String(line.variant_id)] = 0;
           });
+          if (!Object.keys(updates).length) return cart;
           return this.postJson(this.cartUrl('cart/update.js'), { updates });
         }
         return this.fetchThemeCart();

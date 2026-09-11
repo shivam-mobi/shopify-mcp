@@ -364,14 +364,19 @@ function appliedDiscountCodeList(discounts = null) {
  */
 function isAddOnlyUpdate(existingItems = [], writableIncoming = []) {
   const existingIds = new Set(
-    existingItems.map((item) => item?.item?.id).filter(Boolean)
+    toWritableLineItems(existingItems)
+      .map((item) => normalizeProductVariantId(item?.item?.id))
+      .filter(Boolean)
   );
 
   if (existingIds.size === 0 || writableIncoming.length === 0) {
     return false;
   }
 
-  return writableIncoming.every((item) => !existingIds.has(item.item.id));
+  return writableIncoming.every((item) => {
+    const id = normalizeProductVariantId(item.item.id);
+    return id && !existingIds.has(id);
+  });
 }
 
 function isSubsetRemoveUpdate(existingItems = [], writableIncoming = []) {
@@ -515,20 +520,46 @@ function resolveRemoveByUserMessage(existingItems = [], userMessage = "") {
     }));
 }
 
+function normalizeProductVariantId(id) {
+  if (id == null || id === "") return null;
+  const trimmed = String(id).trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("gid://shopify/ProductVariant/")) {
+    return trimmed.split("?")[0];
+  }
+  if (/^\d+$/.test(trimmed)) {
+    return `gid://shopify/ProductVariant/${trimmed}`;
+  }
+  const match = trimmed.match(/ProductVariant\/(\d+)/);
+  if (match) {
+    return `gid://shopify/ProductVariant/${match[1]}`;
+  }
+  return isProductVariantId(trimmed) ? trimmed.split("?")[0] : null;
+}
+
+/**
+ * Merge cart lines by ProductVariant id.
+ * - Coalesce duplicate lines for the same variant (sum qty)
+ * - Adding an existing variant increases qty (does not create a second line)
+ */
 function mergeLineItems(existingItems = [], newItems = []) {
   const byVariantId = new Map();
 
-  for (const item of toWritableLineItems(existingItems)) {
-    byVariantId.set(item.item.id, item);
-  }
-
-  for (const item of toWritableLineItems(newItems)) {
-    const variantId = item.item.id;
+  for (const item of toWritableLineItems([
+    ...(Array.isArray(existingItems) ? existingItems : []),
+    ...(Array.isArray(newItems) ? newItems : [])
+  ])) {
+    const variantId = normalizeProductVariantId(item.item.id);
+    if (!variantId) continue;
+    const qty = Math.max(1, Number(item.quantity) || 1);
     const existing = byVariantId.get(variantId);
     if (existing) {
-      existing.quantity += item.quantity || 1;
+      existing.quantity += qty;
     } else {
-      byVariantId.set(variantId, item);
+      byVariantId.set(variantId, {
+        quantity: qty,
+        item: { id: variantId }
+      });
     }
   }
 
@@ -546,12 +577,21 @@ function toWritableLineItems(items = []) {
         variantId = entry.id;
       }
 
-      if (!variantId || !isProductVariantId(variantId)) {
+      // Some payloads nest merchandise / variant
+      if (!variantId && isProductVariantId(entry?.merchandise?.id)) {
+        variantId = entry.merchandise.id;
+      }
+      if (!variantId && isProductVariantId(entry?.variant_id)) {
+        variantId = entry.variant_id;
+      }
+
+      variantId = normalizeProductVariantId(variantId);
+      if (!variantId) {
         return null;
       }
 
       return {
-        quantity: entry.quantity || 1,
+        quantity: Math.max(1, Number(entry.quantity) || 1),
         item: { id: variantId }
       };
     })
@@ -1089,12 +1129,28 @@ export function formatCartSummary(
     return { success: false, empty: true, message: "Cart is empty." };
   }
 
-  const items = (cart.line_items || []).map((line) => ({
-    title: line.item?.title || "Product",
-    quantity: line.quantity || 1,
-    variant_id: line.item?.id,
-    price: formatLinePrice(line)
-  }));
+  const items = (() => {
+    const byVariant = new Map();
+    for (const line of cart.line_items || []) {
+      const variantId = normalizeProductVariantId(line?.item?.id || line?.variant_id);
+      if (!variantId) continue;
+      const qty = Math.max(1, Number(line.quantity) || 1);
+      const title = line.item?.title || "Product";
+      const price = formatLinePrice(line);
+      const existing = byVariant.get(variantId);
+      if (existing) {
+        existing.quantity += qty;
+      } else {
+        byVariant.set(variantId, {
+          title,
+          quantity: qty,
+          variant_id: variantId,
+          price
+        });
+      }
+    }
+    return Array.from(byVariant.values());
+  })();
 
   const currency = checkout?.currency || cart.currency || "USD";
   const cartTotalEntry = cart.totals?.find((t) => t.type === "total");
