@@ -152,16 +152,20 @@ export function buildCustomerContextHintMessage(profile = {}) {
     parts.push(
       "Saved shipping addresses: available via get_customer_addresses. " +
         "Call that tool ONLY when they clearly ask about addresses (saved/shipping/my/default address, use my address for checkout). " +
-        "NEVER call it for \"show the products\", filters, fresheners, or other product lists — those are not address requests. " +
+        "NEVER call it for \"show the products\", filters, fresheners, cart, or other product lists — those are not address requests. " +
         "If unclear (e.g. just \"show\"), ask what they want; do not guess addresses. " +
         "A select dropdown appears in the UI after a valid address call — reply in one short sentence only. Do not invent addresses."
     );
   } else {
     parts.push(
-      "Saved shipping addresses: NOT available for guests (get_customer_addresses is not in your tools). " +
+      "Cart and checkout work for guests — login is NOT required. " +
+        "When they ask to show cart / cart products / what's in my cart / checkout, ALWAYS call get_my_cart (or the matching cart tool) and answer from that result. " +
+        "NEVER say you cannot show the cart because they are not logged in. " +
+        "Saved shipping addresses: NOT available for guests (get_customer_addresses is not in your tools). " +
         "If they ask to show or use saved addresses, reply in 1-2 short friendly sentences: " +
         "saved addresses are available after they sign in; they can type a new shipping address here in chat, or sign in to their account to use saved ones. " +
-        "Do NOT say only \"I'm unable to show stored addresses\". Do NOT invent a select UI or fake addresses."
+        "Do NOT say only \"I'm unable to show stored addresses\". Do NOT invent a select UI or fake addresses. " +
+        "Do NOT mix up cart requests with saved-address requests."
     );
   }
 

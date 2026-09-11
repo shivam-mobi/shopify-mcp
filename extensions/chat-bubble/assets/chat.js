@@ -359,6 +359,15 @@
       .trim();
   }
 
+  /** Only hit /cart.js + theme sync for cart/checkout/shipping-related messages. */
+  function shouldSyncThemeCartForMessage(text) {
+    const t = String(text || '').toLowerCase();
+    if (!t.trim()) return false;
+    return /\b(cart|checkout|check[\s-]?out|add(?:ing)?(?:\s+\w+){0,4}\s+to\s+(?:my\s+)?cart|remove(?:\s+\w+){0,4}\s+from\s+(?:my\s+)?cart|empty\s+cart|clear\s+cart|shipping|address|discount|promo|coupon|proceed\s+to\s+pay|quantity|qty)\b/i.test(
+      t
+    );
+  }
+
   function getStaticWelcomeFallback() {
     return window.shopChatConfig?.welcomeMessage || "I can help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters.";
   }
@@ -2142,12 +2151,16 @@
 
         try {
           const promptType = window.shopChatConfig?.promptType || "standardAssistant";
-          // Snapshot theme cart so the server can merge before any cart tools run.
-          let themeCartItems = [];
-          try {
-            themeCartItems = await ShopAIChat.ThemeCart.getThemeCartItems();
-          } catch (themeError) {
-            console.warn('[ShopAIChat] theme cart snapshot skipped', themeError?.message || themeError);
+          // Snapshot theme cart only when the message is cart-related (avoids /cart.js on every ask).
+          // Theme removals still sync via cart:updated listeners + chat open.
+          let themeCartItems = null;
+          if (!isInit && shouldSyncThemeCartForMessage(userMessage)) {
+            try {
+              themeCartItems = await ShopAIChat.ThemeCart.getThemeCartItems();
+            } catch (themeError) {
+              console.warn('[ShopAIChat] theme cart snapshot skipped', themeError?.message || themeError);
+              themeCartItems = [];
+            }
           }
 
           const requestBody = JSON.stringify({
@@ -2157,7 +2170,7 @@
             ...(isInit && window.shopChatConfig?.welcomeMessage
               ? { welcome_template: window.shopChatConfig.welcomeMessage }
               : {}),
-            ...(themeCartItems.length ? { theme_cart_items: themeCartItems } : {}),
+            ...(Array.isArray(themeCartItems) ? { theme_cart_items: themeCartItems } : {}),
             ...getCustomerContextPayload()
           });
 
@@ -3693,8 +3706,8 @@
       },
 
       /**
-       * Merge current theme Ajax cart into the conversation UCP cart (max qty per variant).
-       * Empty theme cart is a no-op (does not clear chat cart).
+       * Sync theme Ajax cart → conversation UCP cart.
+       * Empty theme cart clears chat cart (theme is source of truth when emptied).
        */
       importThemeCartIntoChat: async function(options = {}) {
         if (this.importing || this.syncing) return null;
@@ -3711,10 +3724,6 @@
           } catch (error) {
             console.warn('[ShopAIChat] theme cart read failed', error?.message || error);
             return null;
-          }
-
-          if (!items.length && !options.force) {
-            return { success: true, merged: false, empty: true, items: [] };
           }
 
           const apiBaseUrl = getApiBaseUrl();
@@ -3745,14 +3754,11 @@
           console.log('[ShopAIChat] theme→chat import', {
             reason: options.reason || null,
             merged: result?.merged,
+            cleared: result?.cleared || false,
             itemCount: result?.items?.length || 0
           });
 
-          // If chat qty rose above theme (union max), bump theme without wiping extras.
-          if (result?.merged && Array.isArray(result.items) && result.items.length) {
-            await this.bumpThemeQuantitiesFromChat(result.items);
-          }
-
+          // Theme is source of truth — do not bump theme from chat after import.
           return result;
         } finally {
           this.importing = false;

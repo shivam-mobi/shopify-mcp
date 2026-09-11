@@ -196,8 +196,10 @@ export function getCartWrapperTools() {
       name: "get_my_cart",
       description:
         "Show the current cart contents, totals, and checkout link for this conversation. " +
-        "Call this when the customer wants to checkout / proceed / pay / get the checkout link. " +
-        "If shipping is already on file, the server creates/refreshes checkout and returns checkout_url when Shopify allows it.",
+        "Works for guests AND logged-in customers — login is NOT required. " +
+        "Call this whenever they ask to show cart / cart products / what's in my cart / checkout / proceed / pay. " +
+        "If shipping is already on file, the server creates/refreshes checkout and returns checkout_url when Shopify allows it. " +
+        "Never refuse because the customer is a guest.",
       input_schema: {
         type: "object",
         properties: {}
@@ -912,9 +914,11 @@ export async function appendFinalCartSnapshot(
 }
 
 /**
- * Merge storefront theme cart lines into the conversation UCP cart.
- * Rule: per variant qty = max(chatQty, themeQty) so neither side loses items.
- * Empty theme payload is a no-op (does not wipe chat cart).
+ * Sync storefront theme cart into the conversation UCP cart.
+ * Theme is source of truth for lines:
+ * - Theme empty → clear chat cart
+ * - Otherwise → chat cart becomes exactly theme variants + quantities
+ *   (removes chat-only lines; qty matches theme)
  */
 export async function mergeThemeCartIntoConversation(
   mcpClient,
@@ -937,25 +941,39 @@ export async function mergeThemeCartIntoConversation(
 
   if (!incoming.length) {
     const live = await fetchLiveCart(mcpClient, conversationId);
-    const items = (live?.cart?.line_items || []).map((line) => ({
-      title: line.item?.title || "Product",
-      quantity: line.quantity || 1,
-      variant_id: line.item?.id
-    }));
+    const chatItems = live?.cart?.line_items || [];
+
+    if (chatItems.length) {
+      console.log("[cart-wrapper] theme_cart empty → clearing chat cart", {
+        conversationId,
+        chatItemCount: chatItems.length
+      });
+      await clearMyCart(mcpClient, conversationId);
+      return {
+        success: true,
+        merged: true,
+        cleared: true,
+        empty: true,
+        items: [],
+        message: "Theme cart empty — chat cart cleared."
+      };
+    }
+
     return {
       success: true,
       merged: false,
-      empty: !items.length,
-      items,
+      empty: true,
+      items: [],
       message: "No theme cart items to import."
     };
   }
 
   const live = await fetchLiveCart(mcpClient, conversationId);
+  const themeLineItems = toWritableLineItems(incoming);
 
   if (!live) {
     const response = await mcpClient.callTool("create_cart", {
-      cart: withAiraAttribution({ line_items: toWritableLineItems(incoming) }, conversationId)
+      cart: withAiraAttribution({ line_items: themeLineItems }, conversationId)
     });
     await persistCartFromResponse(conversationId, response);
     const cart = extractCartPayload(response);
@@ -979,72 +997,56 @@ export async function mergeThemeCartIntoConversation(
     };
   }
 
-  const byVariant = new Map();
+  const themeById = new Map(
+    themeLineItems.map((line) => [line.item.id, Math.max(1, Number(line.quantity) || 1)])
+  );
+  const chatById = new Map();
   (live.cart.line_items || []).forEach((line) => {
-    const id = line?.item?.id;
+    const id = normalizeVariantId(line?.item?.id);
     if (!id) return;
-    byVariant.set(id, {
-      quantity: Math.max(1, Number(line.quantity) || 1),
-      item: { id },
-      title: line.item?.title || "Product"
-    });
+    chatById.set(id, Math.max(1, Number(line.quantity) || 1));
   });
 
-  let changed = false;
-  incoming.forEach((item) => {
-    const id = item.item.id;
-    const themeQty = Math.max(1, Number(item.quantity) || 1);
-    const existing = byVariant.get(id);
-    if (!existing) {
-      byVariant.set(id, {
-        quantity: themeQty,
-        item: { id },
-        title: "Product"
-      });
-      changed = true;
-      return;
+  let changed = themeById.size !== chatById.size;
+  if (!changed) {
+    for (const [id, qty] of themeById) {
+      if (chatById.get(id) !== qty) {
+        changed = true;
+        break;
+      }
     }
-    if (themeQty > existing.quantity) {
-      existing.quantity = themeQty;
-      changed = true;
-    }
-  });
+  }
 
   if (!changed) {
-    const items = Array.from(byVariant.values()).map((entry) => ({
-      title: entry.title,
-      quantity: entry.quantity,
-      variant_id: entry.item.id
+    const items = (live.cart.line_items || []).map((line) => ({
+      title: line.item?.title || "Product",
+      quantity: line.quantity || 1,
+      variant_id: line.item?.id
     }));
     return {
       success: true,
       merged: false,
       empty: !items.length,
       items,
-      message: "Chat cart already includes theme items."
+      message: "Chat cart already matches theme cart."
     };
   }
-
-  const lineItems = Array.from(byVariant.values()).map((entry) => ({
-    quantity: entry.quantity,
-    item: { id: entry.item.id }
-  }));
 
   const response = await updateCartLineItems(
     mcpClient,
     conversationId,
     live.cartId,
     live.cart,
-    lineItems
+    themeLineItems
   );
 
   let cart = extractCartPayload(response);
-  const expected = new Map(lineItems.map((line) => [line.item.id, line.quantity]));
+  const expected = new Map(themeLineItems.map((line) => [line.item.id, line.quantity]));
   const looksComplete =
     Array.isArray(cart?.line_items) &&
     cart.line_items.length === expected.size &&
     cart.line_items.every((line) => {
-      const id = line?.item?.id;
+      const id = normalizeVariantId(line?.item?.id);
       return id && expected.has(id) && Number(line.quantity) === expected.get(id);
     });
 
@@ -1053,27 +1055,28 @@ export async function mergeThemeCartIntoConversation(
     if (verified?.cart) cart = verified.cart;
   }
 
-  // Skip checkout sync here — next add/remove/get_my_cart will align checkout.
   const items = (cart?.line_items || []).map((line) => ({
     title: line.item?.title || "Product",
     quantity: line.quantity || 1,
     variant_id: line.item?.id
   }));
 
-  console.log("[cart-wrapper] theme_cart_import merged", {
+  console.log("[cart-wrapper] theme_cart_import replaced chat from theme", {
     conversationId,
-    themeCount: incoming.length,
-    itemCount: items.length,
-    changed
+    themeCount: themeLineItems.length,
+    previousChatCount: chatById.size,
+    itemCount: items.length
   });
 
   return {
     success: true,
     merged: true,
+    replaced: true,
     empty: !items.length,
     items
   };
 }
+
 
 function extractToolResultData(toolResponse) {
   if (toolResponse?.structuredContent) {

@@ -338,8 +338,8 @@ async function handleChatSession({
       console.warn('Failed to connect to UCP MCP server:', error.message);
     }
 
-    // Merge storefront theme cart → UCP before tools run so chat→theme sync won't wipe manual items.
-    if (Array.isArray(body?.theme_cart_items) && body.theme_cart_items.length > 0) {
+    // Theme cart is source of truth: merge items, or clear UCP when theme is empty.
+    if (Array.isArray(body?.theme_cart_items)) {
       try {
         const importResult = await mergeThemeCartIntoConversation(
           mcpClient,
@@ -349,6 +349,7 @@ async function handleChatSession({
         console.log("[chat] theme_cart_import", {
           conversationId,
           merged: importResult?.merged,
+          cleared: importResult?.cleared || false,
           itemCount: importResult?.items?.length || 0
         });
       } catch (error) {
