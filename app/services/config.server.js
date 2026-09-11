@@ -98,10 +98,6 @@ export const AppConfig = {
     warmupRequireCustomer: process.env.MCP_WARMUP_REQUIRE_CUSTOMER !== "false"
   },
 
-  fitment: {
-    enabled: process.env.FITMENT_ENABLED === "true"
-  },
-
   chat: {
     /** localStorage = shared across tabs; sessionStorage = per tab only */
     conversationStorage:
@@ -118,10 +114,7 @@ export const AppConfig = {
   tools: {
     productSearchNames: [
       "search_catalog",
-      "search_shop_catalog",
-      "search_store_products",
-      "find_fitment_products",
-      "get_fitment_next_step"
+      "search_shop_catalog"
     ],
     /** Show "Calling tool: …" in the storefront chat UI (set CHAT_SHOW_TOOL_CALLS=true in dev). */
     showToolCallsInChat: process.env.CHAT_SHOW_TOOL_CALLS === "true"

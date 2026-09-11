@@ -1,20 +1,39 @@
 /**
- * Product comparison helpers for fitment/catalog results.
- * Derives filter attributes from Shopify tags/title/description and ranks a "best" pick.
+ * Product listing helpers for catalog search results.
+ * Formats variant IDs and display order for Top Matching Products cards.
  */
-import { toVariantGid } from "./shopify-products.server.js";
+function toVariantGid(variantId) {
+  if (variantId == null || variantId === "") return null;
+
+  const value = String(variantId).trim();
+  if (!value) return null;
+
+  if (value.startsWith("gid://shopify/ProductVariant/")) {
+    return value;
+  }
+
+  if (/^\d+$/.test(value)) {
+    return `gid://shopify/ProductVariant/${value}`;
+  }
+
+  const match = value.match(/ProductVariant\/(\d+)/);
+  if (match) {
+    return `gid://shopify/ProductVariant/${match[1]}`;
+  }
+
+  return null;
+}
 
 export const PRODUCT_LISTING_CART_INSTRUCTION =
-  "When the customer asks to add the best pick, best product, or top recommendation, " +
-  "call add_to_cart with best_pick_variant_id from THIS tool result only (the product where is_best_pick is true — may differ from position 1). " +
-  "For 'first product' or '#1', use first_product_variant_id (position 1 in the list). " +
+  "When the customer asks to add the first product, first card, #1, or top matching product, " +
+  "call add_to_cart with first_product_variant_id from THIS tool result only (position 1 in the list). " +
   "For 'add product #2' or 'second one', use the product where position=2 and pass its variant_id. " +
-  "If the customer message includes variant_id: gid://shopify/ProductVariant/..., use THAT exact variant_id — do not substitute another scent/product. " +
-  "Match by products[].title when they name a scent or product (e.g. Black Rock vs Fresh Linen) — titles are for matching only, never list them in chat. " +
+  "If the customer message includes variant_id: gid://shopify/ProductVariant/..., use THAT exact variant_id — do not substitute another product. " +
+  "Match by products[].title when they name a product — titles are for matching only, never list them in chat. " +
   "Never use variant_ids from older product searches earlier in this conversation.";
 
-/** Vendors shown first in the product list (display order only — not used for best pick). */
-const PREFERRED_DISPLAY_FIRST_VENDORS = ["FEBREZE"];
+/** Vendors shown first in the product list (display order only). */
+const PREFERRED_DISPLAY_FIRST_VENDORS = [];
 
 export function normalizeVendorName(vendor = "") {
   return String(vendor || "").trim().toUpperCase();
@@ -279,88 +298,6 @@ export function buildCompareAttributes({
   };
 }
 
-function isFreshenerCompareProduct(product = {}) {
-  return (
-    product.productCategory === "freshener" ||
-    product.filterType === "freshener" ||
-    isFreshenerProduct(product)
-  );
-}
-
-/**
- * Rank score used to pick the "best" product in a result set.
- */
-export function scoreProductForComparison(product = {}) {
-  let score = 0;
-
-  if (product.inStock === true && product.availableForSale !== false) score += 40;
-
-  if (isFreshenerCompareProduct(product)) {
-    if (product.hasOdorEliminator === true) score += 25;
-    if (product.durationDays != null) {
-      score += Math.min(20, Math.round(Number(product.durationDays) / 5));
-    }
-    if (product.fragrance) score += 5;
-
-    const price = parsePriceNumber(product.priceAmount ?? product.price);
-    if (price != null) {
-      score += Math.max(0, 20 - Math.min(price, 20));
-    }
-    return score;
-  }
-
-  if (product.isHepa === true) score += 30;
-  if (product.hasAntibacterial === true) score += 15;
-  if (product.hasCharcoal === true) score += 10;
-  if (product.hasParticulate === true) score += 5;
-
-  const price = parsePriceNumber(product.priceAmount ?? product.price);
-  if (price != null) {
-    // Mild preference for lower price among similar quality
-    score += Math.max(0, 20 - Math.min(price, 20));
-  }
-
-  return score;
-}
-
-function buildBestReason(product) {
-  const reasons = [];
-  if (isFreshenerCompareProduct(product)) {
-    if (product.fragrance) reasons.push(product.fragrance);
-    if (product.durationDays != null) reasons.push(`up to ${product.durationDays} days`);
-    if (product.hasOdorEliminator) reasons.push("odor eliminator");
-    if (product.inStock) reasons.push("in stock");
-    if (!reasons.length) return "Best overall match";
-    return `Best pick: ${reasons.join(" · ")}`;
-  }
-
-  if (product.isHepa) reasons.push("HEPA");
-  if (product.hasAntibacterial) reasons.push("antibacterial");
-  if (product.hasCharcoal) reasons.push("odor control");
-  if (product.inStock) reasons.push("in stock");
-  if (!reasons.length) return "Best overall match";
-  return `Best pick: ${reasons.join(" · ")}`;
-}
-
-function productIdentityKey(product = {}) {
-  return resolveProductVariantId(product) || product.partNumber || product.sku || product.id || null;
-}
-
-function pickBestProduct(products = []) {
-  if (!products.length) return null;
-
-  const inStock = products.filter(
-    (product) => product.inStock === true && product.availableForSale !== false
-  );
-  const pool = inStock.length ? inStock : products;
-
-  return pool.reduce((best, product) => {
-    const bestScore = best?.compareScore || 0;
-    const productScore = product?.compareScore || 0;
-    return productScore > bestScore ? product : best;
-  }, pool[0]);
-}
-
 function sortProductsForDisplay(products = []) {
   return [...products].sort((a, b) => {
     const displayFirstDiff =
@@ -368,15 +305,12 @@ function sortProductsForDisplay(products = []) {
       Number(isPreferredDisplayFirstVendor(a.vendor));
     if (displayFirstDiff !== 0) return displayFirstDiff;
 
-    const stockDiff = Number(b.inStock === true) - Number(a.inStock === true);
-    if (stockDiff !== 0) return stockDiff;
-
-    return (b.compareScore || 0) - (a.compareScore || 0);
+    return Number(b.inStock === true) - Number(a.inStock === true);
   });
 }
 
 /**
- * Enrich products with compare fields, sort for display (Febreze first), mark isBest by neutral score.
+ * Format catalog products for Top Matching Products cards (in-stock first).
  */
 export function enrichProductsWithComparison(products = []) {
   if (!Array.isArray(products) || products.length === 0) {
@@ -419,36 +353,17 @@ export function enrichProductsWithComparison(products = []) {
           product_type: product.product_type || product.productType || ""
         });
 
-    const merged = {
+    return {
       ...product,
       ...attrs,
       priceAmount:
         typeof product.priceAmount === "number"
           ? product.priceAmount
-          : parsePriceNumber(product.price),
-      isBest: false,
-      bestReason: null,
-      compareScore: 0
-    };
-
-    merged.compareScore = scoreProductForComparison(merged);
-    return merged;
-  });
-
-  const bestProduct = pickBestProduct(enriched);
-  const bestKey = bestProduct ? productIdentityKey(bestProduct) : null;
-  const sorted = sortProductsForDisplay(enriched);
-
-  return sorted.map((product) => {
-    const key = productIdentityKey(product);
-    const isBest = Boolean(bestKey && key && key === bestKey);
-
-    return {
-      ...product,
-      isBest,
-      bestReason: isBest ? buildBestReason(product) : null
+          : parsePriceNumber(product.price)
     };
   });
+
+  return sortProductsForDisplay(enriched);
 }
 
 /**
@@ -460,14 +375,13 @@ export function resolveProductVariantId(product = {}) {
 }
 
 /**
- * Add position, variant_id, and is_best_pick to each ranked product for LLM tool history.
+ * Add position and variant_id to each listed product for LLM tool history.
  */
 export function annotateRankedProductsForLlm(rankedProducts = []) {
   return rankedProducts.map((product, index) => ({
     ...product,
     position: index + 1,
-    variant_id: resolveProductVariantId(product),
-    is_best_pick: product.isBest === true
+    variant_id: resolveProductVariantId(product)
   }));
 }
 
@@ -478,16 +392,12 @@ export function annotateRankedProductsForLlm(rankedProducts = []) {
  */
 export function buildLlmProductSummary(rankedProducts = []) {
   return rankedProducts.map((product, index) => {
-    const pdfUrl = String(product.pdfUrl || product.pdf_url || "").trim() || null;
-    const youtubeUrl = String(product.youtubeUrl || product.youtube_url || "").trim() || null;
-    const pdfTitle = String(product.pdfTitle || product.pdf_title || "").trim() || null;
     const title = String(product.title || product.name || "").trim() || null;
 
     return {
       position: index + 1,
       variant_id: resolveProductVariantId(product),
       title,
-      is_best_pick: product.isBest === true,
       inStock: product.inStock === true,
       filterType: product.filterType || null,
       productCategory: product.productCategory || null,
@@ -495,33 +405,20 @@ export function buildLlmProductSummary(rankedProducts = []) {
       durationDays:
         typeof product.durationDays === "number" ? product.durationDays : null,
       hasOdorEliminator: product.hasOdorEliminator === true ? true : null,
-      vendor: product.vendor || null,
-      ...(pdfUrl
-        ? {
-            installation_pdf_url: pdfUrl,
-            installation_pdf_title: pdfTitle || "Installation Guide (PDF)"
-          }
-        : {}),
-      ...(youtubeUrl ? { installation_video_url: youtubeUrl } : {})
+      vendor: product.vendor || null
     };
   });
 }
 
 /**
- * Best pick / first product metadata for LLM cart adds (hidden from storefront UI).
+ * First-product metadata for LLM cart adds (hidden from storefront UI).
  */
 export function buildProductListingMetadata(rankedProducts = []) {
-  const best = rankedProducts.find((p) => p.isBest) || rankedProducts[0] || null;
   const first = rankedProducts[0] || null;
-  const bestVariantId = best ? resolveProductVariantId(best) : null;
   const firstVariantId = first ? resolveProductVariantId(first) : null;
 
   return {
-    best_pick_variant_id: bestVariantId,
-    best_pick_title: best?.title || null,
     first_product_variant_id: firstVariantId,
-    bestProductId: bestVariantId,
-    bestProductTitle: best?.title || null,
     cart_instruction: PRODUCT_LISTING_CART_INSTRUCTION
   };
 }
@@ -530,7 +427,6 @@ export default {
   buildCompareAttributes,
   isFreshenerProduct,
   resolveProductDescriptionHtml,
-  scoreProductForComparison,
   enrichProductsWithComparison,
   resolveProductVariantId,
   annotateRankedProductsForLlm,

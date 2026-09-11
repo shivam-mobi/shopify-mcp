@@ -54,20 +54,22 @@ export async function searchStorePolicies({ query = "", topic = null } = {}) {
       {
         topic: "digest",
         title: row?.title || DEFAULT_STORE_POLICY_DIGEST.title,
-        heading: "PUREFLOW store policy digest",
+        heading: "manishclothes store policy digest",
         body: digest,
         content_date: row?.contentDate || DEFAULT_STORE_POLICY_DIGEST.contentDate
       }
     ],
     contact: {
-      email: "support@pureflowair.com",
-      phone: "866-206-4492"
+      store_url: "https://manishclothes.myshopify.com/",
+      email: null,
+      phone: null
     },
     instruction:
       "Shopify policy search returned no useful results (or this tool was called directly). " +
-      "Answer ONLY from policy_digest. Do NOT invent policy details. " +
-      "Do NOT use Terms “30 days final” as the cancel rule — cancel is only before dispatch. " +
-      "CRITICAL: PUREFLOW does NOT ship to Asia (including India). If the customer asks about India or Asia, say we do not deliver there — never say shipping is available at checkout for those destinations."
+      "Answer ONLY from policy_digest. Do NOT invent policy details, shipping countries, return windows, or contact info. " +
+      "This store is manishclothes (https://manishclothes.myshopify.com/). " +
+      "No public email/phone is published — do not invent contact details. " +
+      "If asked about shipping destinations, say cost and availability are shown at checkout."
   };
 }
 
@@ -76,7 +78,7 @@ export function getStorePolicyTools() {
     {
       name: STORE_POLICY_TOOL_NAME,
       description:
-        "Local PUREFLOW store policy digest from the database. " +
+        "Local manishclothes store policy digest from the database. " +
         "Prefer search_shop_policies_and_faqs first. Use this if Shopify returned nothing useful " +
         "(the server also auto-falls back here when Shopify is empty).",
       input_schema: {
@@ -238,18 +240,19 @@ export async function callStorePolicyTool(toolName, toolArgs = {}) {
         {
           topic: "digest",
           title: DEFAULT_STORE_POLICY_DIGEST.title,
-          heading: "PUREFLOW store policy digest",
+          heading: "manishclothes store policy digest",
           body: DEFAULT_STORE_POLICY_DIGEST.digest,
           content_date: DEFAULT_STORE_POLICY_DIGEST.contentDate
         }
       ],
       contact: {
-        email: "support@pureflowair.com",
-        phone: "866-206-4492"
+        store_url: "https://manishclothes.myshopify.com/",
+        email: null,
+        phone: null
       },
       instruction:
         "Answer ONLY from policy_digest. Do NOT invent policy details. " +
-        "CRITICAL: PUREFLOW does NOT ship to Asia (including India). Say we do not deliver there when asked."
+        "This store is manishclothes. No public email/phone is published."
     });
   }
 }

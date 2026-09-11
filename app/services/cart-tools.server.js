@@ -84,9 +84,9 @@ export function getCartWrapperTools() {
       name: "add_to_cart",
       description:
         "Add ONE product to the customer's cart (or increase that one product's qty). Always keeps existing cart items. " +
-        "Pass variant_id from the latest fitment/catalog products[] (gid://shopify/ProductVariant/...). " +
-        "If the customer message includes variant_id: gid://..., use that EXACT id — do not swap to a different scent or product. " +
-        "When they name a product/scent (e.g. Black Rock), match products[].title and use that row's variant_id. " +
+        "Pass variant_id from the latest catalog products[] (gid://shopify/ProductVariant/...). " +
+        "If the customer message includes variant_id: gid://..., use that EXACT id — do not swap to a different product. " +
+        "When they name a product, match products[].title and use that row's variant_id. " +
         "For changing MULTIPLE products at once (increase each qty, set several qtys, remove several items), " +
         "call update_cart_items ONCE — do NOT call add_to_cart repeatedly. " +
         "Server handles merge — never call create_cart or update_cart directly.",
@@ -95,7 +95,7 @@ export function getCartWrapperTools() {
         properties: {
           variant_id: {
             type: "string",
-            description: "Shopify ProductVariant GID from fitment/catalog results (exact id for the chosen product/scent)"
+            description: "Shopify ProductVariant GID from catalog search results (exact id for the chosen product)"
           },
           quantity: {
             type: "integer",

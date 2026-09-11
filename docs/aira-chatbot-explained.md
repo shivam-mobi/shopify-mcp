@@ -1,6 +1,6 @@
 # How AIRA Works — A Plain-Language Guide
 
-This is a friendly, detailed walkthrough of our PUREFLOW shopping chatbot (**AIRA**).  
+This is a friendly, detailed walkthrough of our manishclothes shopping chatbot (**AIRA**).  
 If you want the short technical reference (tables, file paths, env names), see [`ai-chatbot-system.md`](./ai-chatbot-system.md). This document is meant to answer: *what is this thing, how does a chat actually happen, and what is each piece for?*
 
 ---
@@ -9,11 +9,11 @@ If you want the short technical reference (tables, file paths, env names), see [
 
 AIRA is the chat bubble on the Shopify storefront. A shopper can talk to it like a store associate:
 
-- “I need a cabin filter for my 2019 Honda Civic”
+- “Show me tshirts for men”
 - “Do you ship to Canada?”
 - “Add that to my cart and check out”
 
-Behind that bubble is our Shopify app (`pureflowair-chatbot`). The UI lives in a **theme extension** (`chat-bubble`). The brain lives on our server. Shopify provides catalog, cart, checkout, and (when logged in) customer account features through something called **MCP**.
+Behind that bubble is our Shopify app (`manishclothes-chatbot`). The UI lives in a **theme extension** (`chat-bubble`). The brain lives on our server. Shopify provides catalog, cart, checkout, and (when logged in) customer account features through something called **MCP**.
 
 Think of it like this:
 
@@ -34,7 +34,7 @@ Think of it like this:
 2. Shopper types a question → browser sends it to our app with **one HTTP POST**.
 3. That same connection stays open while we **stream** the reply back (text appears live).
 4. If the AI needs data (products, cart, policies), it asks our server to run a **tool**.
-5. The tool talks to Shopify (or our fitment MySQL), gets an answer, and the AI continues.
+5. The tool talks to Shopify, gets an answer, and the AI continues.
 6. When done, we close that connection. The next message starts a **new** POST.
 
 We do **not** use WebSockets. We use normal HTTP plus **SSE** (Server-Sent Events) for streaming.
@@ -123,8 +123,7 @@ Under the hood these call Shopify **UCP MCP** cart/checkout tools.
 
 | Tool | In plain words |
 |------|----------------|
-| `get_fitment_next_step` | Vehicle cabin filters — VIN or year/make/model wizard |
-| `search_store_products` | Home filters (Admin API) or fresheners (catalog MCP) |
+| `search_catalog` / `search_shop_catalog` | Search the manishclothes Shopify catalog |
 
 **Help & account**
 
@@ -136,11 +135,11 @@ Under the hood these call Shopify **UCP MCP** cart/checkout tools.
 
 If Customer Account login succeeded, Shopify may also offer order-status style tools through **Customer MCP**.
 
-### How product search is split (important)
+### How product search works
 
-- **Car cabin filters** → fitment MySQL + `get_fitment_next_step` → enrich with Admin GraphQL  
-- **Home / furnace filters** → `search_store_products` with `home_filter` → **Admin GraphQL**  
-- **Fresheners** → `search_store_products` with `freshener` → Storefront MCP catalog search  
+- Shoppers ask for products in natural language.
+- The assistant calls Shopify MCP `search_catalog` / `search_shop_catalog`.
+- Matching products show as cards in chat; add-to-cart uses the variant ID from that result.  
 
 Same chat experience for the customer; different backends underneath.
 

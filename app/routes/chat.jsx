@@ -20,20 +20,8 @@ import {
   buildShippingAddressHintMessage,
   buildShippingEmailHintMessage
 } from "../services/cart-tools.server";
-import { isFitmentConfigured } from "../fitment/database.server.js";
-import {
-  callFitmentTool,
-  getFitmentTools,
-  isFitmentTool
-} from "../fitment/fitment-tools.server.js";
 import { enrichProductsWithComparison } from "../services/product-compare.server.js";
 import { buildStoreHelpHintMessage } from "../services/store-help-hints.server.js";
-import {
-  isInstallHelpQuestion,
-  extractInstallMediaFromMessages,
-  buildInstallMediaHintMessage
-} from "../services/install-media.server.js";
-import { buildCatalogSearchHintMessage } from "../services/catalog-search-hints.server.js";
 import {
   getStorePolicyTools,
   isStorePolicyTool,
@@ -42,12 +30,6 @@ import {
   callStorePolicyTool,
   withLocalPolicyFallback
 } from "../services/store-policies.server.js";
-import {
-  getCatalogSearchTools,
-  isCatalogSearchTool,
-  callCatalogSearchTool,
-  filterCatalogToolsForLlm
-} from "../services/catalog-search.server.js";
 import {
   getCustomerAddressTools,
   isCustomerAddressesTool,
@@ -370,10 +352,8 @@ async function handleChatSession({
       console.warn('Failed to connect to customer MCP server:', error.message);
     }
 
-    const fitmentTools = isFitmentConfigured() ? getFitmentTools() : [];
     const cartWrapperTools = getCartWrapperTools();
     const storePolicyTools = getStorePolicyTools();
-    const catalogSearchTools = getCatalogSearchTools();
     const loggedInCustomerId = String(
       body.customer_id || body.shopify_customer_id || ""
     ).trim();
@@ -382,26 +362,18 @@ async function handleChatSession({
     // Saved-address tool only for storefront-logged-in customers
     const customerAddressTools =
       customerLoggedIn && loggedInCustomerId ? getCustomerAddressTools() : [];
-    const mcpToolsForLlm = filterCatalogToolsForLlm(
-      filterCartToolsForLlm(mcpClient.tools)
-    );
+    const mcpToolsForLlm = filterCartToolsForLlm(mcpClient.tools);
     const allTools = [
       ...mcpToolsForLlm,
       ...cartWrapperTools,
-      ...fitmentTools,
       ...storePolicyTools,
-      ...catalogSearchTools,
       ...customerAddressTools
     ];
 
-    console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length} (${mcpToolsForLlm.length} after cart/catalog filter)`);
+    console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length} (${mcpToolsForLlm.length} after cart filter)`);
     console.log(`Cart wrapper tools: ${cartWrapperTools.length}`);
     console.log(`Store policy tools: ${storePolicyTools.length} (local fallback if Shopify policy empty)`);
-    console.log(`Catalog search tools: ${catalogSearchTools.length}`);
     console.log(`Customer address tools: ${customerAddressTools.length} (logged-in only)`);
-    if (fitmentTools.length) {
-      console.log(`Fitment tools enabled: ${fitmentTools.length}`);
-    }
     console.log(`Combined tools available to LLM: ${allTools.length}`);
 
     if (allTools.length === 0) {
@@ -411,9 +383,7 @@ async function handleChatSession({
     // Prepare conversation state
     let conversationHistory = [];
     let productsToDisplay = [];
-    let fitmentOptionsToDisplay = null;
     let customerAddressesToDisplay = null;
-    let installMediaToDisplay = null;
 
     const customerProfile = await syncCustomerContextFromRequest(conversationId, body);
 
@@ -455,23 +425,9 @@ async function handleChatSession({
       conversationHistory.unshift(shippingEmailHint);
     }
 
-    const installMediaProducts = extractInstallMediaFromMessages(dbMessages);
-    const installMediaHint = buildInstallMediaHintMessage(userMessage, installMediaProducts);
-    if (installMediaHint) {
-      conversationHistory.unshift(installMediaHint);
-    }
-    if (isInstallHelpQuestion(userMessage) && installMediaProducts.length > 0) {
-      installMediaToDisplay = installMediaProducts;
-    }
-
     const storeHelpHint = buildStoreHelpHintMessage(userMessage);
     if (storeHelpHint) {
       conversationHistory.unshift(storeHelpHint);
-    }
-
-    const catalogSearchHint = buildCatalogSearchHintMessage(userMessage);
-    if (catalogSearchHint) {
-      conversationHistory.unshift(catalogSearchHint);
     }
 
     const customerContextHint = buildCustomerContextHintMessage(customerProfile);
@@ -543,21 +499,10 @@ async function handleChatSession({
               });
             }
 
-            // Route fitment / store-policy tools locally; keep Shopify MCP tools unchanged
+            // Route custom wrappers locally; keep Shopify MCP tools unchanged
             let toolUseResponse;
             try {
-              if (isFitmentTool(toolName)) {
-                console.log("[chat] fitment tool invoke", { toolName, toolArgs, shop });
-                toolUseResponse = await callFitmentTool(toolName, toolArgs, { shop, conversationId });
-                console.log("[chat] fitment tool success", { toolName });
-              } else if (isCatalogSearchTool(toolName)) {
-                console.log("[chat] catalog search invoke", { toolName, toolArgs, shop });
-                toolUseResponse = await callCatalogSearchTool(mcpClient, toolName, toolArgs, {
-                  shop,
-                  conversationId
-                });
-                console.log("[chat] catalog search done", { toolName });
-              } else if (isStorePolicyTool(toolName)) {
+              if (isStorePolicyTool(toolName)) {
                 console.log("[chat] store policy tool invoke", { toolName, toolArgs });
                 toolUseResponse = await callStorePolicyTool(toolName, toolArgs);
                 console.log("[chat] store policy tool success", { toolName });
@@ -689,11 +634,6 @@ async function handleChatSession({
                   lastCartMutationResponse = toolUseResponse;
                 }
 
-                const choiceOptions = toolService.extractFitmentChoiceOptions(toolUseResponse);
-                if (choiceOptions?.options?.length) {
-                  fitmentOptionsToDisplay = choiceOptions;
-                }
-
                 if (isCustomerAddressesTool(toolName)) {
                   const addressUi = extractCustomerAddressesUi(toolUseResponse);
                   if (addressUi?.addresses?.length) {
@@ -765,31 +705,12 @@ async function handleChatSession({
     // Signal end of turn
     stream.sendMessage({ type: 'end_turn' });
 
-    // Clickable engine / qualifier choices (after assistant text)
-    if (fitmentOptionsToDisplay?.options?.length) {
-      stream.sendMessage({
-        type: 'fitment_options',
-        field: fitmentOptionsToDisplay.field,
-        title: fitmentOptionsToDisplay.title,
-        options: fitmentOptionsToDisplay.options
-      });
-    }
-
     // Compact saved-address select (logged-in customers)
     if (customerAddressesToDisplay?.addresses?.length) {
       stream.sendMessage({
         type: 'customer_addresses',
         title: customerAddressesToDisplay.title,
         addresses: customerAddressesToDisplay.addresses
-      });
-    }
-
-    // Installation PDF / video for "how do I install this"
-    if (installMediaToDisplay?.length) {
-      stream.sendMessage({
-        type: 'install_resources',
-        title: 'Installation resources',
-        products: installMediaToDisplay
       });
     }
 
@@ -800,13 +721,7 @@ async function handleChatSession({
         "[chat] product_results to client:",
         productsToDisplay.map((p) => ({
           title: p.title,
-          inStock: p.inStock,
-          filterType: p.filterType,
-          isBest: p.isBest,
-          compareScore: p.compareScore,
-          pdfTitle: p.pdfTitle || null,
-          pdfUrl: p.pdfUrl || null,
-          youtubeUrl: p.youtubeUrl || null
+          inStock: p.inStock
         }))
       );
       stream.sendMessage({
@@ -902,7 +817,7 @@ function isMyshopifyDomain(hostname) {
 
 /**
  * Admin API / offline sessions only accept *.myshopify.com shop args.
- * Prefer theme permanent_domain header, then env, never a custom domain like pureflowair.com.
+ * Prefer theme permanent_domain header, then env, never a custom domain.
  */
 function resolveAdminShopDomain({ shopDomainHeader, origin } = {}) {
   const fromHeader = getShopHostname(shopDomainHeader);

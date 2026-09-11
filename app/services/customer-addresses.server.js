@@ -47,7 +47,7 @@ export function getCustomerAddressTools() {
       description:
         "Load saved Shopify shipping addresses for a logged-in customer. " +
         "Call ONLY when they clearly mention addresses — e.g. saved address, my addresses, shipping address, use my address, default address, pick an address for checkout. " +
-        "NEVER call for product requests: \"show the products\", \"list filters\", \"show fresheners\", catalog results, or any \"show/list/see\" that is about products (not addresses). " +
+        "NEVER call for product requests: \"show the products\", catalog results, or any \"show/list/see\" that is about products (not addresses). " +
         "If unclear whether they want products or addresses, ask a short clarifying question — do NOT call this tool. " +
         "A compact address select UI appears after this tool — do NOT paste full address lists in your reply. " +
         "Prefer the default address when they say \"use my address\" or \"default\". " +

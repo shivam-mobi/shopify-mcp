@@ -4,7 +4,7 @@
  */
 import { saveMessage } from "../db.server";
 import AppConfig from "./config.server";
-import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId, isFreshenerProduct, resolveProductDescriptionHtml } from "./product-compare.server.js";
+import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId, resolveProductDescriptionHtml } from "./product-compare.server.js";
 
 /**
  * Creates a tool service instance
@@ -55,56 +55,6 @@ export function createToolService() {
     await addToolResultToHistory(conversationHistory, toolUseId, historyContent, conversationId);
   };
 
-  /**
-   * Build clickable choice chips for engine / qualifier fitment prompts.
-   */
-  const extractFitmentChoiceOptions = (toolUseResponse) => {
-    try {
-      const data = extractToolResponseData(toolUseResponse);
-      if (!data || !Array.isArray(data.options) || data.options.length === 0) {
-        return null;
-      }
-
-      if (data.status === "need_engine") {
-        return {
-          field: "engine",
-          title: "Choose an engine",
-          options: data.options
-            .map((option) => {
-              if (typeof option === "string") {
-                return { label: option, value: option };
-              }
-              const label = option.label || option.value || option.engine || option.id;
-              return label ? { label: String(label), value: String(label) } : null;
-            })
-            .filter(Boolean)
-        };
-      }
-
-      if (data.status === "need_qualifier") {
-        const qualifierName = data.qualifierName || "an option";
-        return {
-          field: "qualifier",
-          title: `Choose ${qualifierName}`,
-          options: data.options
-            .map((option) => {
-              if (typeof option === "string") {
-                return { label: option, value: option };
-              }
-              const label = option.label || option.value || option.id;
-              return label ? { label: String(label), value: String(label) } : null;
-            })
-            .filter(Boolean)
-        };
-      }
-
-      return null;
-    } catch (error) {
-      console.error("Error extracting fitment choice options:", error);
-      return null;
-    }
-  };
-
   const processProductSearchResult = (toolUseResponse) => {
     try {
       console.log("Processing product search result");
@@ -123,32 +73,22 @@ export function createToolService() {
     const originalData = extractToolResponseData(toolUseResponse) || {};
     const products = buildLlmProductSummary(rankedProducts);
     const listingMeta = buildProductListingMetadata(rankedProducts);
-    const {
-      best_pick_title: _bestPickTitle,
-      bestProductTitle: _bestProductTitle,
-      ...listingMetaForLlm
-    } = listingMeta;
 
     const enriched = {
       status: originalData.status || "success",
       source: toolName,
       products,
-      ...listingMetaForLlm,
+      ...listingMeta,
       ui_instruction:
         originalData.ui_instruction ||
-        "CRITICAL: Top Matching Products cards, Quick comparison, and Best pick UI are already shown in chat. " +
-        "FORBIDDEN in your reply: product names, prices, 'Priced at $…', descriptions, feature bullets, numbered product lists, or recommending a specific filter by name. " +
-        "Reply in 1-2 short sentences only (e.g. matching filters were found for their vehicle), then ask if they want to add one to the cart. " +
-        "If a later message asks how to install and products include installation_pdf_url / installation_video_url, share those links then."
+        "CRITICAL: Top Matching Products cards are already shown in chat. " +
+        "FORBIDDEN in your reply: product names, prices, 'Priced at $…', descriptions, feature bullets, numbered product lists, or recommending a specific product by name. " +
+        "Reply in 1-2 short sentences only (e.g. matching products were found), then ask if they want to add one to the cart."
     };
-
-    if (originalData.vehicle) enriched.vehicle = originalData.vehicle;
-    if (originalData.qualifiers) enriched.qualifiers = originalData.qualifiers;
 
     console.log("[tool] enriched product listing for LLM history", {
       source: toolName,
       count: products.length,
-      best_pick_variant_id: listingMeta.best_pick_variant_id,
       first_product_variant_id: listingMeta.first_product_variant_id
     });
 
@@ -199,7 +139,6 @@ export function createToolService() {
   };
 
   const shouldBuildCompareAttrs = (product) => {
-    if (isFreshenerProduct(product)) return true;
     return !product.filterType && product.isHepa == null;
   };
 
@@ -281,9 +220,6 @@ export function createToolService() {
       yGroup: product.yGroup || "",
       features: Array.isArray(product.features) ? product.features : undefined,
       tags: Array.isArray(product.tags) ? product.tags : product.tags,
-      pdfTitle: product.pdfTitle || product.pdf_title || null,
-      pdfUrl: product.pdfUrl || product.pdf_url || null,
-      youtubeUrl: product.youtubeUrl || product.youtube_url || null,
       ...(shouldBuildCompareAttrs(product)
         ? buildCompareAttributes({
             tags: product.tags,
@@ -424,7 +360,6 @@ export function createToolService() {
     handleToolError,
     handleToolSuccess,
     processProductSearchResult,
-    extractFitmentChoiceOptions,
     addToolResultToHistory
   };
 }

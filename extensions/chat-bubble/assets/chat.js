@@ -335,7 +335,7 @@
   }
 
   /**
-   * Include variant_id so similar titles (e.g. freshener scents) add the correct product.
+   * Include variant_id so similar titles add the correct product.
    * Full text is sent to the API; the chat bubble hides the variant_id.
    */
   function buildAddToCartMessage(product) {
@@ -360,7 +360,7 @@
   }
 
   function getStaticWelcomeFallback() {
-    return window.shopChatConfig?.welcomeMessage || "I can help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters.";
+    return window.shopChatConfig?.welcomeMessage || "I can help you find products, add them to your cart, and answer store questions.";
   }
 
   function getAssistantName() {
@@ -1083,7 +1083,7 @@
         if (greetingSubEl) {
           const sub =
             window.shopChatConfig?.greetingSubtitle ||
-            'Here to help you find the right cabin air filters, vehicle fitment, cabin filter air fresheners, and home filters.';
+            'Here to help you find products, add them to your cart, and answer store questions.';
           greetingSubEl.textContent = decodeHtmlEntities(sub);
         }
 
@@ -1266,75 +1266,6 @@
       },
 
       /**
-       * Display clickable engine / qualifier suggestion buttons
-       */
-      displayFitmentOptions: function(payload) {
-        const { messagesContainer, chatInput } = this.elements;
-        const options = Array.isArray(payload?.options) ? payload.options : [];
-        if (!options.length) return;
-
-        // Remove any previous unused suggestion chips
-        messagesContainer
-          .querySelectorAll('.shop-ai-fitment-options')
-          .forEach((el) => el.remove());
-
-        const wrap = document.createElement('div');
-        wrap.classList.add('shop-ai-fitment-options');
-
-        if (payload.title) {
-          const title = document.createElement('div');
-          title.classList.add('shop-ai-fitment-options-title');
-          title.textContent = payload.title;
-          wrap.appendChild(title);
-        }
-
-        const list = document.createElement('div');
-        list.classList.add('shop-ai-fitment-options-list');
-
-        options.forEach((option) => {
-          const label = option.label || option.value;
-          const value = option.value || option.label;
-          if (!label || !value) return;
-
-          const button = document.createElement('button');
-          button.type = 'button';
-          button.classList.add('shop-ai-fitment-option');
-          button.textContent = label;
-          button.addEventListener('click', () => {
-            if (wrap.classList.contains('is-used')) return;
-            wrap.classList.add('is-used');
-            wrap.querySelectorAll('.shop-ai-fitment-option').forEach((btn) => {
-              btn.disabled = true;
-              if (btn === button) btn.classList.add('is-selected');
-            });
-
-            if (chatInput) chatInput.value = '';
-            ShopAIChat.UI.showChatView();
-            ShopAIChat.Message.sendText(value, messagesContainer);
-          });
-          list.appendChild(button);
-        });
-
-        wrap.appendChild(list);
-        messagesContainer.appendChild(wrap);
-
-        // Buttons already show the choices — drop the duplicate list from assistant text
-        const assistants = messagesContainer.querySelectorAll('.shop-ai-message.assistant');
-        for (let i = assistants.length - 1; i >= 0; i -= 1) {
-          const el = assistants[i];
-          if (!el.dataset.rawText || !el.dataset.rawText.trim()) continue;
-          el.dataset.rawText = ShopAIChat.Formatting.stripListedFitmentOptions(
-            el.dataset.rawText,
-            options
-          );
-          ShopAIChat.Formatting.formatMessageContent(el);
-          break;
-        }
-
-        this.scrollToBottom();
-      },
-
-      /**
        * Compact <select> for saved Shopify addresses (logged-in customers).
        */
       displayCustomerAddresses: function(payload) {
@@ -1408,66 +1339,6 @@
         row.appendChild(select);
         row.appendChild(button);
         wrap.appendChild(row);
-        messagesContainer.appendChild(wrap);
-        this.scrollToBottom();
-      },
-
-      /**
-       * Compact install PDF / video links for "how do I install this".
-       */
-      displayInstallResources: function(payload) {
-        const { messagesContainer } = this.elements;
-        const products = Array.isArray(payload?.products) ? payload.products : [];
-        if (!products.length) return;
-
-        messagesContainer
-          .querySelectorAll('.shop-ai-install-resources')
-          .forEach((el) => el.remove());
-
-        const wrap = document.createElement('div');
-        wrap.classList.add('shop-ai-install-resources');
-
-        const title = document.createElement('div');
-        title.classList.add('shop-ai-install-resources-title');
-        title.textContent = payload.title || 'Installation resources';
-        wrap.appendChild(title);
-
-        products.forEach((product) => {
-          const row = document.createElement('div');
-          row.classList.add('shop-ai-install-resource');
-
-          const name = document.createElement('div');
-          name.classList.add('shop-ai-install-resource-name');
-          name.textContent = product.title || 'Product';
-          row.appendChild(name);
-
-          const links = document.createElement('div');
-          links.classList.add('shop-ai-install-resource-links');
-
-          if (product.pdfUrl) {
-            const pdf = document.createElement('a');
-            pdf.classList.add('shop-ai-product-pdf');
-            pdf.href = product.pdfUrl;
-            pdf.target = '_blank';
-            pdf.rel = 'noopener noreferrer';
-            pdf.textContent = product.pdfTitle || 'Installation Guide (PDF)';
-            links.appendChild(pdf);
-          }
-
-          if (product.youtubeUrl) {
-            const yt = document.createElement('a');
-            yt.classList.add('shop-ai-product-youtube');
-            yt.href = product.youtubeUrl;
-            yt.target = '_blank';
-            yt.rel = 'noopener noreferrer';
-            yt.textContent = 'Installation Video';
-            links.appendChild(yt);
-          }
-
-          row.appendChild(links);
-          wrap.appendChild(row);
-        });
-
         messagesContainer.appendChild(wrap);
         this.scrollToBottom();
       },
@@ -1624,10 +1495,7 @@
        */
       displayProductResults: function(products) {
         const { messagesContainer } = this.elements;
-        console.log('[ShopAIChat] displayProductResults compare-best-12', {
-          count: Array.isArray(products) ? products.length : 0,
-          best: Array.isArray(products) ? products.find((p) => p && p.isBest)?.title : null
-        });
+        const list = Array.isArray(products) ? products.slice() : [];
 
         // Create a wrapper for the product section
         const productSection = document.createElement('div');
@@ -1640,9 +1508,6 @@
         header.classList.add('shop-ai-product-header');
         header.innerHTML = '<h4>Top Matching Products</h4>';
         productSection.appendChild(header);
-
-        const list = Array.isArray(products) ? products.slice() : [];
-        const best = list.find((p) => p && p.isBest) || list[0] || null;
 
         // Horizontal carousel with scroll arrows (so users see more products exist)
         const carousel = document.createElement('div');
@@ -1681,14 +1546,6 @@
 
           refresh();
           setTimeout(refresh, 120);
-
-          if (list.length > 1) {
-            productSection.appendChild(ShopAIChat.Product.createComparisonTable(list));
-          }
-
-          if (best) {
-            productSection.appendChild(ShopAIChat.Product.createBestProductSection(best));
-          }
         }
 
         this.scrollToBottom();
@@ -1927,35 +1784,7 @@
       },
 
       /**
-       * Engine/qualifier choices live in buttons — drop them from assistant text.
-       */
-      stripListedFitmentOptions: function(text, options) {
-        let source = String(text || '');
-        const labels = (Array.isArray(options) ? options : [])
-          .map((option) => String(option.label || option.value || '').trim())
-          .filter(Boolean);
-        if (!labels.length) return source;
-
-        labels.forEach((label) => {
-          const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          source = source.replace(
-            new RegExp(`^\\s*(?:[-*]\\s+|\\d+\\.\\s+)?(?:\\*\\*)?${escaped}(?:\\*\\*)?\\s*$`, 'gim'),
-            ''
-          );
-          source = source.replace(new RegExp(`\\*\\*${escaped}\\*\\*`, 'gi'), '');
-        });
-
-        source = source
-          .replace(/please choose one of the following(?: engines?)?:?\s*/gi, '')
-          .replace(/choose one of the following(?: engines?)?:?\s*/gi, '')
-          .replace(/\n{3,}/g, '\n\n')
-          .trim();
-
-        return source;
-      },
-
-      /**
-       * Best pick lives in the UI card — strip it from assistant chat text.
+       * Strip leftover "best pick" wording from assistant chat text.
        */
       stripBestPickFromReply: function(text) {
         let source = String(text || '');
@@ -2337,16 +2166,8 @@
             ShopAIChat.UI.displayProductResults(data.products);
             break;
 
-          case 'fitment_options':
-            ShopAIChat.UI.displayFitmentOptions(data);
-            break;
-
           case 'customer_addresses':
             ShopAIChat.UI.displayCustomerAddresses(data);
-            break;
-
-          case 'install_resources':
-            ShopAIChat.UI.displayInstallResources(data);
             break;
 
           case 'theme_cart_sync':
@@ -4101,9 +3922,6 @@
       createCard: function(product) {
         const card = document.createElement('div');
         card.classList.add('shop-ai-product-card');
-        if (product.isBest) {
-          card.classList.add('shop-ai-product-card--best');
-        }
 
         // Create image container
         const imageContainer = document.createElement('div');
@@ -4118,13 +3936,6 @@
           this.src = 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png';
         };
         imageContainer.appendChild(image);
-
-        if (product.isBest) {
-          const badge = document.createElement('span');
-          badge.classList.add('shop-ai-best-badge');
-          badge.textContent = 'Best pick';
-          imageContainer.appendChild(badge);
-        }
 
         card.appendChild(imageContainer);
 
@@ -4195,34 +4006,6 @@
         }
         info.appendChild(stock);
 
-        const resources = document.createElement('div');
-        resources.classList.add('shop-ai-product-resources');
-
-        const pdfUrl = String(product.pdfUrl || product.pdf_url || '').trim();
-        const pdfTitle = String(product.pdfTitle || product.pdf_title || '').trim();
-        if (pdfUrl) {
-          const pdfLink = document.createElement('a');
-          pdfLink.classList.add('shop-ai-product-pdf');
-          pdfLink.href = pdfUrl;
-          pdfLink.target = '_blank';
-          pdfLink.rel = 'noopener noreferrer';
-          pdfLink.textContent = pdfTitle || 'View PDF';
-          resources.appendChild(pdfLink);
-        }
-
-        const youtubeUrl = String(product.youtubeUrl || product.youtube_url || '').trim();
-        if (youtubeUrl) {
-          const ytLink = document.createElement('a');
-          ytLink.classList.add('shop-ai-product-youtube');
-          ytLink.href = youtubeUrl;
-          ytLink.target = '_blank';
-          ytLink.rel = 'noopener noreferrer';
-          ytLink.textContent = 'Installation Video';
-          resources.appendChild(ytLink);
-        }
-
-        info.appendChild(resources);
-
         // Only show Add to Cart when in stock
         if (inStock) {
           const button = document.createElement('button');
@@ -4246,248 +4029,6 @@
 
         card.appendChild(info);
 
-        return card;
-      },
-
-      createComparisonTable: function(products) {
-        const wrap = document.createElement('div');
-        wrap.classList.add('shop-ai-compare');
-
-        const heading = document.createElement('h5');
-        heading.classList.add('shop-ai-compare-title');
-        heading.textContent = 'Quick comparison';
-        wrap.appendChild(heading);
-
-        const scroller = document.createElement('div');
-        scroller.classList.add('shop-ai-compare-scroll');
-
-        const table = document.createElement('table');
-        table.classList.add('shop-ai-compare-table');
-
-        const productName = (product) => {
-          const full = String(product.title || product.sku || product.partNumber || 'Product').trim();
-          if (full.length <= 42) return full;
-          return `${full.slice(0, 39).trim()}…`;
-        };
-
-        const productNameFull = (product) =>
-          String(product.title || product.sku || product.partNumber || 'Product').trim();
-
-        const yesNo = (value) => (value ? 'Yes' : 'No');
-
-        const headerRow = document.createElement('tr');
-        const featureHeader = document.createElement('th');
-        featureHeader.textContent = 'Feature';
-        headerRow.appendChild(featureHeader);
-        products.forEach((product) => {
-          const th = document.createElement('th');
-          const label = document.createElement('span');
-          label.classList.add('shop-ai-compare-product-head');
-          label.textContent = productName(product);
-          th.appendChild(label);
-          th.title = productNameFull(product);
-          if (product.isBest) th.classList.add('is-best');
-          headerRow.appendChild(th);
-        });
-        table.appendChild(headerRow);
-
-        const isFreshenerCompare = products.some(
-          (p) =>
-            p.productCategory === 'freshener' ||
-            p.filterType === 'freshener' ||
-            /\bfreshener/i.test(String(p.title || '')) ||
-            /\bfreshener|freshers/i.test(String(p.productType || p.product_type || ''))
-        );
-
-        const rows = isFreshenerCompare
-          ? [
-              {
-                label: 'Fragrance',
-                value: (p) => p.fragrance || '—'
-              },
-              {
-                label: 'Duration',
-                value: (p) =>
-                  typeof p.durationDays === 'number' ? `Up to ${p.durationDays} days` : '—'
-              },
-              {
-                label: 'Odor eliminator',
-                value: (p) => yesNo(p.hasOdorEliminator)
-              },
-              { label: 'Price', value: (p) => p.price || '—' },
-              {
-                label: 'Stock',
-                value: (p) =>
-                  p.inStock && p.availableForSale !== false ? 'In stock' : 'Out of stock'
-              }
-            ]
-          : [
-              { label: 'HEPA', value: (p) => yesNo(p.isHepa) },
-              { label: 'Antibacterial', value: (p) => yesNo(p.hasAntibacterial) },
-              { label: 'Charcoal / odor', value: (p) => yesNo(p.hasCharcoal) },
-              { label: 'Price', value: (p) => p.price || '—' },
-              {
-                label: 'Stock',
-                value: (p) =>
-                  p.inStock && p.availableForSale !== false ? 'In stock' : 'Out of stock'
-              }
-            ];
-
-        rows.forEach((row) => {
-          const tr = document.createElement('tr');
-          const label = document.createElement('td');
-          label.textContent = row.label;
-          tr.appendChild(label);
-          products.forEach((product) => {
-            const td = document.createElement('td');
-            td.textContent = row.value(product);
-            if (product.isBest) td.classList.add('is-best');
-            tr.appendChild(td);
-          });
-          table.appendChild(tr);
-        });
-
-        scroller.appendChild(table);
-        wrap.appendChild(scroller);
-        return wrap;
-      },
-
-      createBestProductSection: function(bestProduct) {
-        const section = document.createElement('div');
-        section.classList.add('shop-ai-best-section');
-
-        const heading = document.createElement('h5');
-        heading.classList.add('shop-ai-best-section-title');
-        heading.textContent = 'Best product';
-        section.appendChild(heading);
-
-        section.appendChild(ShopAIChat.Product.createBestHighlightCard(bestProduct));
-        return section;
-      },
-
-      createBestHighlightCard: function(product) {
-        const card = document.createElement('div');
-        card.classList.add('shop-ai-best-highlight');
-
-        const imageWrap = document.createElement('div');
-        imageWrap.classList.add('shop-ai-best-highlight-image');
-        const image = document.createElement('img');
-        image.src = product.image_url || 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png';
-        image.alt = product.title || 'Best product';
-        image.onerror = function() {
-          this.src = 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png';
-        };
-        imageWrap.appendChild(image);
-
-        const badge = document.createElement('span');
-        badge.classList.add('shop-ai-best-badge');
-        badge.textContent = 'Best pick';
-        imageWrap.appendChild(badge);
-        card.appendChild(imageWrap);
-
-        const info = document.createElement('div');
-        info.classList.add('shop-ai-best-highlight-info');
-
-        let productHref = '';
-        if (product.url) {
-          productHref = product.url;
-          if (productHref.includes('yourstore.com')) {
-            const storefrontOrigin = (window.shopChatConfig && window.shopChatConfig.storefrontUrl)
-              ? String(window.shopChatConfig.storefrontUrl).replace(/\/+$/, '')
-              : window.location.origin;
-            productHref = productHref.replace(/https?:\/\/(?:www\.)?yourstore\.com/gi, storefrontOrigin);
-          } else if (productHref.startsWith('/')) {
-            const storefrontOrigin = (window.shopChatConfig && window.shopChatConfig.storefrontUrl)
-              ? String(window.shopChatConfig.storefrontUrl).replace(/\/+$/, '')
-              : window.location.origin;
-            productHref = storefrontOrigin + productHref;
-          }
-        }
-
-        const title = document.createElement('h3');
-        title.classList.add('shop-ai-best-highlight-title');
-        const fullTitle = product.title || '';
-        title.textContent = fullTitle.length <= 72 ? fullTitle : `${fullTitle.slice(0, 69).trim()}…`;
-        title.title = fullTitle;
-        if (productHref) {
-          title.classList.add('shop-ai-best-highlight-title--link');
-          title.addEventListener('click', function(event) {
-            event.preventDefault();
-            event.stopPropagation();
-            window.open(productHref, '_blank', 'noopener,noreferrer');
-          });
-        }
-        info.appendChild(title);
-
-        const qty = typeof product.inventoryQuantity === 'number' ? product.inventoryQuantity : null;
-        const inStock =
-          product.inStock === true &&
-          product.availableForSale !== false &&
-          qty !== 0;
-
-        const price = document.createElement('span');
-        price.classList.add('shop-ai-product-price');
-        price.textContent = product.price || '';
-
-        const stock = document.createElement('span');
-        stock.classList.add('shop-ai-product-stock');
-        if (inStock) {
-          stock.classList.add('in-stock');
-          stock.textContent = 'In stock';
-        } else {
-          stock.classList.add('out-of-stock');
-          stock.textContent = 'Out of stock';
-        }
-
-        const meta = document.createElement('div');
-        meta.classList.add('shop-ai-best-highlight-meta');
-        meta.appendChild(price);
-        meta.appendChild(stock);
-        info.appendChild(meta);
-
-        const pdfUrl = String(product.pdfUrl || product.pdf_url || '').trim();
-        const pdfTitle = String(product.pdfTitle || product.pdf_title || '').trim();
-        if (pdfUrl) {
-          const pdfLink = document.createElement('a');
-          pdfLink.classList.add('shop-ai-product-pdf');
-          pdfLink.href = pdfUrl;
-          pdfLink.target = '_blank';
-          pdfLink.rel = 'noopener noreferrer';
-          pdfLink.textContent = pdfTitle || 'View PDF';
-          info.appendChild(pdfLink);
-        }
-
-        const youtubeUrl = String(product.youtubeUrl || product.youtube_url || '').trim();
-        if (youtubeUrl) {
-          const ytLink = document.createElement('a');
-          ytLink.classList.add('shop-ai-product-youtube');
-          ytLink.href = youtubeUrl;
-          ytLink.target = '_blank';
-          ytLink.rel = 'noopener noreferrer';
-          ytLink.textContent = 'Installation Video';
-          info.appendChild(ytLink);
-        }
-
-        if (inStock) {
-          const actions = document.createElement('div');
-          actions.classList.add('shop-ai-best-highlight-actions');
-          const button = document.createElement('button');
-          button.classList.add('shop-ai-add-to-cart');
-          button.textContent = 'Add to Cart';
-          button.addEventListener('click', function() {
-            const input = document.querySelector('.shop-ai-chat-input-field');
-            ShopAIChat.UI.showChatView();
-            if (input) {
-              input.value = buildAddToCartMessage(product);
-              const sendButton = document.querySelector('.shop-ai-chat-send');
-              if (sendButton) sendButton.click();
-            }
-          });
-          actions.appendChild(button);
-          info.appendChild(actions);
-        }
-
-        card.appendChild(info);
         return card;
       }
     },

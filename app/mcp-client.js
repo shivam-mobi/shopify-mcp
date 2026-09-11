@@ -485,7 +485,7 @@ const MCP_WARMUP_KEY = "__shopAiMcpToolsWarmup";
 
 /**
  * Discover Customer Account MCP URL the same way chat does (well-known).
- * @param {string} storefrontUrl e.g. https://pureflowair.com
+ * @param {string} storefrontUrl e.g. https://manishclothes.myshopify.com
  * @returns {Promise<string|null>}
  */
 export async function discoverCustomerMcpUrl(storefrontUrl) {

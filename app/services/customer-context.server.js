@@ -142,9 +142,9 @@ export function buildCustomerContextHintMessage(profile = {}) {
     "Use their first name naturally when you know it — briefly, not as the whole greeting. " +
       "If only last name is known, you may use it politely. " +
       "If no name is known, skip the name. " +
-      "For hi/hello greetings, briefly offer help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters. " +
+      "For hi/hello greetings, briefly offer help finding products, checking the cart, and answering store questions. " +
       "Do NOT say \"AI-powered shopping assistant\" — the chat UI already shows that. " +
-      "Never say \"vehicle parts\" or long generic lines like \"How can I assist you today\". " +
+      "Never use long generic lines like \"How can I assist you today\". " +
       "Do not ask for their name at welcome unless needed for shipping or orders."
   );
 
@@ -152,7 +152,7 @@ export function buildCustomerContextHintMessage(profile = {}) {
     parts.push(
       "Saved shipping addresses: available via get_customer_addresses. " +
         "Call that tool ONLY when they clearly ask about addresses (saved/shipping/my/default address, use my address for checkout). " +
-        "NEVER call it for \"show the products\", filters, fresheners, or other product lists — those are not address requests. " +
+        "NEVER call it for \"show the products\" or other product lists — those are not address requests. " +
         "If unclear (e.g. just \"show\"), ask what they want; do not guess addresses. " +
         "A select dropdown appears in the UI after a valid address call — reply in one short sentence only. Do not invent addresses."
     );
@@ -197,11 +197,11 @@ export function buildWelcomePromptMessages(profile = {}, { welcomeTemplate } = {
   const instruction =
     "Generate the opening welcome message for a NEW chat session. " +
     "Reply with 1-2 short sentences only. " +
-    "Say you can help with cabin air filters and vehicle fitment (year, make, model), cabin filter air fresheners, and home filters. " +
+    "Say you can help find products, add them to the cart, and answer store questions. " +
     "Do NOT say \"AI-powered shopping assistant\" or \"I'm your AI-powered shopping assistant\" — the chat UI already shows that. " +
     "If first name is known, you may start with a brief Hi {firstName}! — then the help line. " +
     "If no name is known, skip the name — never output 'Hi !'. " +
-    "Do NOT use phrases like 'vehicle parts', 'How can I assist you today', or long generic offers. " +
+    "Do NOT use phrases like 'How can I assist you today' or long generic offers. " +
     "Do not call any tools. Do not ask a long list of questions." +
     (template
       ? ` Merchant welcome style hint (adapt, do not copy verbatim): ${template}`
@@ -227,9 +227,9 @@ export function getFallbackWelcomeMessage(profile = {}) {
   const firstName = normalizeCustomerName(profile.firstName);
 
   if (firstName) {
-    return `Hi ${firstName}! I can help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters.`;
+    return `Hi ${firstName}! I can help you find products, add them to your cart, and answer store questions.`;
   }
-  return "I can help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters. What are you looking for?";
+  return "I can help you find products, add them to your cart, and answer store questions. What are you looking for?";
 }
 
 const GREETING_PATTERN = /^(hi|hello|hey|howdy|good\s+(morning|afternoon|evening)|what'?s\s+up|yo)[!.?\s]*$/i;
@@ -253,9 +253,9 @@ export function buildGreetingHintMessage(userMessage, profile = {}) {
     content:
       "The customer sent a simple greeting. Reply in 1-2 short sentences only. " +
       nameHint +
-      "Mention you help with cabin air filters and vehicle fitment (year/make/model), cabin filter air fresheners, and home filters. " +
+      "Mention you help find products, manage the cart, and answer store questions. " +
       "Do NOT say \"AI-powered shopping assistant\" or \"I'm your AI-powered shopping assistant\" — the chat UI already shows that. " +
-      "Do NOT say 'vehicle parts', 'How can I assist you today', or other long generic support lines. " +
+      "Do NOT say 'How can I assist you today' or other long generic support lines. " +
       "Do not call tools for a plain greeting."
   };
 }

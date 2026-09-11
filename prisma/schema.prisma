@@ -136,7 +136,7 @@ model McpCallLog {
   @@index([createdAt])
 }
 
-/// Local PUREFLOW policy cheat sheet used when Shopify policy search is empty.
+/// Local store policy cheat sheet used when Shopify policy search is empty.
 model StorePolicyDigest {
   id          String   @id @default("default")
   title       String

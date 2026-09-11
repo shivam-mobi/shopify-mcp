@@ -1,4 +1,4 @@
-<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=speak-config-2">
+<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=top-cards-1">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
 {% assign brand_color = block.settings.chat_bubble_color | default: '#00BCF2' %}
@@ -13,7 +13,7 @@
 
 <div
   class="shop-ai-chat-container"
-  data-shop-ai-assets="dori-redesign-1"
+  data-shop-ai-assets="top-cards-1"
   style="--shop-ai-brand: {{ brand_color }};"
 >
   <!-- Floating launcher -->
@@ -92,7 +92,7 @@
       </div>
 
       <div class="shop-ai-suggestions">
-        {% assign suggestions_raw = block.settings.suggestions | default: "Find the right cabin air filter for my vehicle\nCompare HEPA vs standard filters\nWhat filter fits my car?\nHelp me choose the best filter" %}
+        {% assign suggestions_raw = block.settings.suggestions | default: "Show me popular products\nWhat's in my cart?\nHelp me find something\nWhat is your shipping policy?" %}
         {% assign suggestions = suggestions_raw | newline_to_br | split: '<br />' %}
         {% for suggestion in suggestions %}
           {% assign text = suggestion | strip %}
@@ -165,7 +165,7 @@
   </div>
 </div>
 
-<script src="{{ 'chat.js' | asset_url }}?v=speak-config-2" defer></script>
+<script src="{{ 'chat.js' | asset_url }}?v=top-cards-1" defer></script>
 <script>
   window.shopChatConfig = {
     apiUrl: "https://struggle-throwing-recycled.ngrok-free.dev",
@@ -244,13 +244,13 @@
       "type": "text",
       "id": "welcome_message",
       "label": "Welcome Message",
-      "default": "I can help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters."
+      "default": "I can help you find products, add them to your cart, and answer store questions."
     },
     {
       "type": "textarea",
       "id": "suggestions",
       "label": "Suggestion chips (one per line)",
-      "default": "Find the right cabin air filter for my vehicle\nCompare HEPA vs standard filters\nWhat filter fits my car?\nHelp me choose the best filter"
+      "default": "Show me popular products\nWhat's in my cart?\nHelp me find something\nWhat is your shipping policy?"
     },
     {
       "type": "select",
