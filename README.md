@@ -1,67 +1,209 @@
-# Build an AI Agent for Your Storefront
+# AIRA Chatbot — Easy Setup Guide
 
-A Shopify template app that lets you embed an AI-powered chat widget on your storefront. Shoppers can search for products, ask about policies or shipping, and complete purchases - all without leaving the conversation. Under the hood it speaks the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) to tap into Shopify’s APIs.
+This app adds a chat bubble on your Shopify store. Shoppers can search products, add items to cart, and ask about shipping or store policies.
 
-## Overview
+Follow the steps below in order.
 
-- **What it is**: A chat widget + backend that turns any storefront into an AI shopping assistant.
-- **Key features**:
-  - Natural-language product discovery
-  - Store policy & FAQ lookup
-  - Create carts, add or remove items, and initiate checkout
-  - Track orders and initiate returns
+---
 
-## Developer Docs
-- Everything from installation to deep dives lives on https://shopify.dev/docs/apps/build/storefront-mcp.
-- Clone this repo and follow the instructions on the dev docs.
+## Before you start
 
-## Examples
-- `hi` > will return a LLM based response. Note that you can customize the LLM call with your own prompt.
-- `can you search for snowboards` > will use the `search_shop_catalog` MCP tool.
-- `add The Videographer Snowboard to my cart` > will use the `update_cart` MCP tool and offer a checkout URL.
-- `update my cart to make that 2 items please` > will use the `update_cart` MCP tool.
-- `can you tell me what is in my cart` > will use the `get_cart` MCP tool.
-- `what languages is your store available in?` > will use the `search_shop_policies_and_faqs` MCP tool.
-- `I'd like to checkout` > will call checkout from one of the above MCP cart tools.
-- `Show me my recent orders` > will use the `get_most_recent_order_status` MCP tool.
-- `Can you give me more details about order Id 1` > will use the `get_order_status` MCP tool.
+You need:
 
-## Architecture
+- A Shopify Partner / Dev Dashboard account
+- Shopify CLI installed
+- Node.js installed
+- This project on your computer
 
-### Components
-This app consists of two main components:
+In the project folder, install packages once:
 
-1. **Backend**: A React Router app server that handles communication with the configured LLM (Gemini or Claude), processes chat messages, and acts as an MCP Client.
-2. **Chat UI**: A Shopify theme extension that provides the customer-facing chat interface.
+```bash
+npm install
+```
 
-When you start the app, it will:
-- Start React Router in development mode.
-- Tunnel your local server so Shopify can reach it.
-- Provide a preview URL to install the app on your development store.
+Put your public app URL in `.env` as `APP_URL`.
 
-For direct testing, point your test suite at the `/chat` endpoint (GET or POST for streaming).
+- If you use **ngrok**, use the ngrok `https://...` URL.
+- If you use your **own server**, use that server URL.
 
-### MCP Tools Integration
-- The backend already initializes all Shopify MCP tools—see [`app/mcp-client.js`](./app/mcp-client.js).
-- These tools let your LLM invoke product search, cart actions, order lookups, etc.
-- More in our [dev docs](https://shopify.dev/docs/apps/build/storefront-mcp).
+Example:
 
-### Tech Stack
-- **Framework**: [React Router](https://reactrouter.com/)
-- **AI**: Pluggable LLM providers — [Gemini](https://ai.google.dev/) or [Claude](https://www.anthropic.com/claude). Set `LLM_PROVIDER` in `.env`.
-- **Shopify Integration**: [@shopify/shopify-app-react-router](https://www.npmjs.com/package/@shopify/shopify-app-react-router)
-- **Database**: SQLite (via Prisma) for session storage
+```bash
+APP_URL=https://your-ngrok-or-server-url
+```
 
-## Customizations
-This repo can be customized. You can:
-- Edit the prompt
-- Change the chat widget UI
-- Swap out the LLM
+---
 
-You can learn how from our [dev docs](https://shopify.dev/docs/apps/build/storefront-mcp).
+## Step 1 — Log in to Shopify
 
-## Deployment
-Follow standard Shopify app deployment procedures as outlined in the [Shopify documentation](https://shopify.dev/docs/apps/deployment/web).
+First log out, so you start clean:
 
-## Contributing
-We appreciate your interest in contributing to this project. As this is an example repository intended for educational and reference purposes, we are not accepting contributions.
+```bash
+shopify auth logout
+```
+
+Then log in:
+
+```bash
+shopify auth login
+```
+
+This command shows a **URL**.
+
+1. Copy that URL.
+2. Open it in the same browser where you are already logged in to Shopify (Dev Dashboard).
+3. Click **Allow** / approve the login.
+
+When that succeeds, the terminal login is done.
+
+---
+
+## Step 2 — Link this project to your custom app
+
+```bash
+shopify app config link
+```
+
+This connects the code to your Shopify custom app.
+
+It will create (or update) a `.toml` file, for example:
+
+- `shopify.app.toml`
+- or `shopify.app.something.toml`
+
+---
+
+## Step 3 — Update the app URL and redirect URLs
+
+Open the `.toml` file that was created.
+
+Set the **app URL** to the same public URL your chatbot will use.
+
+**If you use ngrok**
+
+1. Start ngrok in another terminal:
+
+   ```bash
+   ngrok http 3000
+   ```
+
+2. Copy the `https://....ngrok-free.dev` URL.
+3. Put that URL in the `.toml` file.
+
+**If you use your own server**
+
+Use your server URL instead of ngrok.
+
+In the `.toml` file, update:
+
+```toml
+application_url = "https://YOUR-PUBLIC-URL"
+
+[auth]
+redirect_urls = [
+  "https://YOUR-PUBLIC-URL/auth/callback",
+  "https://YOUR-PUBLIC-URL/api/auth"
+]
+```
+
+Also put the same URL in `.env`:
+
+```bash
+APP_URL=https://YOUR-PUBLIC-URL
+SHOPIFY_APP_URL=https://YOUR-PUBLIC-URL
+REDIRECT_URL=https://YOUR-PUBLIC-URL/auth/callback
+```
+
+Use the same URL everywhere. Do not mix localhost, ngrok, and server URLs.
+
+---
+
+## Step 4 — Deploy the custom app
+
+This pushes the app (including the chat bubble) to Shopify:
+
+```bash
+shopify app deploy
+```
+
+If Shopify asks which config to use, pick the `.toml` file you just updated.
+
+After deploy, install / open the app on the store where you want the chatbot.
+
+---
+
+## Step 5 — Start the chatbot server
+
+Keep ngrok running if you use ngrok.
+
+Then start the chatbot:
+
+```bash
+npm run dev:server
+```
+
+This runs the chatbot backend on port `3000`.
+
+The chat bubble on the store talks to this server using your public URL.
+
+---
+
+## Step 6 — Turn on the chat bubble in the theme
+
+1. Open the Shopify admin for the store where you installed this custom app.
+2. Go to **Online Store**.
+3. Open your live theme and click **Customize** (edit theme).
+4. Open **App embeds**.
+5. Find **AIRA** and **enable** it.
+6. Save the theme.
+
+The chat bubble should now show on the store.
+
+If you do not see it:
+
+- Hard refresh the store page.
+- Make sure you enabled AIRA on the **same theme** the store is using.
+- Make sure `npm run dev:server` is still running.
+- If you use ngrok, make sure ngrok is still running and the URL did not change.
+
+---
+
+## Quick command list
+
+```bash
+shopify auth logout
+shopify auth login
+shopify app config link
+# update URL + redirect URLs in the .toml file (and in .env)
+shopify app deploy
+npm run dev:server
+```
+
+If you use ngrok:
+
+```bash
+ngrok http 3000
+```
+
+---
+
+## After that, try the chat
+
+Open the store, click the chat bubble, and try:
+
+- `Hi`
+- `Show me popular products`
+- `What's in my cart?`
+- `What is your shipping policy?`
+
+---
+
+## If the chat bubble does not load new changes
+
+Theme files (`chat.js` / `chat.css`) only update after you deploy the app again:
+
+```bash
+shopify app deploy
+```
+
+Then hard refresh the store page.
