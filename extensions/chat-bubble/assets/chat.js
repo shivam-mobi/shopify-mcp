@@ -94,13 +94,30 @@
       : 'localStorage';
   }
 
+  function coerceTimestamp(value, fallback = Date.now()) {
+    if (value == null || value === '') return fallback;
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      // Unix seconds vs milliseconds
+      return value > 0 && value < 1e12 ? value * 1000 : value;
+    }
+
+    const asNumber = Number(value);
+    if (Number.isFinite(asNumber) && String(value).trim() !== '') {
+      return asNumber > 0 && asNumber < 1e12 ? asNumber * 1000 : asNumber;
+    }
+
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? fallback : parsed;
+  }
+
   function normalizeSessionEntry(s) {
     if (!s || !s.id) return null;
     return {
       id: String(s.id),
       title: s.title || 'Chat',
       preview: s.preview || '',
-      updatedAt: Number(s.updatedAt) || Date.now()
+      updatedAt: coerceTimestamp(s.updatedAt, Date.now())
     };
   }
 
@@ -414,7 +431,9 @@
   }
 
   function formatSessionDate(timestamp) {
-    const date = new Date(timestamp);
+    const date = new Date(coerceTimestamp(timestamp, Date.now()));
+    if (Number.isNaN(date.getTime())) return '';
+
     const now = new Date();
     const isToday = date.toDateString() === now.toDateString();
     const yesterday = new Date(now);
@@ -437,7 +456,7 @@
         ...existing,
         ...patch,
         id: conversationId,
-        updatedAt: patch.updatedAt || Date.now()
+        updatedAt: coerceTimestamp(patch.updatedAt, Date.now())
       };
 
       if (index >= 0) {
@@ -474,16 +493,7 @@
 
     replaceAll: function(sessions) {
       const list = Array.isArray(sessions) ? sessions : [];
-      writeSessionsIndex(
-        list
-          .filter((s) => s && s.id)
-          .map((s) => ({
-            id: String(s.id),
-            title: s.title || 'Chat',
-            preview: s.preview || '',
-            updatedAt: Number(s.updatedAt) || Date.now()
-          }))
-      );
+      writeSessionsIndex(list.map(normalizeSessionEntry).filter(Boolean));
     },
 
     /**
@@ -539,7 +549,6 @@
         const fromTheme = window.shopChatConfig?.conversationStorage;
         if (fromTheme) {
           conversationStorageMode = resolveConversationStorageMode(fromTheme);
-          return;
         }
 
         try {
@@ -550,10 +559,25 @@
 
           if (response.ok) {
             const data = await response.json();
-            conversationStorageMode = resolveConversationStorageMode(data.conversationStorage);
+            if (!fromTheme && data.conversationStorage) {
+              conversationStorageMode = resolveConversationStorageMode(data.conversationStorage);
+            }
+            window.shopChatConfig = window.shopChatConfig || {};
+            if (data.speak && typeof data.speak === 'object') {
+              const mode = String(data.speak.mode || '').toLowerCase();
+              window.shopChatConfig.speak = {
+                mode: mode || (data.speak.enabled === false ? 'off' : 'auto'),
+                enabled: data.speak.enabled !== false,
+                edgeEnabled: data.speak.edgeEnabled !== false,
+                browserEnabled: data.speak.browserEnabled !== false
+              };
+            }
+            if (typeof data.showToolCallsInChat === 'boolean') {
+              window.shopChatConfig.showToolCallsInChat = data.showToolCallsInChat;
+            }
           }
         } catch (error) {
-          console.warn('Could not load chat config; using localStorage for conversation id', error);
+          console.warn('Could not load chat config; using defaults', error);
         }
       }
     },
@@ -1759,10 +1783,12 @@
         messageElement.classList.add('shop-ai-message', sender);
 
         if (options.createdAt) {
-          const ts = new Date(options.createdAt).getTime();
+          const ts = coerceTimestamp(options.createdAt, NaN);
           if (!Number.isNaN(ts)) {
             messageElement.dataset.messageAt = String(ts);
           }
+        } else {
+          messageElement.dataset.messageAt = String(Date.now());
         }
 
         if (sender === 'assistant') {
@@ -3107,7 +3133,7 @@
     },
 
     /**
-     * Assistant read-aloud: prefers Edge TTS via /chat/speak, falls back to browser TTS.
+     * Assistant read-aloud: Edge TTS and/or browser TTS (env via /chat?config=true).
      */
     Speak: {
       utterance: null,
@@ -3121,6 +3147,35 @@
         return window.shopChatConfig?.[key] || fallback;
       },
 
+      getSpeakConfig: function() {
+        const speak = window.shopChatConfig?.speak;
+        if (!speak || typeof speak !== 'object') {
+          return { mode: 'auto', enabled: true, edgeEnabled: true, browserEnabled: true };
+        }
+
+        const mode = String(speak.mode || '').toLowerCase();
+        if (mode === 'off') {
+          return { mode: 'off', enabled: false, edgeEnabled: false, browserEnabled: false };
+        }
+        if (mode === 'edge') {
+          return { mode: 'edge', enabled: true, edgeEnabled: true, browserEnabled: false };
+        }
+        if (mode === 'browser') {
+          return { mode: 'browser', enabled: true, edgeEnabled: false, browserEnabled: true };
+        }
+        if (mode === 'auto') {
+          return { mode: 'auto', enabled: true, edgeEnabled: true, browserEnabled: true };
+        }
+
+        // Legacy boolean payload from older servers
+        return {
+          mode: speak.enabled === false ? 'off' : 'auto',
+          enabled: speak.enabled !== false,
+          edgeEnabled: speak.edgeEnabled !== false,
+          browserEnabled: speak.browserEnabled !== false
+        };
+      },
+
       isBrowserTtsSupported: function() {
         return Boolean(
           typeof window !== 'undefined' &&
@@ -3129,9 +3184,19 @@
         );
       },
 
-      /** Always show speaker — Edge TTS works even when browser voices are missing. */
+      isEdgeAllowed: function() {
+        const cfg = this.getSpeakConfig();
+        return cfg.enabled && cfg.edgeEnabled;
+      },
+
+      isBrowserAllowed: function() {
+        const cfg = this.getSpeakConfig();
+        return cfg.enabled && cfg.browserEnabled && this.isBrowserTtsSupported();
+      },
+
+      /** Show speaker when any configured TTS path can run. */
       isSupported: function() {
-        return true;
+        return this.isEdgeAllowed() || this.isBrowserAllowed();
       },
 
       isPlaying: function() {
@@ -3204,25 +3269,9 @@
       },
 
       formatMessageTime: function(timestamp) {
-        const date = new Date(Number(timestamp) || Date.now());
-        if (Number.isNaN(date.getTime())) return '';
-
-        const diffMs = Date.now() - date.getTime();
-        if (diffMs < 45 * 1000) {
-          return this.getLabel('messageTimeJustNowLabel', 'Just now');
-        }
-        if (diffMs < 60 * 60 * 1000) {
-          const mins = Math.max(1, Math.floor(diffMs / 60000));
-          return mins === 1
-            ? this.getLabel('messageTimeMinuteAgoLabel', '1m ago')
-            : String(this.getLabel('messageTimeMinutesAgoLabel', '{n}m ago')).replace('{n}', String(mins));
-        }
-
-        try {
-          return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-        } catch (error) {
-          return date.toLocaleTimeString();
-        }
+        // Use a stable clock time (not relative "Just now") so it doesn't
+        // stay wrong until the conversation is reopened from history.
+        return formatSessionDate(timestamp);
       },
 
       getActionsRow: function(element) {
@@ -3381,6 +3430,7 @@
 
       speak: function(element, button) {
         if (!element || !button) return;
+        if (!this.isSupported()) return;
 
         const text = this.plainTextFromMessage(element);
         if (!text) return;
@@ -3395,19 +3445,30 @@
         this.setSpeakingState(button, true);
         const requestId = ++this.speakRequestId;
 
-        this.speakWithEdge(text, button, requestId).then((ok) => {
+        const tryBrowser = () => {
           if (requestId !== this.speakRequestId) return;
-          if (ok) return;
-
-          if (this.isBrowserTtsSupported()) {
+          if (this.isBrowserAllowed()) {
             this.speakWithBrowser(text, button, requestId);
           } else {
             this.clearSpeakingState();
           }
-        });
+        };
+
+        if (this.isEdgeAllowed()) {
+          this.speakWithEdge(text, button, requestId).then((ok) => {
+            if (requestId !== this.speakRequestId) return;
+            if (ok) return;
+            tryBrowser();
+          });
+          return;
+        }
+
+        tryBrowser();
       },
 
       speakWithEdge: async function(text, button, requestId) {
+        if (!this.isEdgeAllowed()) return false;
+
         try {
           const apiBaseUrl = getApiBaseUrl();
           const response = await fetch(`${apiBaseUrl}/chat/speak`, {
@@ -3457,7 +3518,7 @@
       },
 
       speakWithBrowser: function(text, button, requestId) {
-        if (!this.isBrowserTtsSupported()) {
+        if (!this.isBrowserAllowed()) {
           this.clearSpeakingState();
           return;
         }

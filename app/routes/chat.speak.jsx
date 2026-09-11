@@ -3,6 +3,7 @@
  * Body: { text: string, voice?: string }
  * Returns: audio/mpeg
  */
+import AppConfig from "../services/config.server.js";
 import { sanitizeSpeakText, synthesizeEdgeSpeech } from "../services/edge-tts.server.js";
 
 function getCorsHeaders(request, contentType = "application/json") {
@@ -35,6 +36,7 @@ export async function loader({ request }) {
   return json(request, {
     ok: true,
     endpoint: "/chat/speak",
+    enabled: AppConfig.speak.enabled && AppConfig.speak.edgeEnabled,
     usage: "POST JSON { text, voice? } → audio/mpeg (Microsoft Edge TTS demo)"
   });
 }
@@ -46,6 +48,14 @@ export async function action({ request }) {
 
   if (request.method !== "POST") {
     return json(request, { error: "Method not allowed" }, 405);
+  }
+
+  if (!AppConfig.speak.enabled) {
+    return json(request, { error: "Speak feature is disabled" }, 403);
+  }
+
+  if (!AppConfig.speak.edgeEnabled) {
+    return json(request, { error: "Edge TTS is disabled" }, 403);
   }
 
   let body = {};
@@ -62,7 +72,7 @@ export async function action({ request }) {
 
   try {
     const { buffer, contentType, voice } = await synthesizeEdgeSpeech(text, {
-      voice: body?.voice
+      voice: body?.voice || AppConfig.speak.edgeVoice
     });
 
     console.log("[edge-tts] synthesized", {

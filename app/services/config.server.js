@@ -5,6 +5,32 @@
 
 const providerName = (process.env.LLM_PROVIDER || "gemini").toLowerCase();
 
+/**
+ * SPEAK_MODE values:
+ * - off       → disable speak button / TTS
+ * - edge      → Edge TTS only (/chat/speak)
+ * - browser   → browser SpeechSynthesis only
+ * - auto      → Edge first, fall back to browser on failure (default)
+ */
+function resolveSpeakMode(raw = process.env.SPEAK_MODE) {
+  const value = String(raw || "auto").trim().toLowerCase();
+  if (["off", "false", "0", "disabled", "none"].includes(value)) return "off";
+  if (["edge", "edge_only"].includes(value)) return "edge";
+  if (["browser", "browser_only", "speech"].includes(value)) return "browser";
+  // auto | edge_fallback | true | on | …
+  return "auto";
+}
+
+function buildSpeakConfig(mode = resolveSpeakMode()) {
+  return {
+    mode,
+    enabled: mode !== "off",
+    edgeEnabled: mode === "edge" || mode === "auto",
+    browserEnabled: mode === "browser" || mode === "auto",
+    edgeVoice: process.env.EDGE_TTS_VOICE || "en-US-AriaNeural"
+  };
+}
+
 export const AppConfig = {
   api: {
     provider: providerName,
@@ -83,6 +109,11 @@ export const AppConfig = {
         ? "sessionStorage"
         : "localStorage"
   },
+
+  /**
+   * Assistant read-aloud (TTS) — one env: SPEAK_MODE=auto|edge|browser|off
+   */
+  speak: buildSpeakConfig(),
 
   tools: {
     productSearchNames: [

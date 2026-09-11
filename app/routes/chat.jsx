@@ -85,7 +85,13 @@ export async function loader({ request }) {
     return new Response(
       JSON.stringify({
         conversationStorage: AppConfig.chat.conversationStorage,
-        showToolCallsInChat: AppConfig.tools.showToolCallsInChat
+        showToolCallsInChat: AppConfig.tools.showToolCallsInChat,
+        speak: {
+          mode: AppConfig.speak.mode,
+          enabled: AppConfig.speak.enabled,
+          edgeEnabled: AppConfig.speak.edgeEnabled,
+          browserEnabled: AppConfig.speak.browserEnabled
+        }
       }),
       { headers: getCorsHeaders(request) }
     );
