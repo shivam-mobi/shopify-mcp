@@ -118,6 +118,45 @@ Use the same URL everywhere. Do not mix localhost, ngrok, and server URLs.
 
 ---
 
+## Add these keys in `.env`
+
+Copy `.env.example` to `.env` if you do not have an `.env` file yet. Then fill the keys below.
+
+### Catalog keys (needed so MCP does not get rate limited)
+
+If you call the Shopify MCP / catalog API **without** these keys (anonymous), Shopify often returns **429** (too many requests). For a real chatbot, add catalog credentials from the Dev Dashboard.
+
+1. Open the **Shopify Dev Dashboard**.
+2. In the left menu, click **Catalogs**.
+3. Click **API key**.
+4. You will see **Client ID** and **Client secret**.
+5. Put them in `.env`:
+
+```bash
+CATALOG_CLIENT_ID=your-catalog-client-id
+CATALOG_CLIENT_SECRET=your-catalog-client-secret
+```
+
+These are **Catalog API** keys, not the same as your app Admin keys.
+
+### Admin API keys (needed if you add tools that use Admin API)
+
+If you create a **new tool** that calls the Shopify **Admin API**, also add these in `.env`:
+
+```bash
+SHOPIFY_API_KEY=your-app-client-id
+SHOPIFY_API_SECRET=your-app-client-secret
+SHOPIFY_ADMIN_ACCESS_TOKEN=your-admin-access-token
+SHOPIFY_STORE_DOMAIN=your-store.myshopify.com
+```
+
+- `SHOPIFY_API_KEY` and `SHOPIFY_API_SECRET` come from your custom app in the Dev Dashboard (the app Client ID and Client secret).
+- `SHOPIFY_ADMIN_ACCESS_TOKEN` is the Admin access token you generate (for example with Postman) for that store / custom app.
+
+Without these, Admin API tools cannot read products, variants, or other admin data.
+
+---
+
 ## Step 4 — Deploy the custom app
 
 This pushes the app (including the chat bubble) to Shopify:
@@ -175,6 +214,8 @@ shopify auth logout
 shopify auth login
 shopify app config link
 # update URL + redirect URLs in the .toml file (and in .env)
+# add CATALOG_CLIENT_ID / CATALOG_CLIENT_SECRET from Dev Dashboard → Catalogs → API key
+# if you add Admin API tools, also add SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOPIFY_ADMIN_ACCESS_TOKEN
 shopify app deploy
 npm run dev:server
 ```
