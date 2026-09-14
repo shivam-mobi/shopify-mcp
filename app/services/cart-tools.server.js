@@ -1587,11 +1587,10 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
 /** Shopify MCP marks checkout as required even when cart_id is provided. */
 function buildCreateCheckoutArgs(cartId, cart, overrides = {}, conversationId = null) {
   const lineItems = toWritableLineItems(cart?.line_items || []);
-  const currency = cart?.currency || "USD";
   const buyer = overrides.buyer || cart?.buyer || null;
 
+  // Intentionally omit currency — let Shopify/UCP choose store default.
   const checkout = {
-    currency,
     line_items: lineItems
   };
 
