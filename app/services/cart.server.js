@@ -1089,14 +1089,15 @@ export function formatCartSummary(
     return { success: false, empty: true, message: "Cart is empty." };
   }
 
+  const currency = checkout?.currency || cart.currency || null;
+
   const items = (cart.line_items || []).map((line) => ({
     title: line.item?.title || "Product",
     quantity: line.quantity || 1,
     variant_id: line.item?.id,
-    price: formatLinePrice(line)
+    price: formatLinePrice(line, currency)
   }));
 
-  const currency = checkout?.currency || cart.currency || "USD";
   const cartTotalEntry = cart.totals?.find((t) => t.type === "total");
   const cartSubtotalEntry = cart.totals?.find((t) => t.type === "subtotal");
   const checkoutPricing = extractCheckoutPricing(checkout, currency);
@@ -1176,12 +1177,12 @@ export function formatCartSummary(
  * Prefer checkout totals when a discount is on the checkout session.
  * Cart totals do not include promo codes applied via update_checkout.
  */
-function extractCheckoutPricing(checkout, fallbackCurrency = "USD") {
+function extractCheckoutPricing(checkout, fallbackCurrency = null) {
   if (!checkout || typeof checkout !== "object") {
     return null;
   }
 
-  const currency = checkout.currency || fallbackCurrency || "USD";
+  const currency = checkout.currency || fallbackCurrency || null;
   const totals = Array.isArray(checkout.totals) ? checkout.totals : [];
   const amountOf = (type) => {
     const entry = totals.find((t) => t.type === type);
@@ -1229,26 +1230,50 @@ function extractCheckoutPricing(checkout, fallbackCurrency = "USD") {
   };
 }
 
-function formatLinePrice(line) {
+function formatLinePrice(line, currency = null) {
+  const resolvedCurrency =
+    currency ||
+    line?.currency ||
+    line?.item?.currency ||
+    line?.totals?.find((t) => t.type === "subtotal")?.currency ||
+    (typeof line?.item?.price === "object" ? line.item.price?.currency : null) ||
+    null;
+
   const subtotal = line.totals?.find((t) => t.type === "subtotal");
   if (subtotal?.amount != null) {
-    return formatMoney(subtotal.amount, "USD");
+    return formatMoney(
+      subtotal.amount,
+      resolvedCurrency || subtotal.currency || null
+    );
   }
 
   if (line.item?.price != null) {
-    return formatMoney(line.item.price, "USD");
+    const price = line.item.price;
+    if (typeof price === "object" && price !== null) {
+      return formatMoney(
+        price.amount ?? price.value ?? null,
+        resolvedCurrency || price.currency || null
+      );
+    }
+    return formatMoney(price, resolvedCurrency);
   }
 
   return null;
 }
 
-function formatMoney(amountMinor, currency = "USD") {
+function formatMoney(amountMinor, currency = null) {
   if (amountMinor == null) {
     return null;
   }
 
   const major = Number(amountMinor) / 100;
-  return `${currency} ${major.toFixed(2)}`;
+  if (Number.isNaN(major)) {
+    return null;
+  }
+
+  const amount = major.toFixed(2);
+  const code = currency != null ? String(currency).trim() : "";
+  return code ? `${code} ${amount}` : amount;
 }
 
 export {

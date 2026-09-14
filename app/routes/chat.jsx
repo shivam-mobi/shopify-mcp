@@ -1100,8 +1100,10 @@ function getSseHeaders(request) {
 
   return {
     "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
+    // no-transform: tell Express compression (and proxies) not to buffer/gzip SSE
+    "Cache-Control": "no-cache, no-transform",
     "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "GET,OPTIONS,POST",
