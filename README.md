@@ -175,13 +175,22 @@ After deploy, install / open the app on the store where you want the chatbot.
 
 Keep ngrok running if you use ngrok.
 
-Then start the chatbot:
+### Local development
 
 ```bash
 npm run dev:server
 ```
 
-This runs the chatbot backend on port `3000`.
+This runs the chatbot backend on port `3000` with Vite (hot reload).
+
+### Production
+
+```bash
+npm run build
+npm run start
+```
+
+`build` compiles the app; `start` serves it on port `3000` (loads `.env` and keeps chat SSE streaming working).
 
 The chat bubble on the store talks to this server using your public URL.
 
@@ -202,7 +211,7 @@ If you do not see it:
 
 - Hard refresh the store page.
 - Make sure you enabled AIRA on the **same theme** the store is using.
-- Make sure `npm run dev:server` is still running.
+- Make sure the chatbot server is still running (`npm run dev:server` or `npm run start`).
 - If you use ngrok, make sure ngrok is still running and the URL did not change.
 
 ---
@@ -218,6 +227,8 @@ shopify app config link
 # if you add Admin API tools, also add SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOPIFY_ADMIN_ACCESS_TOKEN
 shopify app deploy
 npm run dev:server
+# production:
+# npm run build && npm run start
 ```
 
 If you use ngrok:
