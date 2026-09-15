@@ -1,0 +1,460 @@
+{
+  "ucp": {
+    "version": "2026-04-08",
+    "status": "success",
+    "services": {
+      "dev.ucp.shopping": []
+    },
+    "capabilities": {
+      "dev.ucp.shopping.checkout": [
+        {
+          "version": "2026-04-08",
+          "spec": "https://ucp.dev/2026-04-08/specification/checkout",
+          "schema": "https://ucp.dev/2026-04-08/schemas/shopping/checkout.json"
+        }
+      ],
+      "dev.ucp.shopping.fulfillment": [
+        {
+          "version": "2026-04-08",
+          "spec": "https://ucp.dev/2026-04-08/specification/fulfillment",
+          "schema": "https://ucp.dev/2026-04-08/schemas/shopping/fulfillment.json",
+          "extends": [
+            "dev.ucp.shopping.checkout",
+            "dev.ucp.shopping.cart"
+          ],
+          "requires": {
+            "protocol": {
+              "min": "2026-04-08"
+            }
+          },
+          "config": {
+            "allows_multi_destination": {
+              "shipping": false
+            },
+            "allows_method_combinations": [
+              [
+                "shipping"
+              ]
+            ]
+          }
+        }
+      ],
+      "dev.ucp.shopping.discount": [
+        {
+          "version": "2026-04-08",
+          "spec": "https://ucp.dev/2026-04-08/specification/discount",
+          "schema": "https://ucp.dev/2026-04-08/schemas/shopping/discount.json",
+          "extends": [
+            "dev.ucp.shopping.checkout",
+            "dev.ucp.shopping.cart"
+          ],
+          "requires": {
+            "protocol": {
+              "min": "2026-04-08"
+            }
+          }
+        }
+      ],
+      "dev.ucp.shopping.cart": [
+        {
+          "version": "2026-04-08",
+          "spec": "https://ucp.dev/2026-04-08/specification/cart",
+          "schema": "https://ucp.dev/2026-04-08/schemas/shopping/cart.json"
+        }
+      ],
+      "dev.ucp.shopping.order": [
+        {
+          "version": "2026-04-08",
+          "spec": "https://ucp.dev/2026-04-08/specification/order/",
+          "schema": "https://ucp.dev/2026-04-08/schemas/shopping/order.json"
+        }
+      ],
+      "dev.ucp.shopping.catalog.search": [
+        {
+          "version": "2026-04-08",
+          "spec": "https://ucp.dev/2026-04-08/specification/catalog",
+          "schema": "https://ucp.dev/2026-04-08/schemas/shopping/catalog_search.json"
+        }
+      ],
+      "dev.ucp.shopping.catalog.lookup": [
+        {
+          "version": "2026-04-08",
+          "spec": "https://ucp.dev/2026-04-08/specification/catalog",
+          "schema": "https://ucp.dev/2026-04-08/schemas/shopping/catalog_lookup.json"
+        }
+      ],
+      "dev.shopify.catalog": [
+        {
+          "version": "2026-04-08",
+          "spec": "https://shopify.dev/docs/agents/catalog/storefront-catalog",
+          "schema": "https://shopify.dev/ucp/schemas/2026-04-08/shopify_catalog.json",
+          "extends": [
+            "dev.ucp.shopping.catalog.search",
+            "dev.ucp.shopping.catalog.lookup"
+          ],
+          "requires": {
+            "protocol": {
+              "min": "2026-04-08"
+            }
+          }
+        }
+      ]
+    },
+    "payment_handlers": {
+      "com.google.pay": [
+        {
+          "id": "gpay",
+          "version": "2026-01-11",
+          "spec": "https://pay.google.com/gp/p/ucp/2026-01-11/",
+          "schema": "https://pay.google.com/gp/p/ucp/2026-01-11/schemas/config.json",
+          "config": {
+            "api_version": 2,
+            "api_version_minor": 0,
+            "merchant_info": {
+              "merchant_name": "Perfumania",
+              "merchant_id": "16708973830884969730",
+              "merchant_origin": "perfumania.com",
+              "auth_jwt": ""
+            },
+            "allowed_payment_methods": [
+              {
+                "type": "CARD",
+                "parameters": {
+                  "allowed_auth_methods": [
+                    "PAN_ONLY",
+                    "CRYPTOGRAM_3DS"
+                  ],
+                  "allowed_card_networks": [
+                    "VISA",
+                    "MASTERCARD",
+                    "AMEX",
+                    "DISCOVER"
+                  ],
+                  "billing_address_required": true,
+                  "billing_address_parameters": {
+                    "format": "FULL",
+                    "phone_number_required": true
+                  }
+                },
+                "tokenization_specification": {
+                  "type": "PAYMENT_GATEWAY",
+                  "parameters": {
+                    "gateway": "shopify",
+                    "gatewayMerchantId": "26977632389"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "dev.shopify.card": [
+        {
+          "id": "shopify.card",
+          "version": "2026-01-15",
+          "spec": "https://ucp.dev/specification/payment-handler-guide",
+          "schema": "https://shopify.dev/ucp/card-payment-handler/2026-01-15/config.json",
+          "config": {
+            "payment_methods": [
+              {
+                "type": "card",
+                "enabled_card_brands": [
+                  "visa",
+                  "master",
+                  "american_express",
+                  "discover",
+                  "diners_club"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "dev.shopify.shop_pay": [
+        {
+          "id": "shop_pay",
+          "version": "2026-04-08",
+          "spec": "https://shopify.dev/ucp/shop-pay-handler/2026-04-08/spec.md",
+          "schema": "https://shopify.dev/ucp/shop-pay-handler/2026-04-08/schema.json",
+          "config": {
+            "shop_id": "26977632389"
+          }
+        }
+      ]
+    }
+  },
+  "products": [
+    {
+      "id": "gid://shopify/Product/5175176265861",
+      "title": "LiquidSand Exfoliating Facial Cleanser by Billy Jealousy for Men - 8 oz Cleanser",
+      "description": {
+        "html": "It less penetrating than a scrub but more powerful than a face wash, LiquidSand Exfoliating Facial Cleanser cleans thoroughly to remove dead surface skin cells, dirt and related grime."
+      },
+      "url": "https://perfumania.com/products/liquidsand-exfoliating-facial-cleanser-by-billy-jealousy-for-men-8-oz-cleanser",
+      "handle": "liquidsand-exfoliating-facial-cleanser-by-billy-jealousy-for-men-8-oz-cleanser",
+      "price_range": {
+        "min": {
+          "amount": 2195,
+          "currency": "USD"
+        },
+        "max": {
+          "amount": 2195,
+          "currency": "USD"
+        }
+      },
+      "list_price_range": {
+        "min": {
+          "amount": 0,
+          "currency": "USD"
+        },
+        "max": {
+          "amount": 0,
+          "currency": "USD"
+        }
+      },
+      "variants": [
+        {
+          "id": "gid://shopify/ProductVariant/34620669853829",
+          "sku": "1000010126",
+          "title": "8 oz.",
+          "description": {
+            "html": "It less penetrating than a scrub but more powerful than a face wash, LiquidSand Exfoliating Facial Cleanser cleans thoroughly to remove dead surface skin cells, dirt and related grime."
+          },
+          "price": {
+            "amount": 2195,
+            "currency": "USD"
+          },
+          "availability": {
+            "available": false
+          },
+          "options": [
+            {
+              "name": "Size",
+              "label": "8 oz."
+            }
+          ],
+          "media": [
+            {
+              "type": "image",
+              "url": "https://cdn.shopify.com/s/files/1/0269/7763/2389/products/M-SC-1172larger.jpg?v=1600977336"
+            }
+          ],
+          "requires": {
+            "shipping": true
+          },
+          "checkout_url": "https://perfumania-tfo.myshopify.com/cart/34620669853829:1"
+        }
+      ],
+      "options": [
+        {
+          "name": "Size",
+          "values": [
+            {
+              "label": "8 oz."
+            }
+          ]
+        }
+      ],
+      "media": [
+        {
+          "type": "image",
+          "url": "https://cdn.shopify.com/s/files/1/0269/7763/2389/products/M-SC-1172larger.jpg?v=1600977336",
+          "alt_text": "LiquidSand Exfoliating Facial Cleanser by Billy Jealousy for Men - 8 oz Cleanser"
+        }
+      ],
+      "tags": [
+        "9.24",
+        "bogo-ignore",
+        "BRAND_Billy Jealousy",
+        "gender_Men",
+        "online-only-item",
+        "skincare",
+        "TYPE_Beauty",
+        "TYPE_SKINCARE",
+        "UNDER $25"
+      ],
+      "gift_card": false,
+      "collections": [
+        {
+          "id": "gid://shopify/Collection/163324461189",
+          "handle": "fragrances-under-25",
+          "title": "Fragrances Under $25",
+          "description": {
+            "html": "Experience the epitome of elegance without breaking the bank! Perfumania has something for everyone. Enjoy the allure of luxury without the premium price tag. Perfumania offers an extensive range of scents under $25. From Calvin Klein, and Mont Blanc to Elizabeth Arden, our collection encompasses the best perfume under $25 for every preference and occasion. Explore invigorating scents like Calvin Klein CK One or indulge in the floral elegance of Elizabeth Arden Green Tea – all available for under $25. Whether searching for the perfect men's cologne under $25 or seeking the best Women's Perfume for yourself or a loved one, Perfumania has you covered. Our curated selection guarantees quality and affordability, ensuring you enjoy luxury without compromise. With secure transactions and swift delivery, shopping at Perfumania is convenient and hassle-free. Take advantage of the opportunity to experience the best in affordable fragrances. Explore Perfumania's Fragrances Under $25 today and make every moment unforgettable."
+          }
+        },
+        {
+          "id": "gid://shopify/Collection/163336650885",
+          "handle": "billy-jealousy",
+          "title": "Billy Jealousy",
+          "description": {
+            "html": "Billy Jealousy is a premium grooming brand that caters to the modern man's needs with its range of high-quality and effective products. With a focus on innovation and style, Billy Jealousy offers a comprehensive line of skincare, hair care, shaving, and grooming essentials. Their formulations are crafted using natural and beneficial ingredients to address specific concerns and promote optimal results. From facial cleansers and moisturizers to beard oils and styling products, Billy Jealousy products are designed to provide nourishment, hydration, and a polished look. With their sleek packaging and sophisticated scents, Billy Jealousy embodies the perfect blend of luxury, efficacy, and contemporary masculinity."
+          }
+        },
+        {
+          "id": "gid://shopify/Collection/164687020165",
+          "handle": "best-selling-perfumes-and-colognes",
+          "title": "Best Selling Perfumes & Colognes",
+          "description": {
+            "html": "Save Up to 40% off on the Most Popular Perfumes and Colognes Perfumania.com sells the best perfumes and colognes of all time for up to 40% off, allowing you to easily stock up on your favorite fragrance, get a new signature scent, or shop for a friend. We have 100% authentic colognes and perfumes from the top brands in the industry, including Dior, Versace, Jimmy Choo, and Dolce & Gabbana. Buy top-rated fragrances with us and enjoy free shipping! Find Your Best-Selling Perfumes for Women Are you're looking for the best-selling perfumes, several iconic fragrances remain top-rated. We have top luxury perfumes for women you love in 2026, each featuring a unique blends of floral, spicy, and woody notes. Check our popular choices of women's perfume include Tom Ford Black Orchid, Jo Malone Wild Bluebell, Yves Saint Laurent Libre, Armani Si Passione, and Marc Jacobs Dot. These top-rated perfumes are known for their captivating aromas and long-lasting wear. Find Your Best-Selling Colognes for Men Get the best cologne for men that truly reflects your style? These best-rates fragrances for men are the best-selling colognes in 2026, include Creed Aventus, Dior Sauvage, Acqua Di Gio by Giorgio Armani, Tom Ford Grey Vetiver, and Hugo Boss Bottled Night. No matter your preference, we have all of top-selling fragrances that resonates with you on this list. So go ahead, explore our best-selling scents that match your style. Top Perfumes and Colognes Brands for Men and Women When it comes to the top-selling fragrance brands in 2026, there are many options to choose from. Some of the most popular fragrance brands include Dior, Giorgio Armani, Yves Saint Laurent, Tom Ford, Gucci. These brands offer a wide range of fragrances for both men and women, from classic scents to modern and trendy options. If you're looking to enhance the diffusion of your perfume, there are a few tips you can follow. First, try applying it to pulse points such as your wrists, neck, and behind your ears. These areas emit heat that can help to activate the fragrance. You can also layer your perfume with matching lotions or oils, apply it to your clothes and hair, or carry a small atomizer to refresh the scent throughout the day. In summary, the best-selling perfumes, fragrances, and colognes of 2026 offer a wide range of options for men and women. Whether you prefer classic scents or modern and trendy fragrances, there is something for everyone. And with a few simple tips, you can enhance the diffusion of your perfume and enjoy your favorite scent all day long. FAQs About Best-Selling Perfumes and Colognes What are the most popular perfumes for women of 2026? Some of the best sellers perfumes for women of 2026 include: Dior J'adore Thierry Mugler Angel Viktor & Rolf Flowerbomb Lancôme La Vie Est Belle Gucci Bloom What is America's top rated fragrances? It is difficult to pinpoint one specific fragrance that is universally loved in America, but some of the most popular fragrances among Americans include Calvin Klein Eternity, Polo Ralph Lauren Blue, Yves Saint Laurent Black Opium, and Marc Jacobs Daisy. What is America's most popular perfume? According to a recent survey, America's favorite scent is vanilla, followed closely by lavender and cinnamon. Check out our scent wheel here. What is the best selling men's cologne of all time? The best selling men's colognes of all time include:- Giorgio Armani Acqua Di Gio Creed Aventus Cologne Dolce Gabbana Light Blue Paco Rabanne 1 Million for Men These classics have consistently topped the charts and remain timeless favorites. What are the top-selling fragrance brands in 2026? Some of the top-selling fragrance brands in 2026 include: Dolce & Gabbana Carolina Herrera Versace Marc Jacobs Burberry"
+          }
+        },
+        {
+          "id": "gid://shopify/Collection/165463425157",
+          "handle": "mens-colognes",
+          "title": "Men's Colognes",
+          "description": {
+            "html": "We pride ourselves on being a wonderful place to find the perfect fragrance for men! We have a fantastic selection of high-quality perfumes and colognes. You can explore many options to find the best colognes for men that suit your style. Our collection features the latest designer men's fragrances from popular brands Azzaro, Calvin Klein, Gucci, and more. Enjoy your fragrance journey at Perfumania! Customers at Perfumania can be confident that they are purchasing authentic, fresh, and high-quality fragrances that align with their personal styles and preferences. Our customer service is exceptional, guaranteeing a pleasant and satisfying experience for every shopper. Whether you're looking for an adventurous scent, a mysterious fragrance, or something truly unique, we offer the perfect perfume for men. Discover Our Wide Range of Colognes for Men We consistently refresh our inventory with the latest men's fragrances, ensuring shoppers have access to fresh and exciting options. We also run regular sales throughout the year, providing customers with excellent deals and discounts on a wide range of colognes. With us, customers can always trust that they are receiving the best value for their money. We stand out for our exclusive selection of perfumes for men that can't be found anywhere else. These unique fragrances are designed for those who want to make a statement. With a diverse array of options, including both classic and contemporary scents, customers can effortlessly discover the perfect fragrance that aligns with their personal style. When choosing the best cologne, it's essential to find a fragrance that enhances your natural scent and personal style. We simplify this process by offering a diverse range of high-quality men's perfumes suitable for any occasion. Whether you need a fresh and energizing scent for daytime or a warm and woody fragrance for an evening out, we have the perfect option for you. We are the ideal destination for anyone searching for the finest men's fragrances. With a wide selection of top-rated colognes from leading designers, there's truly something for everyone. Our dedication to customer service, unique fragrance offerings, and regular sales make us an excellent choice for those in pursuit of the best men's colognes. What You Need to Know About Fragrances and Colognes for Men How do you choose a men's cologne? Selecting a men's cologne can be a daunting task given the wide variety of choices. It's essential to take into account factors like scent profile, longevity, and the occasion for which you'll wear the fragrance. Begin by determining your preferred fragrance type, whether it's fresh and citrusy or warm and woody. Additionally, consider how long the scent lasts and its suitability for the specific occasion you have in mind. Do I spray cologne on my skin or on my clothes? For optimal results, we recommend applying cologne directly to your skin. The warmth helps activate the fragrance and blends it with your natural scent. However, if you have sensitive skin, consider spraying the cologne on your clothing instead. What are the most popular men's colognes right now? The top five men's colognes can vary based on personal taste and style. Nonetheless, some of the most popular fragrances for men are: Acqua di Gio by Giorgio Armani Burberry Brit by Burberry Sauvage by Dior Man Lau Fraiche by Versace L’Eau D’issey Pour Homme by Issey Miyake What are the strongest types of men’s cologne? From strongest to weakest, here's a simpler way to understand the types of men's cologne: Eau de Cologne - a light, refreshing fragrance with a low (2-4%) concentration of essential oils. Eau de Toilette - a fragrance with a stronger scent profile, featuring a higher(5-15%) concentration of essential oils. Eau de Parfum - a more concentrated fragrance with a higher (15-20%) percentage of essential oils. Parfum - is the most concentrated fragrance, containing the highest (20-30%) percentage of essential oils. How do you apply men's cologne? To apply men's cologne, spray it directly onto your skin, concentrating on pulse points like the neck, wrists, and chest. Alternatively, you can spray the cologne into the air and walk through the mist. Please avoid rubbing the fragrance into your skin, as this can break down the scent molecules and lead to a quicker dissipation of the fragrance. What men's cologne gets the most compliments? Men's cologne offers a diverse array of scents, many of which aim to convey a sense of masculinity through notes such as spices, woods, and leather. Among cologne enthusiasts, popular selections include timeless options like Dior Sauvage, Creed Aventus, and Tom Ford Oud Wood. Where can I buy 100 % authentic men's cologne online? If you're seeking a reliable source for authentic designer fragrances for men, Perfumania.com is your best choice. We assure the authenticity of every product we offer, allowing you to shop confidently, knowing you're purchasing genuine items. Explore our collection to find the ideal men's cologne that reflects your unique style and personality. What are the top classic cologne brands in 2026? Some of the top classic cologne brands in 2026 are: Dior: Sauvage and Pour Homme lines are iconic, offering fresh, versatile, and sophisticated scents. It is known for clean, timeless aromas that are perfect for daily wear or formal occasions. Giorgio Armani: Acqua di Giò delivers crisp aquatic freshness that has defined modern men’s fragrances. Its light, elegant composition makes it a reliable choice for year-round wear. Calvin Klein: CK One and Eternity are classic, approachable fragrances with mass appeal. They balance fresh citrus and subtle woods, ideal for everyday use. Ralph Lauren: Polo fragrances combine sporty and elegant notes for versatile, everyday wear. They are iconic for their crisp, masculine scents and consistent quality. Burberry: Burberry colognes feature refined British heritage notes with a modern twist. It is known for crisp, woody compositions that age well and remain timeless. What are the latest trends in men's fragrances? The latest trends include: Niche‑inspired everyday scents: These fragrances combine approachable daily wearability with the complexity of niche perfumes. Expect creative combinations like woody spices with unexpected artistic twists. They appeal to men looking for a unique scent that still works for daily life. Sustainable + natural notes: Ingredients like vetiver, green tea, fig leaf, and responsibly sourced woods are increasingly popular. These scents emphasize eco-conscious production and natural olfactory experiences. They provide fresh, earthy, and sophisticated fragrance profiles suitable for everyday use. Unisex/gender‑fluid launches: Airy florals, soft musks, and citrus notes dominate this emerging category. Fragrances are designed to be versatile and wearable by anyone, regardless of gender. They are often light, fresh, and perfect for daily casual or office wear. Layered fragrance experiences: Layering EDT or EDP with scented lotions or shower gels allows customization. This trend creates a personalized signature scent and extends fragrance longevity. Men are increasingly experimenting with multiple products to enhance depth and character. Warm spices & gourmand undertones for cooler months: Cinnamon, amber, tonka bean, and vanilla are used to create cozy, inviting scents. These notes are perfect for autumn and winter wear, adding warmth and richness. They often blur traditional gender lines, appealing to men and women alike. What are the most popular autumn fragrances for men? YSL La Nuit de l’Homme: It is seductive and sophisticated, with cardamom, cedar, and soft spices. It is Ideal for cool-weather evenings and making a refined impression. Versace Dylan Blue: It is woody, slightly spicy, and versatile for both office and a night out. It is balanced for autumn wear, combining strength and modern elegance. Hugo Boss Bottled: It blends apple, cinnamon, and warm woods to create a cozy, approachable fragrance. It is perfect for daytime and casual evenings during the fall season. How can I choose a fragrance that suits my personality? Choose a fragrance by matching it to the mood you naturally carry. If you like a clean, easygoing vibe, try citrus, musk, aquatic, or light woody scents. If your style is bold, go for amber, leather, spice, oud, or smoky woods. Playful personalities can lean into vanilla, tonka, caramel, or fruity notes, while a polished feel pairs well with vetiver, lavender, bergamot, and cedar."
+          }
+        },
+        {
+          "id": "gid://shopify/Collection/172188467333",
+          "handle": "all-perfumes-and-colognes",
+          "title": "All Perfumes & Colognes",
+          "description": {
+            "html": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "gid://shopify/Product/6579954974853",
+      "title": "Jessica Simpson Ten by Jessica Simpson for Women - 3 Pc Gift Set",
+      "description": {
+        "html": "Launched by the design house of Jessica Simpson. This floral fruity fragrance has a blend of lily, star fruit, peach, apple, jasmine, vanilla, tonka bean, chocolate, sandalwood, and musk. Jessica Simpson Ten by Jessica Simpson for Women - 3 Pc Gift Set 3.4oz EDP Spray, 0.25oz EDP Spray, 0.2oz EDP Rollerball"
+      },
+      "url": "https://perfumania.com/products/jessica-simpson-ten-by-jessica-simpson-for-women-3-pc-gift-set",
+      "handle": "jessica-simpson-ten-by-jessica-simpson-for-women-3-pc-gift-set",
+      "price_range": {
+        "min": {
+          "amount": 3395,
+          "currency": "USD"
+        },
+        "max": {
+          "amount": 3395,
+          "currency": "USD"
+        }
+      },
+      "list_price_range": {
+        "min": {
+          "amount": 4000,
+          "currency": "USD"
+        },
+        "max": {
+          "amount": 4000,
+          "currency": "USD"
+        }
+      },
+      "variants": [
+        {
+          "id": "gid://shopify/ProductVariant/39438322499717",
+          "sku": "1000011660",
+          "title": "3.4 oz.",
+          "description": {
+            "html": "Launched by the design house of Jessica Simpson. This floral fruity fragrance has a blend of lily, star fruit, peach, apple, jasmine, vanilla, tonka bean, chocolate, sandalwood, and musk. Jessica Simpson Ten by Jessica Simpson for Women - 3 Pc Gift Set 3.4oz EDP Spray, 0.25oz EDP Spray, 0.2oz EDP Rollerball"
+          },
+          "price": {
+            "amount": 3395,
+            "currency": "USD"
+          },
+          "list_price": {
+            "amount": 4000,
+            "currency": "USD"
+          },
+          "availability": {
+            "available": false
+          },
+          "options": [
+            {
+              "name": "Size",
+              "label": "3.4 oz."
+            }
+          ],
+          "media": [
+            {
+              "type": "image",
+              "url": "https://cdn.shopify.com/s/files/1/0269/7763/2389/products/W-GS-4350larger.jpg?v=1623934222"
+            }
+          ],
+          "requires": {
+            "shipping": true
+          },
+          "checkout_url": "https://perfumania-tfo.myshopify.com/cart/39438322499717:1"
+        }
+      ],
+      "options": [
+        {
+          "name": "Size",
+          "values": [
+            {
+              "label": "3.4 oz."
+            }
+          ]
+        }
+      ],
+      "media": [
+        {
+          "type": "image",
+          "url": "https://cdn.shopify.com/s/files/1/0269/7763/2389/products/W-GS-4350larger.jpg?v=1623934222",
+          "alt_text": "Jessica Simpson Ten by Jessica Simpson for Women - 3 Pc Gift Set"
+        }
+      ],
+      "tags": [
+        "$25 to $50",
+        "Bogo-ignore",
+        "BRAND_Jessica Simpson",
+        "gender_women",
+        "gift-set",
+        "online-only-item",
+        "TYPE_Gift Set"
+      ],
+      "gift_card": false,
+      "collections": [
+        {
+          "id": "gid://shopify/Collection/163321315461",
+          "handle": "jessica-simpson-perfumes-and-fragrances",
+          "title": "Jessica Simpson Perfumes And Fragrances",
+          "description": {
+            "html": "Jessica Simpson is an American singer, actress, fashion designer, and businesswoman. She launched her first perfume, simply titled \"Jessica Simpson\", in 2004. The perfume was a success, and it led to Simpson releasing a number of other popular fragrances over the years. Simpson's perfumes are known for their affordable prices and their variety of scents. She offers fragrances in a variety of categories, including floral, fruity, and gourmand. Some of her most popular fragrances include: Fancy (2008): This floral fragrance is a blend of pear, almond, and vanilla. It is known for its sweet and feminine character. I Fancy You (2013): This fruity floral fragrance is a blend of apple, pear, and sandalwood. It is known for its fresh and playful character. FAQs: How much do Jessica Simpson perfumes cost? Jessica Simpson perfumes are known for their affordable prices. Most of her fragrances are available for under $50. What is the best way to apply Jessica Simpson perfume? To apply Jessica Simpson perfume, simply spray it onto your pulse points, such as your wrists, neck, and chest. You can also spray the perfume into the air and walk through the mist. How long does Jessica Simpson's signature body mist last? Jessica Simpson's signature body mist is known for its long-lasting wear. Most of her fragrances will last for several hours on the skin, and some may even last all day. Which Jessica Simpson Eau De Parfum Spray is right for me? If you are not sure which Jessica Simpson Eau De Parfum Spray is right for you, it is a good idea to sample different fragrances before you buy one. Does Jessica Simpson offer fragrance gift sets? Yes, Jessica Simpson offers fragrance gift sets. These sets often include combinations of Eau de Parfum sprays, body lotions, and shower gels. What are the best-selling Jessica Simpson perfumes in 2026? As of 2026, Fancy remains one of Jessica Simpson's most popular and best-selling fragrances. Introduced in 2008, this scent has maintained its appeal over the years, consistently ranking high in sales and customer reviews. Its enduring popularity is a testament to its timeless and versatile aroma. What’s the difference between Fancy and Fancy Forever? Fancy is a rich and inviting fragrance that envelops you in warmth and sweetness. This delightful scent opens with a luscious blend of apricot, pear, and red berries. The heart unfolds with rich notes of caramel, almond, gardenia, and jasmine, adding a touch of sweetness and elegance. The fragrance settles into a cozy and sensual base of vanilla, amber, and sandalwood, creating a captivating and feminine finish. Fancy Forever by Jessica Simpson is a radiant floral fruity fragrance for women. It opens with a delightful blend of lychee, apricot, and mandarin orange, creating a fresh and playful start. The heart reveals a charming mix of blackberry, sweet pea, and magnolia, adding a touch of floral elegance. The fragrance lingers with a warm and sensual base of tonka bean, musk, and vanilla absolute, leaving a lasting, sophisticated impression."
+          }
+        },
+        {
+          "id": "gid://shopify/Collection/163324493957",
+          "handle": "25-50",
+          "title": "$25 to $50",
+          "description": {
+            "html": "Indulge in the perfect blend of luxury and affordability with Perfumania's stunning range of fragrances priced between $25 and $50. Discover a variety of captivating scents from top brands, designed to elevate your everyday experience without breaking the bank. At Perfumania, we believe that you shouldn't have to compromise on quality for affordability. Our collection features renowned brands like Calvin Klein, Versace, and Dolce & Gabbana, offering you premium fragrances that fit perfectly within your budget. From fresh citrus notes to rich, woody undertones, find the perfect scent that speaks to your style. Whether you're treating yourself or searching for the perfect gift, Perfumania's Fragrances Between $25 to $50 are ideal for any occasion. Choose from a wide selection of perfumes for women and colognes for men that cater to every preference, making it easy to find something special for everyone on your list. Enjoy the convenience of shopping online with Perfumania. Our user-friendly website, secure transactions, and fast delivery ensure a seamless shopping experience. Browse our collection of fragrances between $25 and $50 and discover the perfect scent for you. What are the best men’s colognes under $50? There are plenty of high-quality men’s colognes available at an affordable price. Some popular options include: Nautica Voyage – Nautica Voyage captures the essence of the sea with crisp notes of green apple and water lotus. Its refreshing, clean scent is ideal for casual, everyday wear. Polo Blue by Ralph Lauren Eau de Toilette - Polo Blue is a light, invigorating fragrance with a blend of melon, mandarin, and basil. This fresh, aromatic scent is perfect for both day and night, evoking a sense of freedom and adventure. Azzaro Chrome for Men Eau de Toilette - Azzaro Chrome offers a fresh, aromatic blend with notes of citrus, rosemary, and cedarwood. This timeless fragrance brings a clean, sporty vibe, perfect for any occasion. These fragrances are widely praised for their longevity, versatility, and value, making them great choices for budget-conscious shoppers looking for a signature fragrance. What are the top 10 perfume brands for men under $50? Here’s a list of the top 10 perfume brands for men under $50, featuring scents that combine quality, longevity, and great value: Nautica Kenneth Cole Guess Adidas David Beckham Azzaro Antonio Banderas Perry Ellis Burberry Calvin Klein These brands offer a variety of fresh, woody, and spicy scents that provide excellent longevity and value, making them perfect choices for budget-conscious shoppers."
+          }
+        },
+        {
+          "id": "gid://shopify/Collection/164687020165",
+          "handle": "best-selling-perfumes-and-colognes",
+          "title": "Best Selling Perfumes & Colognes",
+          "description": {
+            "html": "Save Up to 40% off on the Most Popular Perfumes and Colognes Perfumania.com sells the best perfumes and colognes of all time for up to 40% off, allowing you to easily stock up on your favorite fragrance, get a new signature scent, or shop for a friend. We have 100% authentic colognes and perfumes from the top brands in the industry, including Dior, Versace, Jimmy Choo, and Dolce & Gabbana. Buy top-rated fragrances with us and enjoy free shipping! Find Your Best-Selling Perfumes for Women Are you're looking for the best-selling perfumes, several iconic fragrances remain top-rated. We have top luxury perfumes for women you love in 2026, each featuring a unique blends of floral, spicy, and woody notes. Check our popular choices of women's perfume include Tom Ford Black Orchid, Jo Malone Wild Bluebell, Yves Saint Laurent Libre, Armani Si Passione, and Marc Jacobs Dot. These top-rated perfumes are known for their captivating aromas and long-lasting wear. Find Your Best-Selling Colognes for Men Get the best cologne for men that truly reflects your style? These best-rates fragrances for men are the best-selling colognes in 2026, include Creed Aventus, Dior Sauvage, Acqua Di Gio by Giorgio Armani, Tom Ford Grey Vetiver, and Hugo Boss Bottled Night. No matter your preference, we have all of top-selling fragrances that resonates with you on this list. So go ahead, explore our best-selling scents that match your style. Top Perfumes and Colognes Brands for Men and Women When it comes to the top-selling fragrance brands in 2026, there are many options to choose from. Some of the most popular fragrance brands include Dior, Giorgio Armani, Yves Saint Laurent, Tom Ford, Gucci. These brands offer a wide range of fragrances for both men and women, from classic scents to modern and trendy options. If you're looking to enhance the diffusion of your perfume, there are a few tips you can follow. First, try applying it to pulse points such as your wrists, neck, and behind your ears. These areas emit heat that can help to activate the fragrance. You can also layer your perfume with matching lotions or oils, apply it to your clothes and hair, or carry a small atomizer to refresh the scent throughout the day. In summary, the best-selling perfumes, fragrances, and colognes of 2026 offer a wide range of options for men and women. Whether you prefer classic scents or modern and trendy fragrances, there is something for everyone. And with a few simple tips, you can enhance the diffusion of your perfume and enjoy your favorite scent all day long. FAQs About Best-Selling Perfumes and Colognes What are the most popular perfumes for women of 2026? Some of the best sellers perfumes for women of 2026 include: Dior J'adore Thierry Mugler Angel Viktor & Rolf Flowerbomb Lancôme La Vie Est Belle Gucci Bloom What is America's top rated fragrances? It is difficult to pinpoint one specific fragrance that is universally loved in America, but some of the most popular fragrances among Americans include Calvin Klein Eternity, Polo Ralph Lauren Blue, Yves Saint Laurent Black Opium, and Marc Jacobs Daisy. What is America's most popular perfume? According to a recent survey, America's favorite scent is vanilla, followed closely by lavender and cinnamon. Check out our scent wheel here. What is the best selling men's cologne of all time? The best selling men's colognes of all time include:- Giorgio Armani Acqua Di Gio Creed Aventus Cologne Dolce Gabbana Light Blue Paco Rabanne 1 Million for Men These classics have consistently topped the charts and remain timeless favorites. What are the top-selling fragrance brands in 2026? Some of the top-selling fragrance brands in 2026 include: Dolce & Gabbana Carolina Herrera Versace Marc Jacobs Burberry"
+          }
+        },
+        {
+          "id": "gid://shopify/Collection/165463294085",
+          "handle": "womens-perfume",
+          "title": "Perfumes for Women",
+          "description": {
+            "html": "We know how important it is for women to find the perfect fragrance, just like men love their best colognes. We have a wonderful selection of lovely scents from top designers just for you. Take a moment to explore our collection and discover the best perfumes that match your personal style and personality. Perfumania fragrance collection includes top perfume brands for women like Burberry, Dolce & Gabbana, Gucci, Lacoste, and more. We believe there’s a perfect scent for every woman, every occasion, and every season. Whether you love classic floral notes or modern spicy aromas, you’re sure to find something delightful at Perfumania. Are you searching for a romantic scent for date night or a fresh fragrance for the office? Look no further! We understand how important it is for you to find a fragrance that reflects your taste. Our goal is to make your shopping experience enjoyable and memorable. Alongside the latest and top perfumes, we also offer many beloved classics. If you’re on the hunt for a cherished scent from the past, you’ll find it here. We appreciate tradition and know how special your signature scent is, which is why we strive to make your experience exceptional and ensure you find the best perfume for women. We are always on the lookout for great deals on women’s fragrances to help you save. Be sure to check back often, as we frequently update our stock and create exciting sales to keep you looking, feeling, and smelling your best. Don’t forget to browse our exclusive selections, featuring unique fragrances for women that you won’t find anywhere else. Our collection has something special for everyone, with a unique twist in every scent. We guarantee that all our fragrances are genuine and fresh. Our friendly customer service team is here to ensure you have a pleasant shopping experience. In summary, Perfumania is your one-stop shop for the best perfumes for women. With our wide range of authentic fragrances from top designers, exclusive scents, and frequent sales, we aim to create an unbeatable shopping experience. We make it easy for you to find the best fragrance that complements your style and personality. Perfumes & Fragrances for Women FAQs What is the most popular female perfume? The most popular perfumes for women are: Versace Bright Crystal Perfume Dolce & Gabbana Light Blue Perfume Burberry for Women Eau de Parfum Calvin Klein Euphoria Eau De Parfum Burberry Brit for Her Eau de Parfum Ralph Lauren Romance Eau de Parfum Acqua Di Gioia Giorgio Armani Yves Saint Laurent Black Opium Eau De Parfum What women's perfume lasts the longest? Some perfumes for women known for their long-lasting scent include Tom Ford Black Orchid, Yves Saint Laurent Black Opium, Giorgio Armani Si, Lancôme La Vie Est Belle, and Paco Rabanne Lady Million. Should you change perfumes according to the season? While it’s not necessary to change perfumes with the seasons, it can be nice to switch to lighter scents in summer and richer scents in winter. Warm weather can make fragrances feel stronger, while colder weather can soften them. What are the top 5 perfumes for women? The top perfumes for women can vary by personal taste, but some most popular women's fragrances include Dior J'adore, Thierry Mugler Angel, Viktor & Rolf Flowerbomb, Marc Jacobs Daisy, and Gucci Bloom. How can I enhance the perfume's diffusion? To make your perfume last longer, apply it to pulse points like your wrists, neck, and behind your ears. You can also layer it with matching lotions or oils, spritz it on your clothes and hair, or carry a small atomizer to refresh your scent throughout the day. What is the nicest smelling women's perfume? The best-smelling perfume is a matter of personal preference. However, some scents that many people love include Versace Bright Crystal, Burberry Eau de Parfum Spray, CK One For Women, and Calvin Klein Eternity For Women. These fragrances for women are praised for their beautiful blends of floral, woody, and ambery notes. Which perfume notes tend to last the longest on women's skin? Perfumes with strong base notes like oud, vanilla, musk, or patchouli tend to last longer on the skin. What are the top trending perfumes for women? Some of the top trending perfumes for women are: Burberry Goddess is a strong trending pick for vanilla lovers, blending vanilla, lavender, and ginger into a warm, modern scent with cozy main-character energy. It fits the current vanilla-gourmand wave without feeling like straight dessert. Yves Saint Laurent Libre works for women who want something bold, floral, and polished. It has that dressed-up, confident feel that makes it easy to wear as a signature perfume. Carolina Herrera Good Girl stays popular because it mixes bold florals with richer, more sensual notes. It is the kind of perfume that feels made for night plans, heels, and a little drama. Valentino Donna Born In Roma is a modern floral pick with stylish, youthful energy. It feels sweet, smooth, and dressed-up without trying too hard. Ariana Grande Cloud Pink fits the fruity-sweet trend with a playful, soft gourmand feel. It is fun, wearable, and perfect for shoppers who want something cute but not basic. What are the latest trends in women's perfumes? Floral & Fruity Dominance: Light, fresh, and fruity-floral perfumes remain top-selling. Notes like rose, jasmine, violet, grapefruit, berries, and Sicilian lemon are highly favored, especially for spring and summer collections. Gourmand Scents: Warm, edible-inspired fragrances are trending. Vanilla, caramel, toffee, and amber provide sweet, comforting scents that appeal to modern consumers seeking cozy and inviting aromas. Fresh & Aquatic Vibes: Perfumes inspired by sea, ocean, or airy summer freshness are in demand. Light, energizing, and wearable for daily use or daytime outings. Woody & Earthy Bases: Base notes like sandalwood, cedar, amberwood, vetiver are popular for long-lasting, grounded fragrance profiles. Often combined with bright or citrus top notes for versatility. Layering & Customization: Consumers are increasingly looking to layer perfumes or use scents with complex top-middle-base note structures. Spicy and aromatic mid-notes like cinnamon, sage, and lavender are being paired with sweet or fresh notes. Seasonal & Occasion-Based Fragrances: Limited-edition fragrances for holidays, gifting, weddings, and special occasions are driving purchase intent. Brands are releasing seasonal collections that match gift-giving and event trends. What are the top affordable perfume brands? The top affordable perfume brands include Elizabeth Arden, Calvin Klein, Nautica, Guess, Kenneth Cole, Paris Hilton, and Cuba. These brands offer a wide range of fresh, floral, fruity, and woody fragrances suitable for everyday wear. Where can I buy popular high-end perfumes for women? The best place to buy popular high-end women's perfumes is a specialty fragrance retailer that carries authentic, brand-name inventory — such as Perfumania, which stocks designer and luxury women's fragrances including Chanel, Dior, Gucci, Yves Saint Laurent, Versace, and Carolina Herrera at competitive prices. Buying from a dedicated fragrance retailer (rather than a general marketplace) typically means guaranteed authenticity, a wider selection of both current releases and discontinued/hard-to-find scents, and better guidance from people who specialize in fragrance."
+          }
+        },
+        {
+          "id": "gid://shopify/Collection/172188467333",
+          "handle": "all-perfumes-and-colognes",
+          "title": "All Perfumes & Colognes",
+          "description": {
+            "html": ""
+          }
+        }
+      ]
+    }
+  ],
+  "pagination": {
+    "has_next_page": false
+  },
+  "messages": []
+}

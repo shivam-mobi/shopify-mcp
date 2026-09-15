@@ -74,16 +74,29 @@ export function createToolService() {
     const products = buildLlmProductSummary(rankedProducts);
     const listingMeta = buildProductListingMetadata(rankedProducts);
 
+    const pagination = originalData.pagination && typeof originalData.pagination === "object"
+      ? {
+          cursor: originalData.pagination.cursor || null,
+          has_next_page: originalData.pagination.has_next_page === true,
+          total_count:
+            typeof originalData.pagination.total_count === "number"
+              ? originalData.pagination.total_count
+              : null
+        }
+      : null;
+
     const enriched = {
       status: originalData.status || "success",
       source: toolName,
       products,
       ...listingMeta,
+      ...(pagination ? { pagination } : {}),
       ui_instruction:
         originalData.ui_instruction ||
         "CRITICAL: Top Matching Products cards are already shown in chat. " +
         "FORBIDDEN in your reply: product names, prices, 'Priced at $…', descriptions, feature bullets, numbered product lists, or recommending a specific product by name. " +
-        "Reply in 1-2 short sentences only (e.g. matching products were found), then ask if they want to add one to the cart."
+        "Reply in 1-2 short sentences only (e.g. matching products were found), then ask if they want to add one to the cart. " +
+        "If the customer asks for more products/results/next page and pagination.has_next_page is true, call search_catalog again with the same query/filters and pagination.cursor from this result."
     };
 
     console.log("[tool] enriched product listing for LLM history", {

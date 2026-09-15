@@ -1429,34 +1429,59 @@ function llmJsonReplacer(_key, value) {
   return value;
 }
 
-/** Default manishclothes digest used if DB row is missing. */
+/** Default Perfumania digest used if DB row is missing. */
 export const DEFAULT_STORE_POLICY_DIGEST = {
   id: "default",
-  title: "manishclothes store policy cheat sheet",
+  title: "Perfumania store policy cheat sheet",
   note:
     "Returned when Shopify search_shop_policies_and_faqs is empty. Prefer these quick facts; do not invent policy details.",
-  contentDate: "2026-09-11",
-  digest: `manishclothes quick facts — use these before inventing anything. Store: https://manishclothes.myshopify.com/
+  contentDate: "2026-09-15",
+  digest: `Perfumania quick facts — use these before inventing anything. Store: https://perfumania.com/
+Primary source page: https://perfumania.com/pages/shipping-and-returns (also see refund, privacy, terms, FAQ, customer service pages linked below).
 
-CONTACT: No public support email or phone is published on the storefront. Direct customers to https://manishclothes.myshopify.com/ or their Shopify account. Do not invent an email or phone number.
+CONTACT:
+- Phone: 1 (866) 557-2368 — Mon–Fri 9:00 a.m.–5:00 p.m. EST
+- Email: customer.service@perfumania.com (accepted 24/7; responses during business hours)
+- Live chat: Mon–Fri 9:00 a.m.–5:00 p.m. EST on the site
+- Help center: https://perfumania.com/pages/customer-service
+- FAQ: https://perfumania.com/pages/frequently-asked-questions
+- Mailing address: Customer Service Department, 2650 SW 145th Ave, Miramar, FL 33027
+- Store locator: available on the site (over 140 U.S. retail locations). Online orders ship to the customer only — not to retail stores for pickup.
+- Holiday closures (customer service / shipping observance): April 3 • May 25 • June 19 • July 3 • September 7 • November 26–27 • December 25 • January 1
 
-PRODUCTS: Online shop named manishclothes. Navigation: Home, Catalog, Search By Make. Published products include clothing (e.g. tshirt for men with color/size variants) and gift cards. Search the live catalog for what is in stock — do not invent product names, prices, or categories.
+PRODUCTS: Discount designer fragrances (perfume, cologne, gift sets, body sprays, discovery/sample packs, and related beauty). 100% authentic — does not sell imitations, old, or used products. Search the live catalog for stock, prices, and promos (e.g. 3 for $99, Bundle & Save, Discovery Set). Do not invent product names, prices, or availability.
 
-CURRENCY: Storefront shows INR (₹) as the selected currency, with GBP and USD also available in the currency selector.
+CURRENCY: Prices are in US dollars (USD).
 
-PAYMENTS: Footer lists Visa, Mastercard, American Express, PayPal, Diners Club, and Discover.
+SHIPPING / WHERE WE DELIVER (prefer https://perfumania.com/pages/shipping-and-returns):
+- Ships within the U.S. only. Does NOT ship internationally.
+- Contiguous 48 U.S. states (including P.O. Boxes): Standard — FREE over $59 subtotal after discounts (excludes tax/shipping), or $7.50 under $59; estimated 3–5 business days.
+- Alaska & Hawaii: Standard $29.00; estimated 15–20 business days. Free ground shipping does NOT apply to AK/HI.
+- Express 2-Day: $14.99 to contiguous 48 states on select items; estimated 2 business days. Not available to P.O. Boxes. Order cut-off 1:00 PM EST on business days; later orders process next business day. Shipping fees are non-refundable (including carrier delay).
+- Tracking: emailed after shipment.
+- Packages ship Mon–Fri about 9:00 a.m.–5:00 p.m. EST (except U.S. holidays). Carrier may vary by weight/size; some orders may require signature.
+- Damaged on arrival: contact customer.service@perfumania.com within 7 days of receipt; keep damaged items until a claim is filed. Claims considered only if received within 30 days of shipment date.
+- NOTE: An older shipping-policy page (https://perfumania.com/pages/shipping-policy) lists different rates and says no P.O. Boxes/APO/FPO. Prefer shipping-and-returns + checkout rates when they conflict. Do not invent international destinations or rates.
 
-SHIPPING / WHERE WE DELIVER: No shipping policy page is published. Do NOT invent countries, transit times, P.O. Box rules, or exclusions. Do NOT say the store does not ship to India or Asia. If asked where you ship, say availability and cost are shown at checkout, and you do not have a published country list.
+CANCEL / CHANGE ORDER: Orders cannot be canceled or modified once placed / once processed for shipment. Customers should double-check address and items at checkout. Incorrect checkout info is the customer's responsibility.
 
-CANCEL ORDER: No cancel policy is published. Do not invent a before-dispatch rule. If asked, say they should check their order status in their account or contact the store through the website.
+RETURNS / REFUNDS (https://perfumania.com/pages/return-policy and https://perfumania.com/policies/refund-policy):
+- Unopened, unused merchandise in original condition may be returned within 30 days for a full refund.
+- Cosmetics, hair care, and skincare: non-refundable (health/safety).
+- Free gifts included with a purchase must be returned in good condition for a full refund.
+- Contact customer service BEFORE shipping a return for instructions.
+- Online returns go to the Perfumania.com warehouse only — retail stores do NOT accept online returns/exchanges.
+- If the return is due to Perfumania error, shipping costs are refunded. Not responsible for insufficient addresses, packages returned to sender, lost/stolen packages, or damage during the customer's return shipment.
+- Returns are quality-inspected; items not in original condition may be refused (returned to customer or discarded) with no refund.
+- Include packing slip or: full name, address, city, state, zip, country, phone, email, original order/invoice number, reason for return.
 
-RETURNS / REFUNDS: A Return Order page exists at https://manishclothes.myshopify.com/pages/return-order but it has no published policy text. Do NOT invent a 30-day window, prepaid labels, or country-specific refund rules.
+REWARDS / PERKS: Perf Perks loyalty program — earn points in-store and online; redeem 100 points = $1 off. Tiers (points earned per $1): Bronze 0–749 → 3 pts; Silver 750–5,999 → 6 pts; Gold 6,000–15,999 → 8 pts. Details: https://perfumania.com/pages/reward-page and https://perfumania.com/pages/perks-program-terms-and-conditions. U.S. residents; members must be of majority age per terms.
 
-WARRANTY: No warranty page is published. Do not invent product warranties.
+WARRANTY: No separate product warranty page is published. Stick to return/refund rules above; do not invent warranties.
 
-PRIVACY: No privacy policy page is published. Do not invent privacy/legal details.
+PRIVACY: https://perfumania.com/policies/privacy-policy (updated March 2025). Powered by Shopify. Collects contact, payment, account, transaction, device, and usage data to fulfill orders, support, marketing (opt-out via unsubscribe), security, and legal needs. Privacy questions / rights requests: alireza.naghdian@fragranceoutlet.com or 2650 Southwest 145th Avenue, Miramar, FL 33027. Do not invent privacy/legal details beyond published policy.
 
-TERMS: No terms of service page is published. Do not invent terms, company legal names, or subscription-cancel rules.`
+TERMS: https://perfumania.com/policies/terms-of-service (updated June 10, 2020). Prices in USD; online prices may differ from retail stores; Florida law / Florida courts. Entering an email agrees to special offers. DMCA: abuse@perfumania.com or Perfumania, 11920 Miramar Parkway, Miramar, FL 33025 (Attn: Legal Department).`
 };
 
 /**
