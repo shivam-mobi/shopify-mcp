@@ -1221,6 +1221,106 @@
 
 .shop-ai-product-card--out-of-stock { opacity: 0.85; }
 
+.shop-ai-product-variants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+  align-items: center;
+}
+
+.shop-ai-chat-container .shop-ai-product-variant,
+.shop-ai-product-card .shop-ai-product-variant {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: auto !important;
+  width: auto !important;
+  max-width: 100% !important;
+  border: 1px solid #D1D5DB !important;
+  background: #fff !important;
+  background-image: none !important;
+  color: #111827 !important;
+  border-radius: 999px !important;
+  padding: 5px 10px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  line-height: 1.2 !important;
+  letter-spacing: normal !important;
+  text-align: center !important;
+  text-transform: none !important;
+  text-decoration: none !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+  box-shadow: none !important;
+  outline: none !important;
+  transform: none !important;
+  transition: background 0.15s, border-color 0.15s, color 0.15s !important;
+}
+
+.shop-ai-chat-container .shop-ai-product-variant:hover:not(:disabled):not(.is-disabled),
+.shop-ai-chat-container .shop-ai-product-variant:focus:not(:disabled):not(.is-disabled),
+.shop-ai-chat-container .shop-ai-product-variant:active:not(:disabled):not(.is-disabled),
+.shop-ai-product-card .shop-ai-product-variant:hover:not(:disabled):not(.is-disabled),
+.shop-ai-product-card .shop-ai-product-variant:focus:not(:disabled):not(.is-disabled),
+.shop-ai-product-card .shop-ai-product-variant:active:not(:disabled):not(.is-disabled) {
+  border-color: var(--shop-ai-brand) !important;
+  background: #fff !important;
+  background-image: none !important;
+  color: var(--shop-ai-brand) !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+  transform: none !important;
+  opacity: 1 !important;
+}
+
+.shop-ai-chat-container .shop-ai-product-variant.is-selected,
+.shop-ai-chat-container .shop-ai-product-variant.is-selected:hover,
+.shop-ai-chat-container .shop-ai-product-variant.is-selected:focus,
+.shop-ai-chat-container .shop-ai-product-variant.is-selected:active,
+.shop-ai-product-card .shop-ai-product-variant.is-selected,
+.shop-ai-product-card .shop-ai-product-variant.is-selected:hover,
+.shop-ai-product-card .shop-ai-product-variant.is-selected:focus,
+.shop-ai-product-card .shop-ai-product-variant.is-selected:active {
+  background: #E8F4FB !important;
+  background-image: none !important;
+  border-color: var(--shop-ai-brand) !important;
+  color: #0B4F6C !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.shop-ai-chat-container .shop-ai-product-variant.is-disabled,
+.shop-ai-chat-container .shop-ai-product-variant:disabled,
+.shop-ai-product-card .shop-ai-product-variant.is-disabled,
+.shop-ai-product-card .shop-ai-product-variant:disabled {
+  opacity: 0.45 !important;
+  cursor: not-allowed !important;
+  text-decoration: line-through !important;
+  background: #F3F4F6 !important;
+  color: #6B7280 !important;
+  border-color: #E5E7EB !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+/* Kill theme tooltip overlays that hijack [title] on buttons */
+.shop-ai-chat-container .shop-ai-product-variant::before,
+.shop-ai-chat-container .shop-ai-product-variant::after,
+.shop-ai-product-card .shop-ai-product-variant::before,
+.shop-ai-product-card .shop-ai-product-variant::after {
+  content: none !important;
+  display: none !important;
+}
+
 .shop-ai-add-to-cart {
   width: 100%;
   padding: 8px 12px;

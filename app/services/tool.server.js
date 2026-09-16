@@ -155,23 +155,133 @@ export function createToolService() {
     return !product.filterType && product.isHepa == null;
   };
 
-  const formatProductData = (product) => {
-    const variant = product.variants?.[0] || product.variant;
+  const formatVariantOption = (variant, product) => {
+    if (!variant || typeof variant !== "object") return null;
+
+    const availability = resolveProductAvailability(product, variant);
     const priceAmount = variant?.price?.amount ?? variant?.price;
-    const priceCurrency = variant?.price?.currency ?? variant?.currency ?? product.price_range?.currency;
+    const priceCurrency =
+      variant?.price?.currency ??
+      variant?.currency ??
+      product.price_range?.min?.currency ??
+      product.price_range?.currency ??
+      "USD";
+
+    let price = null;
+    if (priceAmount != null && priceCurrency) {
+      price = `${priceCurrency} ${formatMinorCurrencyAmount(priceAmount, priceCurrency)}`;
+    }
+
+    let compareAtPrice = null;
+    const listAmount = variant?.list_price?.amount ?? variant?.compareAtPrice?.amount;
+    const listCurrency =
+      variant?.list_price?.currency ?? variant?.compareAtPrice?.currency ?? priceCurrency;
+    if (listAmount != null && listCurrency && Number(listAmount) > 0) {
+      compareAtPrice = `${listCurrency} ${formatMinorCurrencyAmount(listAmount, listCurrency)}`;
+    }
+
+    const optionLabel =
+      variant.options?.[0]?.label ||
+      variant.title ||
+      variant.name ||
+      "Option";
+
+    const variantImage =
+      (Array.isArray(variant.media) &&
+        variant.media.find((item) => item?.url && (!item.type || item.type === "image"))?.url) ||
+      variant.image?.url ||
+      variant.image_url ||
+      null;
+
+    const normalizedVariantId = resolveProductVariantId({
+      variantId: variant.id,
+      variant_id: variant.id,
+      id: variant.id
+    });
+
+    if (!normalizedVariantId) return null;
+
+    return {
+      id: normalizedVariantId,
+      variantId: normalizedVariantId,
+      variant_id: normalizedVariantId,
+      title: optionLabel,
+      label: optionLabel,
+      price,
+      compareAtPrice,
+      available: availability.availableForSale !== false && availability.inStock !== false,
+      availableForSale: availability.availableForSale,
+      inStock: availability.inStock,
+      inventoryQuantity: availability.inventoryQuantity,
+      image_url: variantImage
+    };
+  };
+
+  const formatProductData = (product) => {
+    const rawVariants = Array.isArray(product.variants)
+      ? product.variants
+      : product.variant
+        ? [product.variant]
+        : [];
+
+    const variants = rawVariants
+      .map((variant) => formatVariantOption(variant, product))
+      .filter(Boolean);
+
+    // Prefer first in-stock variant so cards don't default to an OOS size
+    const selectedVariant =
+      variants.find((variant) => variant.available) ||
+      variants[0] ||
+      null;
+
+    const legacyVariant = product.variants?.[0] || product.variant;
+    const variant = selectedVariant
+      ? rawVariants.find((item) => {
+          const id = resolveProductVariantId({
+            variantId: item?.id,
+            variant_id: item?.id,
+            id: item?.id
+          });
+          return id && id === selectedVariant.id;
+        }) || legacyVariant
+      : legacyVariant;
+
+    const priceAmount = selectedVariant
+      ? null
+      : variant?.price?.amount ?? variant?.price;
+    const priceCurrency =
+      variant?.price?.currency ??
+      variant?.currency ??
+      product.price_range?.min?.currency ??
+      product.price_range?.currency;
 
     let price = "Price not available";
-    if (product.price && typeof product.price === "string") {
+    if (selectedVariant?.price) {
+      price = selectedVariant.price;
+    } else if (product.price && typeof product.price === "string") {
       price = product.price;
     } else if (priceAmount != null && priceCurrency) {
       const majorUnits = formatMinorCurrencyAmount(priceAmount, priceCurrency);
       price = `${priceCurrency} ${majorUnits}`;
+    } else if (product.price_range?.min?.amount != null) {
+      const currency = product.price_range.min.currency || product.price_range.currency || "USD";
+      price = `${currency} ${formatMinorCurrencyAmount(product.price_range.min.amount, currency)}`;
     } else if (product.price_range) {
       price = `${product.price_range.currency} ${product.price_range.min}`;
     }
 
-    const variantId = product.variantId || product.variant_id || variant?.id;
-    const availability = resolveProductAvailability(product, variant);
+    const variantId =
+      selectedVariant?.id ||
+      product.variantId ||
+      product.variant_id ||
+      variant?.id;
+    const availability = selectedVariant
+      ? {
+          availableForSale: selectedVariant.availableForSale,
+          inStock: selectedVariant.inStock,
+          inventoryQuantity: selectedVariant.inventoryQuantity
+        }
+      : resolveProductAvailability(product, variant);
     const storefrontBase = (
       process.env.STOREFRONT_URL ||
       process.env.SHOPIFY_STOREFRONT_URL ||
@@ -201,22 +311,27 @@ export function createToolService() {
     const normalizedVariantId = resolveProductVariantId({ variantId, variant_id: product.variant_id, id: variantId });
 
     const descriptionHtml = resolveProductDescriptionHtml(product);
+    const imageUrl =
+      selectedVariant?.image_url ||
+      resolveProductImageUrl(product);
 
     return {
       id: normalizedVariantId || product.product_id || product.id || product.partNumber || `product-${Math.random().toString(36).substring(7)}`,
+      productId: product.id || product.product_id || null,
       variantId: normalizedVariantId,
       variant_id: normalizedVariantId,
       title: product.title || product.partTypeName || product.name || "Product",
       price,
       priceAmount: typeof product.priceAmount === "number" ? product.priceAmount : null,
-      compareAtPrice: product.compareAtPrice || null,
-      image_url: resolveProductImageUrl(product),
+      compareAtPrice: selectedVariant?.compareAtPrice || product.compareAtPrice || null,
+      image_url: imageUrl,
       description: descriptionHtml,
       descriptionHtml,
       url: productUrl,
       availableForSale: availability.availableForSale,
       inStock: availability.inStock,
       inventoryQuantity: availability.inventoryQuantity,
+      variants,
       vendor,
       sku: product.sku || product.partNumber || "",
       productType: product.productType || product.product_type || "",

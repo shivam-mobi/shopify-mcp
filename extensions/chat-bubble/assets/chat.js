@@ -338,15 +338,23 @@
    * Include variant_id so similar titles add the correct product.
    * Full text is sent to the API; the chat bubble hides the variant_id.
    */
-  function buildAddToCartMessage(product) {
+  function buildAddToCartMessage(product, selectedVariant) {
     const title = String(product?.title || 'this product').trim() || 'this product';
+    const variantLabel = selectedVariant?.title || selectedVariant?.label || '';
+    const displayTitle = variantLabel ? `${title} (${variantLabel})` : title;
     const variantId = String(
-      product?.variantId || product?.variant_id || product?.id || ''
+      selectedVariant?.variantId ||
+      selectedVariant?.variant_id ||
+      selectedVariant?.id ||
+      product?.variantId ||
+      product?.variant_id ||
+      product?.id ||
+      ''
     ).trim();
     if (variantId && /ProductVariant\//i.test(variantId)) {
-      return `Add "${title}" to my cart using variant_id: ${variantId}`;
+      return `Add "${displayTitle}" to my cart using variant_id: ${variantId}`;
     }
-    return `Add ${title} to my cart`;
+    return `Add ${displayTitle} to my cart`;
   }
 
   /** Hide Shopify variant GIDs from what the customer sees in chat. */
@@ -3944,13 +3952,22 @@
         const card = document.createElement('div');
         card.classList.add('shop-ai-product-card');
 
+        const variants = Array.isArray(product.variants) ? product.variants.filter(Boolean) : [];
+        let selectedVariant =
+          variants.find((variant) => variant.available !== false && variant.inStock !== false) ||
+          variants[0] ||
+          null;
+
         // Create image container
         const imageContainer = document.createElement('div');
         imageContainer.classList.add('shop-ai-product-image');
 
         // Add product image or placeholder
         const image = document.createElement('img');
-        image.src = product.image_url || 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png';
+        image.src =
+          selectedVariant?.image_url ||
+          product.image_url ||
+          'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png';
         image.alt = product.title;
         image.onerror = function() {
           // If image fails to load, use a fallback placeholder
@@ -4000,53 +4017,141 @@
         // Add product price
         const price = document.createElement('p');
         price.classList.add('shop-ai-product-price');
-        price.textContent = product.price;
-        if (product.compareAtPrice) {
-          const compare = document.createElement('span');
-          compare.classList.add('shop-ai-product-compare-price');
-          compare.textContent = ` ${product.compareAtPrice}`;
-          price.appendChild(compare);
-        }
-        info.appendChild(price);
 
-        const qty = typeof product.inventoryQuantity === 'number' ? product.inventoryQuantity : null;
-        const inStock =
-          product.inStock === true &&
-          product.availableForSale !== false &&
-          qty !== 0;
+        const compare = document.createElement('span');
+        compare.classList.add('shop-ai-product-compare-price');
+        price.appendChild(document.createTextNode(''));
+        price.appendChild(compare);
+        info.appendChild(price);
 
         const stock = document.createElement('p');
         stock.classList.add('shop-ai-product-stock');
-        if (inStock) {
-          stock.classList.add('in-stock');
-          stock.textContent = 'In stock';
-        } else {
-          stock.classList.add('out-of-stock');
-          stock.textContent = 'Out of stock';
-          card.classList.add('shop-ai-product-card--out-of-stock');
-        }
         info.appendChild(stock);
 
-        // Only show Add to Cart when in stock
-        if (inStock) {
-          const button = document.createElement('button');
-          button.classList.add('shop-ai-add-to-cart');
-          button.textContent = 'Add to Cart';
-          button.dataset.productId = product.id;
-          button.addEventListener('click', function() {
-            const input = document.querySelector('.shop-ai-chat-input-field');
-            const messagesContainer = document.querySelector('.shop-ai-chat-messages');
-            ShopAIChat.UI.showChatView();
-            if (input) {
-              input.value = buildAddToCartMessage(product);
-              const sendButton = document.querySelector('.shop-ai-chat-send');
-              if (sendButton) {
-                sendButton.click();
-              }
+        const button = document.createElement('button');
+        button.classList.add('shop-ai-add-to-cart');
+        button.textContent = 'Add to Cart';
+        button.dataset.productId = product.id;
+
+        const isVariantAvailable = (variant) => {
+          if (!variant) {
+            const qty = typeof product.inventoryQuantity === 'number' ? product.inventoryQuantity : null;
+            return (
+              product.inStock === true &&
+              product.availableForSale !== false &&
+              qty !== 0
+            );
+          }
+          if (variant.available === false) return false;
+          if (variant.inStock === false) return false;
+          if (variant.availableForSale === false) return false;
+          if (typeof variant.inventoryQuantity === 'number' && variant.inventoryQuantity === 0) {
+            return false;
+          }
+          return true;
+        };
+
+        const applySelectedVariant = (variant) => {
+          selectedVariant = variant || null;
+          const available = isVariantAvailable(selectedVariant);
+
+          const nextPrice = selectedVariant?.price || product.price || 'Price not available';
+          price.childNodes[0].textContent = nextPrice;
+
+          const compareAt = selectedVariant?.compareAtPrice || product.compareAtPrice || '';
+          if (compareAt) {
+            compare.textContent = ` ${compareAt}`;
+            compare.style.display = '';
+          } else {
+            compare.textContent = '';
+            compare.style.display = 'none';
+          }
+
+          if (selectedVariant?.image_url) {
+            image.src = selectedVariant.image_url;
+          }
+
+          stock.classList.remove('in-stock', 'out-of-stock');
+          card.classList.remove('shop-ai-product-card--out-of-stock');
+          if (available) {
+            stock.classList.add('in-stock');
+            stock.textContent = 'In stock';
+            button.disabled = false;
+            button.textContent = 'Add to Cart';
+            button.style.display = '';
+          } else {
+            stock.classList.add('out-of-stock');
+            stock.textContent = 'Out of stock';
+            card.classList.add('shop-ai-product-card--out-of-stock');
+            button.disabled = true;
+            button.textContent = 'Out of Stock';
+            // Keep button visible when variants exist so user can switch sizes
+            button.style.display = variants.length > 1 ? '' : 'none';
+          }
+
+          if (variants.length > 1) {
+            variantButtons.forEach((chip) => {
+              const isSelected = chip.dataset.variantId === (selectedVariant?.id || '');
+              chip.classList.toggle('is-selected', isSelected);
+              chip.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+            });
+          }
+        };
+
+        const variantButtons = [];
+        if (variants.length > 1) {
+          const variantRow = document.createElement('div');
+          variantRow.classList.add('shop-ai-product-variants');
+          variantRow.setAttribute('role', 'group');
+          variantRow.setAttribute('aria-label', 'Choose size');
+
+          variants.forEach((variant) => {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.classList.add('shop-ai-product-variant');
+            chip.textContent = variant.title || variant.label || 'Option';
+            chip.dataset.variantId = variant.id || '';
+            chip.setAttribute('aria-label', variant.title || variant.label || 'Option');
+
+            const available = isVariantAvailable(variant);
+            if (!available) {
+              chip.disabled = true;
+              chip.classList.add('is-disabled');
+              chip.setAttribute(
+                'aria-label',
+                `${variant.title || variant.label || 'Option'} — Out of stock`
+              );
             }
+
+            chip.addEventListener('click', function(event) {
+              event.preventDefault();
+              event.stopPropagation();
+              if (chip.disabled) return;
+              applySelectedVariant(variant);
+            });
+
+            variantButtons.push(chip);
+            variantRow.appendChild(chip);
           });
-          info.appendChild(button);
+
+          info.appendChild(variantRow);
         }
+
+        button.addEventListener('click', function() {
+          if (button.disabled || !isVariantAvailable(selectedVariant)) return;
+          const input = document.querySelector('.shop-ai-chat-input-field');
+          ShopAIChat.UI.showChatView();
+          if (input) {
+            input.value = buildAddToCartMessage(product, selectedVariant);
+            const sendButton = document.querySelector('.shop-ai-chat-send');
+            if (sendButton) {
+              sendButton.click();
+            }
+          }
+        });
+        info.appendChild(button);
+
+        applySelectedVariant(selectedVariant);
 
         card.appendChild(info);
 
