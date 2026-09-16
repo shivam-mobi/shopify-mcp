@@ -83,26 +83,47 @@ export function getCartWrapperTools() {
     {
       name: "add_to_cart",
       description:
-        "Add ONE product to the customer's cart (or increase that one product's qty). Always keeps existing cart items. " +
-        "Pass variant_id from the latest catalog products[] (gid://shopify/ProductVariant/...). " +
-        "If the customer message includes variant_id: gid://..., use that EXACT id — do not swap to a different product. " +
+        "Add product(s) to the customer's cart (or increase qty). Always keeps existing cart items. " +
+        "ONE product: pass variant_id (+ optional quantity). " +
+        "MULTIPLE products (e.g. first two, #1 and #3, add these): pass items[] ONCE with each variant_id — " +
+        "do NOT call add_to_cart repeatedly. " +
+        "variant_id must come from the latest catalog products[] (gid://shopify/ProductVariant/...). " +
+        "If the customer message includes variant_id: gid://..., use that EXACT id. " +
         "When they name a product, match products[].title and use that row's variant_id. " +
-        "For changing MULTIPLE products at once (increase each qty, set several qtys, remove several items), " +
-        "call update_cart_items ONCE — do NOT call add_to_cart repeatedly. " +
+        "For qty changes/removes on products ALREADY in the cart, prefer update_cart_items. " +
         "Server handles merge — never call create_cart or update_cart directly.",
       input_schema: {
         type: "object",
         properties: {
           variant_id: {
             type: "string",
-            description: "Shopify ProductVariant GID from catalog search results (exact id for the chosen product)"
+            description:
+              "Single ProductVariant GID (use this OR items[], not both required). From latest catalog results."
           },
           quantity: {
             type: "integer",
-            description: "Quantity to add (default 1)"
+            description: "Quantity to add for single variant_id (default 1)"
+          },
+          items: {
+            type: "array",
+            description:
+              "Add several products in ONE call. Each entry needs variant_id from the latest catalog result.",
+            items: {
+              type: "object",
+              properties: {
+                variant_id: {
+                  type: "string",
+                  description: "Shopify ProductVariant GID"
+                },
+                quantity: {
+                  type: "integer",
+                  description: "Quantity to add for this variant (default 1)"
+                }
+              },
+              required: ["variant_id"]
+            }
           }
-        },
-        required: ["variant_id"]
+        }
       }
     },
     {
@@ -424,7 +445,8 @@ export function buildActiveCartWrapperContextMessage(cartId) {
   return {
     role: "system",
     content:
-      "This conversation has an active cart. Use add_to_cart to add products or increase qty for ONE product, " +
+      "This conversation has an active cart. Use add_to_cart for new products " +
+      "(ONE call with items[] when adding multiple; single variant_id for one product), " +
       "remove_from_cart for ONE product or reduce that product's qty (NOT for remove-all), " +
       "update_cart_items ONCE for multi-product qty changes or multi-product removes " +
       "(e.g. increase each qty, set several qtys, remove several items — never loop add_to_cart), " +
@@ -435,48 +457,131 @@ export function buildActiveCartWrapperContextMessage(cartId) {
   };
 }
 
-async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }) {
-  const variantId = normalizeVariantId(variant_id);
-  if (!variantId) {
-    return toolError("variant_id is required (gid://shopify/ProductVariant/...)");
+function parseAddToCartRequests({ variant_id, quantity = 1, items }) {
+  /** @type {{ variantId: string, qty: number }[]} */
+  const requests = [];
+
+  if (Array.isArray(items) && items.length > 0) {
+    for (const entry of items) {
+      const variantId = normalizeVariantId(entry?.variant_id);
+      if (!variantId) continue;
+      requests.push({
+        variantId,
+        qty: Math.max(1, Number(entry?.quantity) || 1)
+      });
+    }
   }
 
-  const qty = Math.max(1, Number(quantity) || 1);
-  const newItem = { quantity: qty, item: { id: variantId } };
-  const live = await fetchLiveCart(mcpClient, conversationId);
+  const singleId = normalizeVariantId(variant_id);
+  if (singleId) {
+    const qty = Math.max(1, Number(quantity) || 1);
+    const existing = requests.find((r) => r.variantId === singleId);
+    if (existing) {
+      existing.qty += qty;
+    } else {
+      requests.push({ variantId: singleId, qty });
+    }
+  }
 
-  if (!live) {
-    const response = await mcpClient.callTool("create_cart", {
-      cart: withAiraAttribution({ line_items: [newItem] }, conversationId)
-    });
-    await persistCartFromResponse(conversationId, response);
-    return toolResult(
-      await summarizeCartWithShipping(
-        mcpClient,
-        conversationId,
-        extractCartPayload(response),
-        response
-      )
+  // Collapse duplicate variant_ids in items[]
+  const byId = new Map();
+  for (const req of requests) {
+    const prev = byId.get(req.variantId);
+    if (prev) {
+      prev.qty += req.qty;
+    } else {
+      byId.set(req.variantId, { ...req });
+    }
+  }
+
+  return Array.from(byId.values());
+}
+
+function buildExpectedQtyByVariant(existingLineItems, requests) {
+  const expected = new Map();
+  for (const line of existingLineItems || []) {
+    const id = normalizeVariantId(line?.item?.id);
+    if (!id) continue;
+    expected.set(id, (expected.get(id) || 0) + Math.max(1, Number(line.quantity) || 1));
+  }
+  for (const req of requests) {
+    expected.set(req.variantId, (expected.get(req.variantId) || 0) + req.qty);
+  }
+  return expected;
+}
+
+function allRequestedMet(lineItems, requests, expectedByVariant) {
+  return requests.every((req) => {
+    const expected = expectedByVariant.get(req.variantId) || req.qty;
+    return totalQtyForVariant(lineItems, req.variantId) >= expected;
+  });
+}
+
+function listAddedItemsFromCart(lineItems, requests) {
+  const aggregated = sumQuantitiesByVariant(lineItems || []);
+  return requests.map((req) => {
+    const entry = aggregated.get(req.variantId);
+    return {
+      title: entry?.title || "Product",
+      quantity: req.qty,
+      variant_id: req.variantId,
+      cart_quantity: entry?.quantity || 0
+    };
+  });
+}
+
+async function addToCart(mcpClient, conversationId, args = {}) {
+  const requests = parseAddToCartRequests(args);
+  if (requests.length === 0) {
+    return toolError(
+      "variant_id or items[] with variant_id is required (gid://shopify/ProductVariant/...)"
     );
   }
 
-  const merged = mergeLineItems(live.cart.line_items || [], [newItem]);
-  const expectedQty =
-    merged.find((line) => normalizeVariantId(line?.item?.id) === variantId)?.quantity ||
-    qty;
+  const newItems = requests.map((req) => ({
+    quantity: req.qty,
+    item: { id: req.variantId }
+  }));
+  const live = await fetchLiveCart(mcpClient, conversationId);
+  const beforeLines = live?.cart?.line_items || [];
+  const expectedByVariant = buildExpectedQtyByVariant(beforeLines, requests);
+
+  if (!live) {
+    const response = await mcpClient.callTool("create_cart", {
+      cart: withAiraAttribution({ line_items: newItems }, conversationId)
+    });
+    await persistCartFromResponse(conversationId, response);
+    const createdCart = extractCartPayload(response);
+    const summary = await summarizeCartWithShipping(
+      mcpClient,
+      conversationId,
+      createdCart,
+      response
+    );
+    return toolResult({
+      ...summary,
+      success: true,
+      added_items: listAddedItemsFromCart(createdCart?.line_items, requests),
+      instruction:
+        (summary.instruction ? `${summary.instruction} ` : "") +
+        "Tell the customer ONLY about added_items[] (what was just added). " +
+        "items[] is the full cart — do not claim every cart line was newly added."
+    });
+  }
+
+  const merged = mergeLineItems(beforeLines, newItems);
 
   console.log("[cart-wrapper] add_to_cart merge", {
     conversationId,
-    variantId,
-    beforeLines: (live.cart.line_items || []).map((line) => ({
+    requested: requests,
+    beforeLines: beforeLines.map((line) => ({
       id: line?.item?.id,
       quantity: line?.quantity
     })),
     merged: merged.map((line) => ({
       id: line?.item?.id,
       quantity: line?.quantity
-    })),
-    expectedQty
+    }))
   });
 
   let response = await updateCartLineItems(
@@ -487,27 +592,32 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
     merged
   );
 
-  // Prefer Shopify's update_cart payload. Only re-fetch when the new variant is missing
-  // (some responses omit new lines / stale fulfillment).
   let verified = null;
   let verifiedCart = extractCartPayload(response);
-  let addedQty = totalQtyForVariant(verifiedCart?.line_items, variantId);
-  const duplicateLines = (verifiedCart?.line_items || []).filter(
-    (line) => normalizeVariantId(line?.item?.id) === variantId
-  ).length;
 
-  // Shopify sometimes returns duplicate lines (qty 1 + qty 1) instead of one line qty 2.
-  // Coalesce and write back so cart/checkout stay correct.
-  if (
+  // Coalesce duplicate Shopify lines and bump any short requested variants.
+  const needsCoalesce =
     verifiedCart &&
-    (duplicateLines > 1 || addedQty < expectedQty)
-  ) {
+    (!allRequestedMet(verifiedCart.line_items, requests, expectedByVariant) ||
+      requests.some((req) => {
+        const lines = (verifiedCart.line_items || []).filter(
+          (line) => normalizeVariantId(line?.item?.id) === req.variantId
+        );
+        return lines.length > 1;
+      }));
+
+  if (needsCoalesce) {
     const coalesced = mergeLineItems(verifiedCart.line_items || [], []);
-    const target = coalesced.find(
-      (line) => normalizeVariantId(line?.item?.id) === variantId
-    );
-    if (target && target.quantity < expectedQty) {
-      target.quantity = expectedQty;
+    for (const req of requests) {
+      const expected = expectedByVariant.get(req.variantId) || req.qty;
+      const target = coalesced.find(
+        (line) => normalizeVariantId(line?.item?.id) === req.variantId
+      );
+      if (target && target.quantity < expected) {
+        target.quantity = expected;
+      } else if (!target) {
+        coalesced.push({ quantity: expected, item: { id: req.variantId } });
+      }
     }
     response = await updateCartLineItems(
       mcpClient,
@@ -517,24 +627,28 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
       coalesced
     );
     verifiedCart = extractCartPayload(response) || verifiedCart;
-    addedQty = totalQtyForVariant(verifiedCart?.line_items, variantId);
   }
 
-  if (addedQty < expectedQty) {
+  if (!allRequestedMet(verifiedCart?.line_items, requests, expectedByVariant)) {
     verified = await fetchLiveCart(mcpClient, conversationId);
     verifiedCart = verified?.cart || verifiedCart;
-    addedQty = totalQtyForVariant(verifiedCart?.line_items, variantId);
 
-    if (verifiedCart && addedQty < expectedQty) {
+    if (
+      verifiedCart &&
+      !allRequestedMet(verifiedCart.line_items, requests, expectedByVariant)
+    ) {
       const coalesced = mergeLineItems(
-        [...(verifiedCart.line_items || []), newItem],
+        [...(verifiedCart.line_items || []), ...newItems],
         []
       );
-      const target = coalesced.find(
-        (line) => normalizeVariantId(line?.item?.id) === variantId
-      );
-      if (target && target.quantity < expectedQty) {
-        target.quantity = expectedQty;
+      for (const req of requests) {
+        const expected = expectedByVariant.get(req.variantId) || req.qty;
+        const target = coalesced.find(
+          (line) => normalizeVariantId(line?.item?.id) === req.variantId
+        );
+        if (target && target.quantity < expected) {
+          target.quantity = expected;
+        }
       }
       response = await updateCartLineItems(
         mcpClient,
@@ -545,21 +659,27 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
       );
       verified = await fetchLiveCart(mcpClient, conversationId);
       verifiedCart = verified?.cart || extractCartPayload(response);
-      addedQty = totalQtyForVariant(verifiedCart?.line_items, variantId);
     }
   }
 
-  const added = addedQty >= expectedQty;
+  const added = allRequestedMet(
+    verifiedCart?.line_items,
+    requests,
+    expectedByVariant
+  );
+  const missing = requests.filter((req) => {
+    const expected = expectedByVariant.get(req.variantId) || req.qty;
+    return totalQtyForVariant(verifiedCart?.line_items, req.variantId) < expected;
+  });
 
   console.log("[cart-wrapper] add_to_cart", {
     conversationId,
-    variantId,
-    before: live.cart.line_items?.length || 0,
+    requested: requests,
+    before: beforeLines.length,
     merged: merged.length,
     after: verifiedCart?.line_items?.length || 0,
-    expectedQty,
-    addedQty,
     added,
+    missing,
     reFetched: Boolean(verified)
   });
 
@@ -568,29 +688,40 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
     return toolResult({
       success: false,
       shipping_saved: false,
-      variant_id: variantId,
+      added_items: [],
+      missing_variant_ids: missing.map((m) => m.variantId),
       items: Array.from(aggregated.values()).map((entry) => ({
         title: entry.title || "Product",
         quantity: entry.quantity,
         variant_id: entry.item.id
       })),
       issues: [
-        "Shopify did not add that product to the cart. It may be unavailable for purchase right now."
+        requests.length === 1
+          ? "Shopify did not add that product to the cart. It may be unavailable for purchase right now."
+          : "Shopify did not add all requested products. Some may be unavailable right now."
       ],
       instruction:
-        "The requested product was NOT added. Tell the customer clearly using issues[]. " +
-        "Do NOT claim it is in the cart. Base any cart list ONLY on items[]."
+        "Some or all requested products were NOT added. Tell the customer clearly using issues[]. " +
+        "Do NOT claim missing products are in the cart. Base any cart list ONLY on items[]."
     });
   }
 
-  return toolResult(
-    await summarizeCartWithShipping(
-      mcpClient,
-      conversationId,
-      verifiedCart,
-      verified?.raw || response
-    )
+  const summary = await summarizeCartWithShipping(
+    mcpClient,
+    conversationId,
+    verifiedCart,
+    verified?.raw || response
   );
+
+  return toolResult({
+    ...summary,
+    success: true,
+    added_items: listAddedItemsFromCart(verifiedCart?.line_items, requests),
+    instruction:
+      (summary.instruction ? `${summary.instruction} ` : "") +
+      "Tell the customer ONLY about added_items[] (what was just added this turn). " +
+      "items[] is the FULL cart (may include earlier products) — do not list every cart line as newly added."
+  });
 }
 
 async function removeFromCart(
