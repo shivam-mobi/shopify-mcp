@@ -3953,7 +3953,15 @@
         card.classList.add('shop-ai-product-card');
 
         const variants = Array.isArray(product.variants) ? product.variants.filter(Boolean) : [];
+        const preferredVariantId = String(
+          product.variantId || product.variant_id || product.id || ''
+        ).trim();
         let selectedVariant =
+          (preferredVariantId &&
+            variants.find((variant) => {
+              const id = String(variant.id || variant.variantId || variant.variant_id || '').trim();
+              return id && id === preferredVariantId;
+            })) ||
           variants.find((variant) => variant.available !== false && variant.inStock !== false) ||
           variants[0] ||
           null;

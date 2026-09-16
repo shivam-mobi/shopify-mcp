@@ -7,6 +7,70 @@ import AppConfig from "./config.server";
 import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId, resolveProductDescriptionHtml } from "./product-compare.server.js";
 
 /**
+ * Fix LLM mistakes: filters must be catalog.filters, never inside catalog.context.
+ * Hoists context.filters up and merges with any existing catalog.filters.
+ */
+export function normalizeCatalogSearchArgs(toolArgs = {}) {
+  if (!toolArgs || typeof toolArgs !== "object") {
+    return toolArgs;
+  }
+
+  const hasCatalogWrapper =
+    toolArgs.catalog != null && typeof toolArgs.catalog === "object";
+  const catalog = hasCatalogWrapper
+    ? { ...toolArgs.catalog }
+    : { ...toolArgs };
+
+  if (catalog.context != null && typeof catalog.context === "object") {
+    const context = { ...catalog.context };
+
+    if (context.filters != null && typeof context.filters === "object") {
+      const nestedFilters = { ...context.filters };
+      delete context.filters;
+
+      const existingFilters =
+        catalog.filters != null && typeof catalog.filters === "object"
+          ? { ...catalog.filters }
+          : {};
+
+      const mergedFilters = {
+        ...existingFilters,
+        ...nestedFilters
+      };
+
+      if (existingFilters.price || nestedFilters.price) {
+        mergedFilters.price = {
+          ...(existingFilters.price && typeof existingFilters.price === "object"
+            ? existingFilters.price
+            : {}),
+          ...(nestedFilters.price && typeof nestedFilters.price === "object"
+            ? nestedFilters.price
+            : {})
+        };
+      }
+
+      catalog.filters = mergedFilters;
+      console.warn(
+        "[tool] hoisted filters from catalog.context → catalog.filters",
+        { filters: mergedFilters }
+      );
+    }
+
+    if (Object.keys(context).length > 0) {
+      catalog.context = context;
+    } else {
+      delete catalog.context;
+    }
+  }
+
+  if (hasCatalogWrapper) {
+    return { ...toolArgs, catalog };
+  }
+
+  return catalog;
+}
+
+/**
  * Creates a tool service instance
  * @returns {Object} Tool service with methods for managing tools
  */
@@ -41,27 +105,46 @@ export function createToolService() {
     sendMessage({ type: 'tool_error', message: userMessage });
   };
 
-  const handleToolSuccess = async (toolUseResponse, toolName, toolUseId, conversationHistory, productsToDisplay, conversationId) => {
+  const handleToolSuccess = async (
+    toolUseResponse,
+    toolName,
+    toolUseId,
+    conversationHistory,
+    productsToDisplay,
+    conversationId,
+    toolArgs = null
+  ) => {
     let historyContent = toolUseResponse.content;
 
     if (AppConfig.tools.productSearchNames.includes(toolName)) {
-      const ranked = processProductSearchResult(toolUseResponse);
+      const ranked = processProductSearchResult(toolUseResponse, toolArgs);
       if (ranked.length > 0) {
         productsToDisplay.push(...ranked);
-        historyContent = buildProductSearchToolHistory(toolUseResponse, ranked, toolName);
       }
+      // Always rewrite history (including empty after price-range drop) so the LLM
+      // does not treat the raw MCP payload as confirmed matches.
+      historyContent = buildProductSearchToolHistory(
+        toolUseResponse,
+        ranked,
+        toolName,
+        toolArgs
+      );
     }
 
     await addToolResultToHistory(conversationHistory, toolUseId, historyContent, conversationId);
   };
 
-  const processProductSearchResult = (toolUseResponse) => {
+  const processProductSearchResult = (toolUseResponse, toolArgs = null) => {
     try {
       console.log("Processing product search result");
       const responseData = extractToolResponseData(toolUseResponse);
       const products = extractProductsFromResponse(responseData);
+      const priceFilter = extractPriceFilter(toolArgs);
 
-      const formatted = products.map(formatProductData);
+      const formatted = products
+        .map((product) => formatProductData(product, priceFilter))
+        .filter(Boolean);
+
       return enrichProductsWithComparison(formatted);
     } catch (error) {
       console.error("Error processing product search results:", error);
@@ -69,10 +152,135 @@ export function createToolService() {
     }
   };
 
-  const buildProductSearchToolHistory = (toolUseResponse, rankedProducts, toolName) => {
+  /** Read catalog.filters.price (or filters.price) from search tool args. Amounts are minor units. */
+  const extractPriceFilter = (toolArgs) => {
+    if (!toolArgs || typeof toolArgs !== "object") return null;
+
+    const price =
+      toolArgs.catalog?.filters?.price ||
+      toolArgs.filters?.price ||
+      null;
+
+    if (!price || typeof price !== "object") return null;
+
+    const minRaw = price.min;
+    const maxRaw = price.max;
+    const min = minRaw == null || minRaw === "" ? null : Number(minRaw);
+    const max = maxRaw == null || maxRaw === "" ? null : Number(maxRaw);
+
+    const hasMin = min != null && Number.isFinite(min);
+    const hasMax = max != null && Number.isFinite(max);
+    if (!hasMin && !hasMax) return null;
+
+    return {
+      min: hasMin ? min : null,
+      max: hasMax ? max : null
+    };
+  };
+
+  const isPriceInFilterRange = (priceCents, priceFilter) => {
+    if (!priceFilter) return true;
+    if (priceCents == null || !Number.isFinite(priceCents)) return false;
+    if (priceFilter.min != null && priceCents < priceFilter.min) return false;
+    if (priceFilter.max != null && priceCents > priceFilter.max) return false;
+    return true;
+  };
+
+  const CATALOG_QUERY_STOPWORDS = new Set([
+    "perfume",
+    "perfumes",
+    "cologne",
+    "colognes",
+    "fragrance",
+    "fragrances",
+    "eau",
+    "de",
+    "parfum",
+    "toilette",
+    "for",
+    "the",
+    "and",
+    "a",
+    "an",
+    "men",
+    "women",
+    "mens",
+    "womens",
+    "man",
+    "woman",
+    "gift",
+    "under",
+    "over",
+    "below",
+    "above",
+    "oz",
+    "set",
+    "spray"
+  ]);
+
+  /**
+   * Whether ranked catalog products clearly match distinctive terms in the search query.
+   * Used so the LLM does not claim "more Gucci" when page 2 has no Gucci.
+   */
+  const evaluateCatalogQueryMatch = (toolArgs, rankedProducts = []) => {
+    const resultCount = rankedProducts.length;
+    const query = String(
+      toolArgs?.catalog?.query || toolArgs?.query || ""
+    ).trim();
+
+    if (resultCount === 0) {
+      return { query_match: false, match_count: 0, result_count: 0 };
+    }
+
+    const tokens = query
+      .toLowerCase()
+      .split(/[^a-z0-9]+/i)
+      .map((t) => t.trim())
+      .filter((t) => t.length > 2 && !CATALOG_QUERY_STOPWORDS.has(t));
+
+    // No distinctive brand/keyword → treat results as a soft match
+    if (tokens.length === 0) {
+      return { query_match: true, match_count: resultCount, result_count: resultCount };
+    }
+
+    let matchCount = 0;
+    for (const product of rankedProducts) {
+      const tagBlob = Array.isArray(product.tags)
+        ? product.tags.join(" ")
+        : String(product.tags || "");
+      const blob = [
+        product.title,
+        product.name,
+        product.vendor,
+        product.brand,
+        tagBlob
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      if (tokens.some((token) => blob.includes(token))) {
+        matchCount += 1;
+      }
+    }
+
+    return {
+      query_match: matchCount > 0,
+      match_count: matchCount,
+      result_count: resultCount
+    };
+  };
+
+  const buildProductSearchToolHistory = (
+    toolUseResponse,
+    rankedProducts,
+    toolName,
+    toolArgs = null
+  ) => {
     const originalData = extractToolResponseData(toolUseResponse) || {};
     const products = buildLlmProductSummary(rankedProducts);
     const listingMeta = buildProductListingMetadata(rankedProducts);
+    const matchInfo = evaluateCatalogQueryMatch(toolArgs, rankedProducts);
 
     const pagination = originalData.pagination && typeof originalData.pagination === "object"
       ? {
@@ -85,23 +293,36 @@ export function createToolService() {
         }
       : null;
 
+    const matchInstruction = matchInfo.query_match
+      ? "query_match is true: say matching products were found (generic only), then ask if they want to add one to the cart. Do NOT name brands or product titles."
+      : rankedProducts.length > 0
+        ? "query_match is false: products above are NOT a clear match for the customer's search (common after show more). " +
+          "Say you could not find products matching their request, but a few other options are shown above. " +
+          "Ask if they want to try another brand or name. Do NOT say you found their brand or 'more [brand] products'."
+        : "No products to show: say you could not find a match and ask them to rephrase.";
+
     const enriched = {
       status: originalData.status || "success",
       source: toolName,
       products,
       ...listingMeta,
       ...(pagination ? { pagination } : {}),
+      query_match: matchInfo.query_match,
+      match_count: matchInfo.match_count,
+      result_count: matchInfo.result_count,
       ui_instruction:
-        originalData.ui_instruction ||
-        "CRITICAL: Top Matching Products cards are already shown in chat. " +
+        "CRITICAL: Top Matching Products cards are already shown in chat when products exist. " +
         "FORBIDDEN in your reply: product names, prices, 'Priced at $…', descriptions, feature bullets, numbered product lists, or recommending a specific product by name. " +
-        "Reply in 1-2 short sentences only (e.g. matching products were found), then ask if they want to add one to the cart. " +
-        "If the customer asks for more products/results/next page and pagination.has_next_page is true, call search_catalog again with the same query/filters and pagination.cursor from this result."
+        "Reply in 1-2 short sentences only. " +
+        matchInstruction +
+        " If the customer asks for more products/results/next page and pagination.has_next_page is true, call search_catalog again with the same query/filters and pagination.cursor from this result."
     };
 
     console.log("[tool] enriched product listing for LLM history", {
       source: toolName,
       count: products.length,
+      query_match: matchInfo.query_match,
+      match_count: matchInfo.match_count,
       first_product_variant_id: listingMeta.first_product_variant_id
     });
 
@@ -201,6 +422,11 @@ export function createToolService() {
 
     if (!normalizedVariantId) return null;
 
+    const priceAmountCents =
+      priceAmount == null || priceAmount === ""
+        ? null
+        : Number(priceAmount);
+
     return {
       id: normalizedVariantId,
       variantId: normalizedVariantId,
@@ -208,6 +434,10 @@ export function createToolService() {
       title: optionLabel,
       label: optionLabel,
       price,
+      priceAmountCents:
+        priceAmountCents != null && Number.isFinite(priceAmountCents)
+          ? priceAmountCents
+          : null,
       compareAtPrice,
       available: availability.availableForSale !== false && availability.inStock !== false,
       availableForSale: availability.availableForSale,
@@ -217,7 +447,12 @@ export function createToolService() {
     };
   };
 
-  const formatProductData = (product) => {
+  /**
+   * Format a catalog product for chat cards.
+   * When priceFilter is set: default to cheapest in-stock variant in range;
+   * drop the product (return null) if none. All variants stay on the card (selectable).
+   */
+  const formatProductData = (product, priceFilter = null) => {
     const rawVariants = Array.isArray(product.variants)
       ? product.variants
       : product.variant
@@ -228,11 +463,52 @@ export function createToolService() {
       .map((variant) => formatVariantOption(variant, product))
       .filter(Boolean);
 
-    // Prefer first in-stock variant so cards don't default to an OOS size
-    const selectedVariant =
-      variants.find((variant) => variant.available) ||
-      variants[0] ||
-      null;
+    let selectedVariant = null;
+
+    if (priceFilter) {
+      const inRangeAvailable = variants.filter(
+        (variant) =>
+          variant.available &&
+          isPriceInFilterRange(variant.priceAmountCents, priceFilter)
+      );
+
+      // No in-stock size within the requested budget/min → hide the card
+      if (inRangeAvailable.length === 0) {
+        return null;
+      }
+
+      selectedVariant = inRangeAvailable
+        .slice()
+        .sort(
+          (a, b) =>
+            (a.priceAmountCents ?? Number.POSITIVE_INFINITY) -
+            (b.priceAmountCents ?? Number.POSITIVE_INFINITY)
+        )[0];
+
+      // Sort chips: in-range in-stock first (cheapest first), then the rest
+      variants.sort((a, b) => {
+        const aIn =
+          a.available && isPriceInFilterRange(a.priceAmountCents, priceFilter);
+        const bIn =
+          b.available && isPriceInFilterRange(b.priceAmountCents, priceFilter);
+        if (aIn !== bIn) return aIn ? -1 : 1;
+        return (
+          (a.priceAmountCents ?? Number.POSITIVE_INFINITY) -
+          (b.priceAmountCents ?? Number.POSITIVE_INFINITY)
+        );
+      });
+    } else {
+      // Prefer first in-stock variant so cards don't default to an OOS size
+      selectedVariant =
+        variants.find((variant) => variant.available) ||
+        variants[0] ||
+        null;
+    }
+
+    // Keep full variant list for the UI; strip internal cents field
+    const variantsForClient = variants.map(
+      ({ priceAmountCents: _cents, ...rest }) => rest
+    );
 
     const legacyVariant = product.variants?.[0] || product.variant;
     const variant = selectedVariant
@@ -331,7 +607,7 @@ export function createToolService() {
       availableForSale: availability.availableForSale,
       inStock: availability.inStock,
       inventoryQuantity: availability.inventoryQuantity,
-      variants,
+      variants: variantsForClient,
       vendor,
       sku: product.sku || product.partNumber || "",
       productType: product.productType || product.product_type || "",
@@ -493,5 +769,6 @@ export function createToolService() {
 }
 
 export default {
-  createToolService
+  createToolService,
+  normalizeCatalogSearchArgs
 };

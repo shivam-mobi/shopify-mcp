@@ -7,7 +7,7 @@ import { saveMessage, getConversationHistory, storeCustomerAccountUrls, getCusto
 import AppConfig from "../services/config.server";
 import { createSseStream } from "../services/streaming.server";
 import { createLlmService } from "../services/llm.server";
-import { createToolService } from "../services/tool.server";
+import { createToolService, normalizeCatalogSearchArgs } from "../services/tool.server";
 import { handleCartToolCall, isCartTool, buildActiveCartContextMessage } from "../services/cart.server";
 import {
   getCartWrapperTools,
@@ -486,8 +486,13 @@ async function handleChatSession({
           // Handle tool use requests
           onToolUse: async (content) => {
             const toolName = content.name;
-            const toolArgs = content.input;
+            let toolArgs = content.input;
             const toolUseId = content.id;
+
+            // LLMs sometimes nest filters under context — hoist before MCP / price post-filter
+            if (AppConfig.tools.productSearchNames.includes(toolName)) {
+              toolArgs = normalizeCatalogSearchArgs(toolArgs);
+            }
 
             const toolUseMessage = `Calling tool: ${toolName} with arguments: ${JSON.stringify(toolArgs)}`;
 
@@ -627,7 +632,8 @@ async function handleChatSession({
                   toolUseId,
                   conversationHistory,
                   productsToDisplay,
-                  conversationId
+                  conversationId,
+                  toolArgs
                 );
 
                 if (isCartMutationTool(toolName) && !toolUseResponse?.error) {
