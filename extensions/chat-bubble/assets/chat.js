@@ -4022,6 +4022,20 @@
 
         info.appendChild(title);
 
+        if (product.vendor) {
+          const vendorEl = document.createElement('p');
+          vendorEl.classList.add('shop-ai-product-vendor');
+          vendorEl.textContent = product.vendor;
+          info.appendChild(vendorEl);
+        }
+
+        if (product.shortDescription) {
+          const desc = document.createElement('p');
+          desc.classList.add('shop-ai-product-description');
+          desc.textContent = product.shortDescription;
+          info.appendChild(desc);
+        }
+
         // Add product price
         const price = document.createElement('p');
         price.classList.add('shop-ai-product-price');
@@ -4031,6 +4045,13 @@
         price.appendChild(document.createTextNode(''));
         price.appendChild(compare);
         info.appendChild(price);
+
+        if (Array.isArray(product.sizes) && product.sizes.length > 1 && !(Array.isArray(product.variants) && product.variants.length > 1)) {
+          const sizesEl = document.createElement('p');
+          sizesEl.classList.add('shop-ai-product-sizes');
+          sizesEl.textContent = `Sizes: ${product.sizes.join(', ')}`;
+          info.appendChild(sizesEl);
+        }
 
         const stock = document.createElement('p');
         stock.classList.add('shop-ai-product-stock');

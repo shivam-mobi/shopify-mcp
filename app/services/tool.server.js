@@ -341,21 +341,30 @@ export function createToolService() {
           "Ask if they want to try another brand or name. Do NOT say you found their brand or 'more [brand] products'."
         : "No products to show: say you could not find a match and ask them to rephrase.";
 
+    const detailInstruction =
+      toolName === "lookup_catalog"
+        ? "lookup_catalog / product details: cards already show image, price, sizes, stock, and a short description. " +
+          "Reply in 1-2 short sentences (e.g. details are shown above — want to add one to cart?). " +
+          "FORBIDDEN: titles, prices, full descriptions, 'View Product', 'Image:', markdown images, or feature essays."
+        : matchInstruction;
+
     const enriched = {
       status: originalData.status || "success",
       source: toolName,
       products,
       ...listingMeta,
       ...(pagination ? { pagination } : {}),
-      query_match: matchInfo.query_match,
+      query_match: toolName === "lookup_catalog" ? true : matchInfo.query_match,
       match_count: matchInfo.match_count,
       result_count: matchInfo.result_count,
       ui_instruction:
         "CRITICAL: Top Matching Products cards are already shown in chat when products exist. " +
         "FORBIDDEN in your reply: product names, prices, 'Priced at $…', descriptions, feature bullets, numbered product lists, or recommending a specific product by name. " +
         "Reply in 1-2 short sentences only. " +
-        matchInstruction +
-        " If the customer asks for more products/results/next page and pagination.has_next_page is true, call search_catalog again with the same query/filters and pagination.cursor from this result."
+        detailInstruction +
+        (pagination
+          ? " If the customer asks for more products/results/next page and pagination.has_next_page is true, call search_catalog again with the same query/filters and pagination.cursor from this result."
+          : "")
     };
 
     console.log("[tool] enriched product listing for LLM history", {
@@ -631,6 +640,23 @@ export function createToolService() {
       selectedVariant?.image_url ||
       resolveProductImageUrl(product);
 
+    const shortDescription = stripHtmlToPlain(descriptionHtml)
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180);
+    const sizeLabels = [
+      ...new Set(
+        [
+          ...(Array.isArray(product.options)
+            ? product.options.flatMap((opt) =>
+                (opt?.values || []).map((v) => v?.label || v).filter(Boolean)
+              )
+            : []),
+          ...variantsForClient.map((v) => v.title || v.label).filter(Boolean)
+        ].map((label) => String(label).trim())
+      )
+    ].filter(Boolean);
+
     return {
       id: normalizedVariantId || product.product_id || product.id || product.partNumber || `product-${Math.random().toString(36).substring(7)}`,
       productId: product.id || product.product_id || null,
@@ -643,13 +669,15 @@ export function createToolService() {
       image_url: imageUrl,
       description: descriptionHtml,
       descriptionHtml,
+      shortDescription: shortDescription || null,
+      sizes: sizeLabels,
       url: productUrl,
       availableForSale: availability.availableForSale,
       inStock: availability.inStock,
       inventoryQuantity: availability.inventoryQuantity,
       variants: variantsForClient,
       vendor,
-      sku: product.sku || product.partNumber || "",
+      sku: product.sku || product.partNumber || selectedVariant?.sku || "",
       productType: product.productType || product.product_type || "",
       product_type: product.product_type || product.productType || "",
       productCategory: product.productCategory,
@@ -677,6 +705,17 @@ export function createToolService() {
         : {})
     };
   };
+
+  const stripHtmlToPlain = (html = "") =>
+    String(html || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&#39;/g, "'")
+      .replace(/&quot;/g, '"')
+      .trim();
 
   const resolveProductAvailability = (product, variant) => {
     const qty =

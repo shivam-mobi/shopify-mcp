@@ -1183,6 +1183,30 @@
 .shop-ai-product-title--link { cursor: pointer; }
 .shop-ai-product-title--link:hover { text-decoration: underline; }
 
+.shop-ai-product-vendor {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--shop-ai-brand-text, #b8004d);
+}
+
+.shop-ai-product-description {
+  margin: 0 0 6px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #4B5563;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.shop-ai-product-sizes {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--shop-ai-text-muted);
+}
+
 .shop-ai-product-price {
   margin: 0 0 6px;
   font-size: 14px;
