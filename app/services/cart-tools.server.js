@@ -2511,20 +2511,17 @@ async function updateExistingCheckout(
       };
     }
 
-    // Keep Shopify discount warnings (e.g. discount_code_user_ineligible) on the checkout
-    // object — they often live on the tool response, not nested under checkout.
+    // Validation must come from update_checkout (and later post-update get_checkout),
+    // NEVER from the pre-update get_checkout (`existing`) — those messages are stale.
     checkout = {
       ...checkout,
-      messages: collectCheckoutMessages(updateResponse, checkout, existing)
+      messages: collectCheckoutMessages(updateResponse, checkoutFromUpdate)
     };
 
     // New cart lines get checkout ids only after the first update — re-attach
     // shipping to ALL line ids so the address is not dropped.
     let shippingAddress = extractShippingDestination(checkout);
-    let validationErrors = [
-      ...responseErrors,
-      ...extractCheckoutValidationErrors(checkout)
-    ];
+    let validationErrors = [...responseErrors];
 
     if (destination) {
       const allLineItems = buildCheckoutLineItems(checkout.line_items);
@@ -2550,15 +2547,12 @@ async function updateExistingCheckout(
         const retryErrors = extractCheckoutValidationErrors(retryResponse);
         const retried = extractCheckoutPayload(retryResponse) || checkout;
         shippingAddress = extractShippingDestination(retried);
-        validationErrors = [
-          ...validationErrors,
-          ...retryErrors,
-          ...extractCheckoutValidationErrors(retried)
-        ];
+        // Only retry update_checkout errors — do not reintroduce pre-update messages.
+        validationErrors = [...retryErrors];
         return {
           checkout: {
             ...retried,
-            messages: collectCheckoutMessages(retryResponse, updateResponse, retried, checkout)
+            messages: collectCheckoutMessages(retryResponse, retried)
           },
           checkoutUrl: appendAiraUtmParams(
             extractContinueUrl(retryResponse) || retried.continue_url,
@@ -2661,27 +2655,25 @@ async function createCheckoutFromCart(
       const updateErrors = extractCheckoutValidationErrors(updateResponse);
       const updatedCheckout = extractCheckoutPayload(updateResponse);
       if (updatedCheckout?.id) {
+        // Prefer update_checkout result only — do not keep stale create_checkout messages.
         checkout = {
           ...updatedCheckout,
-          messages: collectCheckoutMessages(updateResponse, response, updatedCheckout, checkout)
+          messages: collectCheckoutMessages(updateResponse, updatedCheckout)
         };
         shippingAddress = extractShippingDestination(checkout);
         checkoutUrl = appendAiraUtmParams(
           extractContinueUrl(updateResponse) || checkout.continue_url || checkoutUrl,
           conversationId
         );
+        validationErrors = [...updateErrors];
       } else {
         shippingAddress = null;
         checkout = {
           ...checkout,
-          messages: collectCheckoutMessages(updateResponse, response, checkout)
+          messages: collectCheckoutMessages(updateResponse, checkout)
         };
+        validationErrors = [...updateErrors];
       }
-      validationErrors = [
-        ...validationErrors,
-        ...updateErrors,
-        ...extractCheckoutValidationErrors(checkout)
-      ];
     }
 
     return {

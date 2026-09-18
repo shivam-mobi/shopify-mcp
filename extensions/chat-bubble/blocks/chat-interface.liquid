@@ -1,9 +1,9 @@
-<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=variant-picker-3">
+<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=brand-e60060-1">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
-{% assign brand_color = block.settings.chat_bubble_color | default: '#00BCF2' %}
-{% if brand_color == '#5046e4' or brand_color == '#5046E4' %}
-  {% assign brand_color = '#00BCF2' %}
+{% assign brand_color = block.settings.chat_bubble_color | default: '#e60060' %}
+{% if brand_color == '#5046e4' or brand_color == '#5046E4' or brand_color == '#00BCF2' or brand_color == '#00bcf2' %}
+  {% assign brand_color = '#e60060' %}
 {% endif %}
 {% assign assistant_name = block.settings.assistant_name | default: 'AIRA' %}
 {% assign assistant_display = assistant_name | downcase | capitalize %}
@@ -14,7 +14,7 @@
 <div
   class="shop-ai-chat-container"
   data-shop-ai-assets="cart-qty-fix-1"
-  style="--shop-ai-brand: {{ brand_color }};"
+  style="--shop-ai-brand: {{ brand_color }}; --shop-ai-brand-dark: #c40052; --shop-ai-brand-soft: #fce6ef; --shop-ai-brand-border: #f5a0c0; --shop-ai-brand-text: #b8004d; --shop-ai-tip-shadow: 0 6px 16px rgba(230, 0, 96, 0.28);"
 >
   <!-- Floating launcher -->
   <button type="button" class="shop-ai-chat-bubble" aria-label="{{ 'chat.openButton' | t }}">
@@ -232,7 +232,7 @@
       "type": "color",
       "id": "chat_bubble_color",
       "label": "Brand Color",
-      "default": "#00BCF2"
+      "default": "#e60060"
     },
     {
       "type": "text",

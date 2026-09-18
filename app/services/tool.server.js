@@ -7,8 +7,9 @@ import AppConfig from "./config.server";
 import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId, resolveProductDescriptionHtml } from "./product-compare.server.js";
 
 /**
- * Fix LLM mistakes: filters must be catalog.filters, never inside catalog.context.
- * Hoists context.filters up and merges with any existing catalog.filters.
+ * Fix LLM mistakes for search_catalog args:
+ * - filters must be catalog.filters, never inside catalog.context
+ * - filters/pagination must not sit top-level beside catalog (Shopify ignores them)
  */
 export function normalizeCatalogSearchArgs(toolArgs = {}) {
   if (!toolArgs || typeof toolArgs !== "object") {
@@ -20,6 +21,44 @@ export function normalizeCatalogSearchArgs(toolArgs = {}) {
   const catalog = hasCatalogWrapper
     ? { ...toolArgs.catalog }
     : { ...toolArgs };
+
+  // Hoist misplaced top-level filters/pagination into catalog when using { catalog: {...} }
+  if (hasCatalogWrapper) {
+    if (toolArgs.filters != null && typeof toolArgs.filters === "object") {
+      const existingFilters =
+        catalog.filters != null && typeof catalog.filters === "object"
+          ? { ...catalog.filters }
+          : {};
+      const topFilters = { ...toolArgs.filters };
+      const mergedFilters = { ...existingFilters, ...topFilters };
+      if (existingFilters.price || topFilters.price) {
+        mergedFilters.price = {
+          ...(existingFilters.price && typeof existingFilters.price === "object"
+            ? existingFilters.price
+            : {}),
+          ...(topFilters.price && typeof topFilters.price === "object"
+            ? topFilters.price
+            : {})
+        };
+      }
+      catalog.filters = mergedFilters;
+      console.warn("[tool] hoisted top-level filters → catalog.filters", {
+        filters: mergedFilters
+      });
+    }
+
+    if (toolArgs.pagination != null && typeof toolArgs.pagination === "object") {
+      catalog.pagination = {
+        ...(catalog.pagination && typeof catalog.pagination === "object"
+          ? catalog.pagination
+          : {}),
+        ...toolArgs.pagination
+      };
+      console.warn("[tool] hoisted top-level pagination → catalog.pagination", {
+        pagination: catalog.pagination
+      });
+    }
+  }
 
   if (catalog.context != null && typeof catalog.context === "object") {
     const context = { ...catalog.context };
@@ -64,7 +103,8 @@ export function normalizeCatalogSearchArgs(toolArgs = {}) {
   }
 
   if (hasCatalogWrapper) {
-    return { ...toolArgs, catalog };
+    const { filters: _f, pagination: _p, ...rest } = toolArgs;
+    return { ...rest, catalog };
   }
 
   return catalog;

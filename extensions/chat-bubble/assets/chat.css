@@ -1,10 +1,10 @@
 :root {
   --viewport-height: 100vh;
-  --shop-ai-brand: #00BCF2;
-  --shop-ai-brand-dark: #0099C7;
-  --shop-ai-brand-soft: #E6F9FE;
-  --shop-ai-brand-border: #7DDEF5;
-  --shop-ai-brand-text: #007A9E;
+  --shop-ai-brand: #e60060;
+  --shop-ai-brand-dark: #c40052;
+  --shop-ai-brand-soft: #fce6ef;
+  --shop-ai-brand-border: #f5a0c0;
+  --shop-ai-brand-text: #b8004d;
   --shop-ai-surface: #F5F5F5;
   --shop-ai-surface-hover: #EBEBEB;
   --shop-ai-text-muted: #6B7280;
@@ -14,7 +14,7 @@
   --shop-ai-radius-pill: 999px;
   --shop-ai-tip-bg: var(--shop-ai-brand);
   --shop-ai-tip-text: #fff;
-  --shop-ai-tip-shadow: 0 6px 16px rgba(0, 188, 242, 0.28);
+  --shop-ai-tip-shadow: 0 6px 16px rgba(230, 0, 96, 0.28);
 }
 
 /* ── Container & launcher ── */
@@ -1083,7 +1083,7 @@
   border: 1px solid #D1D5DB;
   border-radius: 999px;
   background: #fff;
-  color: var(--shop-ai-brand-text, #0B6E99);
+  color: var(--shop-ai-brand-text, #b8004d);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16);
   display: inline-flex;
   align-items: center;
@@ -1097,12 +1097,12 @@
 }
 
 .shop-ai-product-scroll:hover {
-  background: var(--shop-ai-brand-soft, #E8F8FD);
+  background: var(--shop-ai-brand-soft, #fce6ef);
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
 }
 
 .shop-ai-product-scroll:focus-visible {
-  outline: 2px solid var(--shop-ai-brand, #00BCF2);
+  outline: 2px solid var(--shop-ai-brand, #e60060);
   outline-offset: 2px;
 }
 
