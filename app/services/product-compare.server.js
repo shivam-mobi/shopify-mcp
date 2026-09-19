@@ -386,40 +386,182 @@ export function annotateRankedProductsForLlm(rankedProducts = []) {
 }
 
 /**
- * Minimal product rows for LLM tool history — cart/add matching only, not for chat display.
- * Includes title so similar variants (e.g. freshener scents) can be matched correctly.
- * Omits price, description, and features so the model does not repeat the UI cards.
+ * Product rows for LLM tool history — mirrors card facts plus scent tags so the
+ * model can answer cheapest/compare and preference-based picks from history.
  */
 export function buildLlmProductSummary(rankedProducts = []) {
   return rankedProducts.map((product, index) => {
     const title = String(product.title || product.name || "").trim() || null;
+    const sizes = Array.isArray(product.sizes)
+      ? product.sizes.map((s) => String(s || "").trim()).filter(Boolean)
+      : Array.isArray(product.variants)
+        ? product.variants
+            .map((v) => String(v?.title || v?.label || "").trim())
+            .filter(Boolean)
+        : [];
+
+    const priceAmountCents = parsePriceAmountCents(product);
+    const tagList = normalizeTagList(product.tags);
+    const profile = buildFragranceProfileFromTags(tagList);
+    const shortDescription =
+      String(product.shortDescription || "").trim() ||
+      stripHtml(product.descriptionHtml || product.description || "").slice(0, 160) ||
+      null;
 
     return {
       position: index + 1,
       variant_id: resolveProductVariantId(product),
       title,
+      price:
+        product.price && product.price !== "Price not available"
+          ? String(product.price)
+          : null,
+      compare_at_price: product.compareAtPrice
+        ? String(product.compareAtPrice)
+        : null,
+      price_amount_cents: priceAmountCents,
+      sizes: sizes.length ? sizes : null,
       inStock: product.inStock === true,
-      filterType: product.filterType || null,
-      productCategory: product.productCategory || null,
-      fragrance: product.fragrance || null,
-      durationDays:
-        typeof product.durationDays === "number" ? product.durationDays : null,
-      hasOdorEliminator: product.hasOdorEliminator === true ? true : null,
-      vendor: product.vendor || null
+      vendor: product.vendor || profile.brand || null,
+      brand: profile.brand || product.vendor || null,
+      gender: profile.gender,
+      fragrance_type: profile.fragranceType,
+      scent_notes: profile.scentNotes,
+      tags: profile.relevantTags.length ? profile.relevantTags : null,
+      short_description: shortDescription
     };
   });
 }
 
 /**
+ * Pull preference signals from Perfumania-style tags (GENDER_*, TYPE_*, *note_*, BRAND_*).
+ */
+function buildFragranceProfileFromTags(tagList = []) {
+  let gender = null;
+  let fragranceType = null;
+  let brand = null;
+  const scentNotes = [];
+  const relevantTags = [];
+
+  for (const raw of tagList) {
+    const tag = String(raw || "").trim();
+    if (!tag) continue;
+    const lower = tag.toLowerCase();
+
+    if (/^gender_/i.test(tag)) {
+      gender = tag.replace(/^gender_/i, "").replace(/_/g, " ").trim() || gender;
+      relevantTags.push(tag);
+      continue;
+    }
+    if (/^type_/i.test(tag)) {
+      fragranceType = tag.replace(/^type_/i, "").replace(/_/g, " ").trim() || fragranceType;
+      relevantTags.push(tag);
+      continue;
+    }
+    if (/^brand_/i.test(tag)) {
+      brand = tag.replace(/^brand_/i, "").replace(/_/g, " ").trim() || brand;
+      relevantTags.push(tag);
+      continue;
+    }
+    if (/^(top|middle|mid|heart|base)note[_ ]/i.test(tag) || /note_/i.test(tag)) {
+      const note = tag
+        .replace(/^(top|middle|mid|heart|base)note[_ ]*/i, "")
+        .replace(/^note[_ ]*/i, "")
+        .replace(/_/g, " ")
+        .trim();
+      if (note) scentNotes.push(note);
+      relevantTags.push(tag);
+      continue;
+    }
+    // Keep compact budget / family cues if present
+    if (/^\$\d+/.test(tag) || /floral|woody|fresh|oriental|citrus|gourmand/i.test(lower)) {
+      relevantTags.push(tag);
+    }
+  }
+
+  return {
+    gender,
+    fragranceType,
+    brand,
+    scentNotes: [...new Set(scentNotes)].slice(0, 8),
+    relevantTags: [...new Set(relevantTags)].slice(0, 16)
+  };
+}
+
+function parsePriceAmountCents(product = {}) {
+  if (
+    product.priceAmountCents != null &&
+    Number.isFinite(Number(product.priceAmountCents))
+  ) {
+    return Number(product.priceAmountCents);
+  }
+
+  const fromVariants = Array.isArray(product.variants)
+    ? product.variants
+        .map((v) => Number(v?.priceAmountCents))
+        .filter((n) => Number.isFinite(n))
+    : [];
+  if (fromVariants.length) {
+    return Math.min(...fromVariants);
+  }
+
+  const priceText = String(product.price || "").replace(/,/g, "");
+  const match = priceText.match(/(\d+(?:\.\d+)?)/);
+  if (!match) return null;
+  const major = Number(match[1]);
+  if (!Number.isFinite(major)) return null;
+  // Display prices are major units (e.g. 110.95) → cents
+  return Math.round(major * 100);
+}
+
+/**
  * First-product metadata for LLM cart adds (hidden from storefront UI).
+ * Also exposes cheapest/most expensive among the cards shown.
  */
 export function buildProductListingMetadata(rankedProducts = []) {
   const first = rankedProducts[0] || null;
   const firstVariantId = first ? resolveProductVariantId(first) : null;
+  const summary = buildLlmProductSummary(rankedProducts);
+
+  const withPrice = summary.filter(
+    (row) =>
+      row.price_amount_cents != null && Number.isFinite(row.price_amount_cents)
+  );
+
+  let cheapest = null;
+  let mostExpensive = null;
+  for (const row of withPrice) {
+    if (!cheapest || row.price_amount_cents < cheapest.price_amount_cents) {
+      cheapest = row;
+    }
+    if (
+      !mostExpensive ||
+      row.price_amount_cents > mostExpensive.price_amount_cents
+    ) {
+      mostExpensive = row;
+    }
+  }
 
   return {
     first_product_variant_id: firstVariantId,
-    cart_instruction: PRODUCT_LISTING_CART_INSTRUCTION
+    cart_instruction: PRODUCT_LISTING_CART_INSTRUCTION,
+    cards_shown_to_user: true,
+    ...(cheapest
+      ? {
+          cheapest_position: cheapest.position,
+          cheapest_variant_id: cheapest.variant_id,
+          cheapest_title: cheapest.title,
+          cheapest_price: cheapest.price
+        }
+      : {}),
+    ...(mostExpensive
+      ? {
+          most_expensive_position: mostExpensive.position,
+          most_expensive_variant_id: mostExpensive.variant_id,
+          most_expensive_title: mostExpensive.title,
+          most_expensive_price: mostExpensive.price
+        }
+      : {})
   };
 }
 

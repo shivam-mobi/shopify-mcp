@@ -334,7 +334,7 @@ export function createToolService() {
       : null;
 
     const matchInstruction = matchInfo.query_match
-      ? "query_match is true: say matching products were found (generic only), then ask if they want to add one to the cart. Do NOT name brands or product titles."
+      ? "query_match is true: say matching products were found (generic only), then ask if they want to add one to the cart. Do NOT name brands, titles, or prices in this browse reply."
       : rankedProducts.length > 0
         ? "query_match is false: products above are NOT a clear match for the customer's search (common after show more). " +
           "Say you could not find products matching their request, but a few other options are shown above. " +
@@ -345,7 +345,7 @@ export function createToolService() {
       toolName === "lookup_catalog"
         ? "lookup_catalog / product details: cards already show image, price, sizes, stock, and a short description. " +
           "Reply in 1-2 short sentences (e.g. details are shown above — want to add one to cart?). " +
-          "FORBIDDEN: titles, prices, full descriptions, 'View Product', 'Image:', markdown images, or feature essays."
+          "Do NOT paste titles, prices, full descriptions, 'View Product', 'Image:', or markdown images."
         : matchInstruction;
 
     const enriched = {
@@ -358,9 +358,13 @@ export function createToolService() {
       match_count: matchInfo.match_count,
       result_count: matchInfo.result_count,
       ui_instruction:
-        "CRITICAL: Top Matching Products cards are already shown in chat when products exist. " +
-        "FORBIDDEN in your reply: product names, prices, 'Priced at $…', descriptions, feature bullets, numbered product lists, or recommending a specific product by name. " +
-        "Reply in 1-2 short sentences only. " +
+        "CRITICAL: Top Matching Products cards are already shown. products[] (price, tags, scent_notes, short_description) / cheapest_* are for YOUR use only (history). " +
+        "DEFAULT browse reply: 1-2 short generic sentences only — FORBIDDEN to list product names, prices, bullets, or 'here are some options'. " +
+        "FOLLOW-UP — cheapest / most expensive / compare shown cards: answer briefly from products[] or cheapest_* / most_expensive_* (name or #N + price once), then offer to add it. " +
+        "FOLLOW-UP — best / recommend / suggest: NEVER invent a universal best. If the customer gave a preference (floral, fresh, woody, daytime, evening, gift, EDP, women/men, budget), " +
+        "pick ONE product from products[] using gender, fragrance_type, scent_notes, tags, short_description, and price; say why in one short sentence; offer to add it. " +
+        "If they ask for the best with NO preference, ask one short preference question — do not pick randomly. " +
+        "Never dump the full catalog list in chat. " +
         detailInstruction +
         (pagination
           ? " If the customer asks for more products/results/next page and pagination.has_next_page is true, call search_catalog again with the same query/filters and pagination.cursor from this result."
@@ -664,6 +668,11 @@ export function createToolService() {
       variant_id: normalizedVariantId,
       title: product.title || product.partTypeName || product.name || "Product",
       price,
+      priceAmountCents:
+        selectedVariant?.priceAmountCents != null &&
+        Number.isFinite(Number(selectedVariant.priceAmountCents))
+          ? Number(selectedVariant.priceAmountCents)
+          : null,
       priceAmount: typeof product.priceAmount === "number" ? product.priceAmount : null,
       compareAtPrice: selectedVariant?.compareAtPrice || product.compareAtPrice || null,
       image_url: imageUrl,

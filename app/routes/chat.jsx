@@ -854,7 +854,10 @@ function resolveAdminShopDomain({ shopDomainHeader, origin } = {}) {
   }
 
   const fromEnv = getShopHostname(
-    process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP || ""
+    process.env.STOREFRONT_URL ||
+      process.env.SHOPIFY_STOREFRONT_URL ||
+      process.env.SHOPIFY_SHOP ||
+      ""
   );
   if (isMyshopifyDomain(fromEnv)) {
     return fromEnv;
@@ -863,7 +866,11 @@ function resolveAdminShopDomain({ shopDomainHeader, origin } = {}) {
   console.warn("[chat] No valid *.myshopify.com shop for Admin API", {
     shopDomainHeader,
     origin,
-    envShop: process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP || null
+    envShop:
+      process.env.STOREFRONT_URL ||
+      process.env.SHOPIFY_STOREFRONT_URL ||
+      process.env.SHOPIFY_SHOP ||
+      null
   });
   return null;
 }
