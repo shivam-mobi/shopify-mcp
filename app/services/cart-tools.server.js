@@ -230,7 +230,9 @@ export function getCartWrapperTools() {
         "Set or update shipping address on checkout (replaces any previous address). Keeps all cart products. " +
         "YOU convert the customer's free-text into structured fields when you can (name, phone, street, city, state, ZIP, country). " +
         "NEVER invent First/Last Name from street or building names (Cooper Square is NOT a person). NEVER invent or guess a phone number. " +
-        "If the customer only sent an address line, pass address fields only — leave name/phone blank if missing and the server will ask, OR reuse them when updating an address already on file. " +
+        "If the customer only sent an address line, pass address fields only — leave name/phone blank if missing. " +
+        "The server reuses first_name / last_name / phone_number from the saved shipping address on file when blank; " +
+        "if those are still missing it returns issues[] so you can ask for them. " +
         "For partial updates (email, name, phone, or one address field), pass ONLY the fields the customer gave — the server merges any missing fields from the saved shipping address on file. " +
         "Use 2-letter US state (New York → NY) and ISO country (USA → US). Keep phone in E.164 with + when the customer gave it. " +
         "Required before save: First Name, Last Name, Phone Number, Street Address, City, Postal Code, Country (State/Region too for US). " +
@@ -371,24 +373,23 @@ export function buildShippingAddressHintMessage(userMessage) {
     return null;
   }
 
-  const hasPhone = Boolean(extractPhoneFromText(text));
   const hasEmail = Boolean(extractEmailFromText(text));
-  const hasName = Boolean(parseAddressText(userMessage)?.first_name || extractNamePartsFromText(text));
   const addressOnly = Boolean(parseAddressLineOnly(text));
 
   let content =
     "The customer's latest message contains a shipping address. " +
     "Call set_cart_shipping with structured fields YOU convert (street, city, state, ZIP, country). ";
 
-  if (addressOnly || (!hasName && !hasPhone)) {
+  if (addressOnly) {
     content +=
       "They did NOT give a person name or phone in this message — do NOT invent name from the street/building and do NOT guess a phone. " +
-      "Omit first_name, last_name, and phone_number (or leave blank). The server will ask ONLY for what is missing. " +
+      "Omit first_name, last_name, and phone_number (or leave blank). " +
+      "The server reuses saved shipping name/phone when on file; otherwise it asks ONLY for what is missing. " +
       "If you must ask for missing fields, use this EXACT list (always include item 4 Email (optional)):\n" +
       `${SHIPPING_ASK_LIST_TEXT}\n`;
   } else {
     content +=
-      "Include first_name, last_name, and phone_number only if the customer provided them. ";
+      "Include first_name, last_name, and phone_number only if the customer explicitly provided them — never invent them. ";
   }
 
   if (hasEmail) {
@@ -1829,11 +1830,17 @@ function buildCheckoutFulfillment(destination, lineItemIds = []) {
     return null;
   }
 
+  const ids = (Array.isArray(lineItemIds) ? lineItemIds : []).filter(Boolean);
+  // Shopify requires line_item_ids on fulfillment — never send destinations without them.
+  if (!ids.length) {
+    return null;
+  }
+
   return {
     methods: [
       {
         type: "shipping",
-        ...(lineItemIds.length ? { line_item_ids: lineItemIds } : {}),
+        line_item_ids: ids,
         destinations: [destination]
       }
     ]
@@ -2446,30 +2453,199 @@ async function updateExistingCheckout(
       return { error: "checkout not found" };
     }
 
-    const lineItems = buildUpdateCheckoutLineItems(cart.line_items, existing.line_items);
+    let lineItems = buildUpdateCheckoutLineItems(cart.line_items, existing.line_items);
+    const hasDestination = Boolean(destination?.street_address);
+    const anyMissingLineId = lineItems.some((line) => !line?.id);
+    const buyer = buildCheckoutBuyer(destination, existing.buyer);
+
     console.log("[cart-wrapper] update_checkout line_items", {
       cartCount: cart.line_items?.length || 0,
       checkoutCount: existing.line_items?.length || 0,
+      anyMissingLineId,
+      hasDestination,
       sending: lineItems.map((line) => ({
         variantId: line?.item?.id,
         quantity: line?.quantity,
         hasCheckoutLineId: Boolean(line?.id)
       }))
     });
+
+    // Shopify requires fulfillment.line_item_ids. When any cart line lacks a CartLine
+    // id, sync items first (no fulfillment), then apply address with all ids.
+    if (anyMissingLineId) {
+      const itemsOnlyBody = withAiraAttribution(
+        {
+          line_items: lineItems,
+          ...(buyer ? { buyer } : {})
+        },
+        conversationId
+      );
+      const itemsDiscounts = resolveCheckoutDiscounts(discounts, existing);
+      if (itemsDiscounts) {
+        itemsOnlyBody.discounts = itemsDiscounts;
+      }
+
+      console.log("[cart-wrapper] update_checkout phase1 items-only (missing CartLine ids)");
+
+      const itemsResponse = await mcpClient.callTool("update_checkout", {
+        id: checkoutId,
+        checkout: itemsOnlyBody
+      });
+
+      const itemsErrors = extractCheckoutValidationErrors(itemsResponse);
+      const itemsCheckout = extractCheckoutPayload(itemsResponse);
+
+      if (!itemsCheckout?.id) {
+        const errText = extractToolErrorText(itemsResponse);
+        return {
+          checkout: existing,
+          checkoutUrl: appendAiraUtmParams(
+            extractContinueUrl(getResponse) || existing.continue_url || null,
+            conversationId
+          ),
+          shippingAddress: null,
+          validationErrors: itemsErrors,
+          error:
+            itemsErrors[0]?.readable ||
+            errText ||
+            "update_checkout failed while syncing line items"
+        };
+      }
+
+      lineItems = buildUpdateCheckoutLineItems(cart.line_items, itemsCheckout.line_items);
+      const stillMissing = lineItems.some((line) => !line?.id);
+      if (stillMissing || lineItems.length === 0) {
+        console.warn("[cart-wrapper] update_checkout phase1 cart/checkout still out of sync", {
+          conversationId,
+          cartCount: cart.line_items?.length || 0,
+          checkoutCount: itemsCheckout.line_items?.length || 0,
+          stillMissing
+        });
+        return {
+          checkout: {
+            ...itemsCheckout,
+            messages: collectCheckoutMessages(itemsResponse, itemsCheckout)
+          },
+          checkoutUrl: appendAiraUtmParams(
+            extractContinueUrl(itemsResponse) || itemsCheckout.continue_url,
+            conversationId
+          ),
+          shippingAddress: extractShippingDestination(itemsCheckout),
+          validationErrors: itemsErrors,
+          error: "Checkout line items are out of sync with the cart."
+        };
+      }
+
+      // Product-only sync (no address to apply) — single API was enough.
+      if (!hasDestination) {
+        return {
+          checkout: {
+            ...itemsCheckout,
+            messages: collectCheckoutMessages(itemsResponse, itemsCheckout)
+          },
+          checkoutUrl: appendAiraUtmParams(
+            extractContinueUrl(itemsResponse) || itemsCheckout.continue_url,
+            conversationId
+          ),
+          shippingAddress: extractShippingDestination(itemsCheckout),
+          validationErrors: itemsErrors
+        };
+      }
+
+      // Phase 2: all lines have CartLine ids — attach shipping to every line.
+      const allLineIds = lineItems.map((line) => line.id).filter(Boolean);
+      const fulfillment = buildCheckoutFulfillment(destination, allLineIds);
+      if (!fulfillment) {
+        return {
+          checkout: itemsCheckout,
+          checkoutUrl: appendAiraUtmParams(
+            extractContinueUrl(itemsResponse) || itemsCheckout.continue_url,
+            conversationId
+          ),
+          shippingAddress: null,
+          validationErrors: itemsErrors,
+          error: "Cannot update shipping — missing checkout line item ids."
+        };
+      }
+
+      const shipBody = withAiraAttribution(
+        {
+          line_items: lineItems,
+          buyer: buildCheckoutBuyer(destination, itemsCheckout.buyer || existing.buyer),
+          fulfillment
+        },
+        conversationId
+      );
+      const shipDiscounts = resolveCheckoutDiscounts(discounts, itemsCheckout);
+      if (shipDiscounts) {
+        shipBody.discounts = shipDiscounts;
+      }
+
+      console.log("[cart-wrapper] update_checkout phase2 fulfillment", {
+        conversationId,
+        lineItemIdCount: allLineIds.length
+      });
+
+      const shipResponse = await mcpClient.callTool("update_checkout", {
+        id: itemsCheckout.id,
+        checkout: shipBody
+      });
+      const shipErrors = extractCheckoutValidationErrors(shipResponse);
+      const shipCheckout = extractCheckoutPayload(shipResponse);
+
+      if (!shipCheckout?.id) {
+        return {
+          checkout: itemsCheckout,
+          checkoutUrl: appendAiraUtmParams(
+            extractContinueUrl(itemsResponse) || itemsCheckout.continue_url,
+            conversationId
+          ),
+          shippingAddress: null,
+          validationErrors: shipErrors.length ? shipErrors : itemsErrors,
+          error:
+            shipErrors[0]?.readable ||
+            extractToolErrorText(shipResponse) ||
+            "update_checkout failed while applying shipping"
+        };
+      }
+
+      return {
+        checkout: {
+          ...shipCheckout,
+          messages: collectCheckoutMessages(shipResponse, shipCheckout)
+        },
+        checkoutUrl: appendAiraUtmParams(
+          extractContinueUrl(shipResponse) || shipCheckout.continue_url,
+          conversationId
+        ),
+        shippingAddress: extractShippingDestination(shipCheckout),
+        validationErrors: shipErrors
+      };
+    }
+
+    // All cart lines already have CartLine ids → single update_checkout.
     const checkoutBody = withAiraAttribution(
       {
         line_items: lineItems,
-        buyer: buildCheckoutBuyer(destination, existing.buyer)
+        ...(buyer ? { buyer } : {})
       },
       conversationId
     );
 
-    if (destination) {
-      const lineItemIds = lineItems.map((line) => line.id).filter(Boolean);
-      checkoutBody.fulfillment = buildCheckoutFulfillment(destination, lineItemIds);
-    } else if (existing.fulfillment) {
-      // Preserve existing fulfillment when only items change.
-      checkoutBody.fulfillment = existing.fulfillment;
+    if (hasDestination) {
+      checkoutBody.fulfillment = buildCheckoutFulfillment(
+        destination,
+        lineItems.map((line) => line.id).filter(Boolean)
+      );
+    } else {
+      // Re-bind existing shipping to current line ids when products change.
+      const existingDest = extractShippingDestination(existing);
+      if (existingDest?.street_address) {
+        checkoutBody.fulfillment = buildCheckoutFulfillment(
+          writableShippingAddress(existingDest),
+          lineItems.map((line) => line.id).filter(Boolean)
+        );
+      }
     }
 
     const discountsPayload = resolveCheckoutDiscounts(discounts, existing);
@@ -2477,9 +2653,10 @@ async function updateExistingCheckout(
       checkoutBody.discounts = discountsPayload;
     }
 
-    const initialFulfillmentLineIds = destination
-      ? lineItems.map((line) => line.id).filter(Boolean)
-      : [];
+    console.log("[cart-wrapper] update_checkout single call (all CartLine ids present)", {
+      conversationId,
+      hasFulfillment: Boolean(checkoutBody.fulfillment)
+    });
 
     const updateResponse = await mcpClient.callTool("update_checkout", {
       id: checkoutId,
@@ -2489,7 +2666,6 @@ async function updateExistingCheckout(
     const responseErrors = extractCheckoutValidationErrors(updateResponse);
     const checkoutFromUpdate = extractCheckoutPayload(updateResponse);
 
-    // Shopify often returns isError + messages without a checkout id (e.g. invalid phone).
     if (!checkoutFromUpdate?.id && responseErrors.length > 0) {
       return {
         checkout: existing,
@@ -2503,76 +2679,24 @@ async function updateExistingCheckout(
       };
     }
 
-    let checkout = checkoutFromUpdate || existing;
-    if (!checkout?.id) {
+    if (!checkoutFromUpdate?.id) {
       return {
         error: extractToolErrorText(updateResponse) || "update_checkout failed",
         validationErrors: responseErrors
       };
     }
 
-    // Validation must come from update_checkout (and later post-update get_checkout),
-    // NEVER from the pre-update get_checkout (`existing`) — those messages are stale.
-    checkout = {
-      ...checkout,
-      messages: collectCheckoutMessages(updateResponse, checkoutFromUpdate)
-    };
-
-    // New cart lines get checkout ids only after the first update — re-attach
-    // shipping to ALL line ids so the address is not dropped.
-    let shippingAddress = extractShippingDestination(checkout);
-    let validationErrors = [...responseErrors];
-
-    if (destination) {
-      const allLineItems = buildCheckoutLineItems(checkout.line_items);
-      const allLineIds = allLineItems.map((line) => line.id).filter(Boolean);
-      const needsFulfillmentRefresh =
-        allLineIds.length > initialFulfillmentLineIds.length ||
-        !shippingAddress?.street_address;
-
-      if (needsFulfillmentRefresh && allLineIds.length > 0) {
-        const retryBody = {
-          line_items: allLineItems,
-          buyer: buildCheckoutBuyer(destination, existing.buyer),
-          fulfillment: buildCheckoutFulfillment(destination, allLineIds)
-        };
-        const retryDiscounts = resolveCheckoutDiscounts(discounts, checkout);
-        if (retryDiscounts) {
-          retryBody.discounts = retryDiscounts;
-        }
-        const retryResponse = await mcpClient.callTool("update_checkout", {
-          id: checkout.id,
-          checkout: withAiraAttribution(retryBody, conversationId)
-        });
-        const retryErrors = extractCheckoutValidationErrors(retryResponse);
-        const retried = extractCheckoutPayload(retryResponse) || checkout;
-        shippingAddress = extractShippingDestination(retried);
-        // Only retry update_checkout errors — do not reintroduce pre-update messages.
-        validationErrors = [...retryErrors];
-        return {
-          checkout: {
-            ...retried,
-            messages: collectCheckoutMessages(retryResponse, retried)
-          },
-          checkoutUrl: appendAiraUtmParams(
-            extractContinueUrl(retryResponse) || retried.continue_url,
-            conversationId
-          ),
-          shippingAddress: shippingAddress || null,
-          validationErrors,
-          error: retryErrors[0]?.readable || null
-        };
-      }
-    }
-
     return {
-      checkout,
+      checkout: {
+        ...checkoutFromUpdate,
+        messages: collectCheckoutMessages(updateResponse, checkoutFromUpdate)
+      },
       checkoutUrl: appendAiraUtmParams(
-        extractContinueUrl(updateResponse) || checkout.continue_url,
+        extractContinueUrl(updateResponse) || checkoutFromUpdate.continue_url,
         conversationId
       ),
-      shippingAddress: shippingAddress || null,
-      validationErrors
+      shippingAddress: extractShippingDestination(checkoutFromUpdate),
+      validationErrors: responseErrors
     };
   } catch (error) {
     return { error: error.message, ...parseShopifyTransportError(error) };
@@ -2594,12 +2718,8 @@ async function createCheckoutFromCart(
     if (cart?.context) {
       overrides.context = cart.context;
     }
-    // Include shipping destination on create when available so Shopify does not
-    // return delivery_address_required for phone-only checkout. update_checkout
-    // below still binds line_item_ids once checkout line ids exist.
-    if (destination?.street_address) {
-      overrides.fulfillment = buildCheckoutFulfillment(destination);
-    }
+    // Never attach fulfillment on create without line_item_ids (Shopify rejects it).
+    // Shipping is bound below via update_checkout once CartLine ids exist.
     const discountsPayload = resolveCheckoutDiscounts(discounts, null);
     if (discountsPayload) {
       overrides.discounts = discountsPayload;
@@ -3291,47 +3411,13 @@ function extractPhoneFromText(text) {
   return match ? match[1].trim() : null;
 }
 
-function extractNamePartsFromText(text) {
-  const raw = extractAddressText(text);
-  if (!raw) return null;
-
-  // Strip emails first so "Jane Doe, jane@x.com, +1..." never becomes last_name.
-  const withoutEmail = raw.replace(
-    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
-    " "
-  );
-
-  const phoneMatch = withoutEmail.match(/(\+?\d[\d\s\-().]{8,}\d)/);
-  let nameSegment = phoneMatch
-    ? withoutEmail.slice(0, phoneMatch.index)
-    : withoutEmail;
-  // Name is the first comma-separated segment only (before email/phone/street).
-  nameSegment = nameSegment.split(",")[0].replace(/[,\s]+$/g, "").trim();
-
-  if (!nameSegment || /^\d+\s/.test(nameSegment)) return null;
-
-  const parts = nameSegment
-    .split(/\s+/)
-    .map((part) => part.replace(/^[,;]+|[,;]+$/g, "").trim())
-    .filter(Boolean);
-  if (
-    parts.length >= 2 &&
-    parts.length <= 5 &&
-    /^[A-Za-z]/.test(parts[0]) &&
-    parts.every((part) => !part.includes("@"))
-  ) {
-    return {
-      first_name: parts[0],
-      last_name: parts.slice(1).join(" ")
-    };
-  }
-
-  return null;
-}
+/** Never invent these from free-text — only LLM args or saved ShopperCart.shippingAddress. */
+const SHIPPING_CONTACT_FIELDS = ["first_name", "last_name", "phone_number"];
 
 /**
- * Prefer LLM-structured shipping fields. Only fill blanks from the customer
- * message — never overwrite values the model already passed.
+ * Prefer LLM-structured shipping fields. Fill blank geo fields from an
+ * address-only line when needed. Never invent first_name / last_name / phone
+ * from the message — those come from the tool args or saved shipping only.
  */
 function sanitizeShippingFromContext(address = {}, userMessage = "") {
   const merged = { ...address };
@@ -3340,26 +3426,12 @@ function sanitizeShippingFromContext(address = {}, userMessage = "") {
   const addressFromLine = parseAddressLineOnly(text);
   if (addressFromLine) {
     for (const [key, value] of Object.entries(addressFromLine)) {
+      if (SHIPPING_CONTACT_FIELDS.includes(key)) {
+        continue;
+      }
       if (value && isBlank(merged[key])) {
         merged[key] = value;
       }
-    }
-  }
-
-  const nameFromText = extractNamePartsFromText(text);
-  if (nameFromText) {
-    if (isBlank(merged.first_name)) {
-      merged.first_name = nameFromText.first_name;
-    }
-    if (isBlank(merged.last_name)) {
-      merged.last_name = nameFromText.last_name;
-    }
-  }
-
-  if (isBlank(merged.phone_number)) {
-    const phoneInText = extractPhoneFromText(text);
-    if (phoneInText) {
-      merged.phone_number = phoneInText;
     }
   }
 
@@ -3763,10 +3835,14 @@ function normalizeShippingAddress(input = {}, { userMessage, existingCart, saved
   const textSources = [input.address_text, userMessage].filter(Boolean);
   let parsedFromText = false;
 
+  // Only fill geo/address blanks from text parsers — never first_name / last_name / phone.
   for (const text of textSources) {
-    for (const parsed of [parseAddressText(text), parseAddressLineOnly(text)].filter(Boolean)) {
+    for (const parsed of [parseAddressLineOnly(text)].filter(Boolean)) {
       parsedFromText = true;
       for (const [key, value] of Object.entries(parsed)) {
+        if (SHIPPING_CONTACT_FIELDS.includes(key)) {
+          continue;
+        }
         if (value && isBlank(merged[key])) {
           merged[key] = value;
         }
@@ -3783,6 +3859,7 @@ function normalizeShippingAddress(input = {}, { userMessage, existingCart, saved
 
   const primaryText = String(userMessage || input.address_text || "").trim();
   let sanitized = sanitizeShippingFromContext(merged, primaryText);
+  // Blank contact/address fields: reuse ShopperCart.shippingAddress when present.
   sanitized = applySavedShippingDefaults(sanitized, savedShipping);
 
   if (sanitized.address_country) {

@@ -388,8 +388,15 @@ export function annotateRankedProductsForLlm(rankedProducts = []) {
 /**
  * Product rows for LLM tool history — mirrors card facts plus scent tags so the
  * model can answer cheapest/compare and preference-based picks from history.
+ *
+ * @param {object[]} rankedProducts
+ * @param {{ forListing?: boolean }} [options]
+ *   forListing: omit always-null detail metafields/ratings and send full
+ *   description instead of a 160-char short_description (browse tools only).
  */
-export function buildLlmProductSummary(rankedProducts = []) {
+export function buildLlmProductSummary(rankedProducts = [], options = {}) {
+  const forListing = options.forListing === true;
+
   return rankedProducts.map((product, index) => {
     const title = String(product.title || product.name || "").trim() || null;
     const sizes = Array.isArray(product.sizes)
@@ -403,12 +410,15 @@ export function buildLlmProductSummary(rankedProducts = []) {
     const priceAmountCents = parsePriceAmountCents(product);
     const tagList = normalizeTagList(product.tags);
     const profile = buildFragranceProfileFromTags(tagList);
-    const shortDescription =
-      String(product.shortDescription || "").trim() ||
-      stripHtml(product.descriptionHtml || product.description || "").slice(0, 160) ||
-      null;
 
-    return {
+    const plainDescription =
+      String(product.fullDescription || "").trim() ||
+      stripHtml(product.descriptionHtml || product.description || "")
+        .replace(/\s+/g, " ")
+        .trim() ||
+      "";
+
+    const row = {
       position: index + 1,
       variant_id: resolveProductVariantId(product),
       title,
@@ -429,25 +439,51 @@ export function buildLlmProductSummary(rankedProducts = []) {
         product.product_type_metafield ||
         product.productType ||
         profile.fragranceType,
-      fragrance_family: product.fragrance_family || null,
-      scent_type: product.scent_type || null,
-      key_notes: product.key_notes || null,
-      top_notes: product.top_notes || null,
-      middle_notes: product.middle_notes || null,
-      base_notes: product.base_notes || null,
       scent_notes: product.key_notes
         ? [product.key_notes, product.top_notes, product.middle_notes, product.base_notes]
             .map((v) => String(v || "").trim())
             .filter(Boolean)
         : profile.scentNotes,
-      average_rating:
-        typeof product.average_rating === "number" ? product.average_rating : null,
-      total_reviews:
-        typeof product.total_reviews === "number" ? product.total_reviews : null,
-      tags: profile.relevantTags.length ? profile.relevantTags : null,
-      short_description: shortDescription
+      tags: profile.relevantTags.length ? profile.relevantTags : null
     };
+
+    if (forListing) {
+      // Full copy helps preference / "best for…" follow-ups; omit unused null pads.
+      row.description = plainDescription
+        ? plainDescription.slice(0, 2000)
+        : null;
+      return omitNullishFields(row);
+    }
+
+    row.fragrance_family = product.fragrance_family || null;
+    row.scent_type = product.scent_type || null;
+    row.key_notes = product.key_notes || null;
+    row.top_notes = product.top_notes || null;
+    row.middle_notes = product.middle_notes || null;
+    row.base_notes = product.base_notes || null;
+    row.average_rating =
+      typeof product.average_rating === "number" ? product.average_rating : null;
+    row.total_reviews =
+      typeof product.total_reviews === "number" ? product.total_reviews : null;
+    row.short_description =
+      String(product.shortDescription || "").trim() ||
+      plainDescription.slice(0, 160) ||
+      null;
+
+    return row;
   });
+}
+
+/** Drop null/undefined/empty-string keys so listing history stays compact. */
+function omitNullishFields(obj = {}) {
+  return Object.fromEntries(
+    Object.entries(obj).filter(([, value]) => {
+      if (value == null) return false;
+      if (value === "") return false;
+      if (Array.isArray(value) && value.length === 0) return false;
+      return true;
+    })
+  );
 }
 
 /**
@@ -538,7 +574,7 @@ function parsePriceAmountCents(product = {}) {
 export function buildProductListingMetadata(rankedProducts = []) {
   const first = rankedProducts[0] || null;
   const firstVariantId = first ? resolveProductVariantId(first) : null;
-  const summary = buildLlmProductSummary(rankedProducts);
+  const summary = buildLlmProductSummary(rankedProducts, { forListing: true });
 
   const withPrice = summary.filter(
     (row) =>
