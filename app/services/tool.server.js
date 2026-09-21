@@ -343,18 +343,10 @@ export function createToolService() {
     const matchInstruction = matchInfo.query_match
       ? "query_match is true: say matching products were found (generic only), then ask if they want to add one to the cart. Do NOT name brands, titles, or prices in this browse reply."
       : rankedProducts.length > 0
-        ? "query_match is false: products above are NOT a clear match for the customer's search (common after show more). " +
-          "Say you could not find products matching their request, but a few other options are shown above. " +
+        ? "query_match is false: products below are NOT a clear match for the customer's search (common after show more). " +
+          "Say you could not find products matching their request, but a few other options are shown below. " +
           "Ask if they want to try another brand or name. Do NOT say you found their brand or 'more [brand] products'."
         : "No products to show: say you could not find a match and ask them to rephrase.";
-
-    const detailInstruction =
-      toolName === "get_product_details"
-        ? "get_product_details: the Product Details card already shows image, price, sizes, " +
-          "fragrance chips (scent type / key notes / product type), top/middle/base notes, and review rating. " +
-          "FORBIDDEN in chat text: dumping Type/Sizes/Notes/Rating/Price lists. " +
-          "Reply in 1-2 short sentences only (e.g. details are shown above — want to add one to cart?)."
-        : matchInstruction;
 
     const enriched = {
       status: originalData.status || "success",
@@ -366,17 +358,23 @@ export function createToolService() {
       match_count: matchInfo.match_count,
       result_count: matchInfo.result_count,
       ui_instruction:
-        "CRITICAL: Top Matching Products cards are already shown. products[] (price, tags, scent_notes, short_description) / cheapest_* are for YOUR use only (history). " +
-        "DEFAULT browse reply: 1-2 short generic sentences only — FORBIDDEN to list product names, prices, bullets, or 'here are some options'. " +
-        "FOLLOW-UP — cheapest / most expensive / compare shown cards: answer briefly from products[] or cheapest_* / most_expensive_* (name or #N + price once), then offer to add it. " +
-        "FOLLOW-UP — best / recommend / suggest: NEVER invent a universal best. If the customer gave a preference (floral, fresh, woody, daytime, evening, gift, EDP, women/men, budget), " +
-        "pick ONE product from products[] using gender, fragrance_type, scent_notes, tags, short_description, and price; say why in one short sentence; offer to add it. " +
-        "If they ask for the best with NO preference, ask one short preference question — do not pick randomly. " +
-        "Never dump the full catalog list in chat. " +
-        detailInstruction +
-        (pagination
-          ? " If the customer asks for more products/results/next page and pagination.has_next_page is true, call search_catalog again with the same query/filters and pagination.cursor from this result."
-          : "")
+        toolName === "get_product_details"
+          ? "get_product_details: Product Details card is shown BELOW your text (text first, then the card). products[] is INTERNAL ONLY — do not paste into chat. " +
+            "FORBIDDEN: Price, Fragrance Type/Family, Scent Type, Key Notes, Top/Middle/Base Notes, Average Rating, bullets, field lists. " +
+            "NEVER say details are above — always say below. " +
+            "REQUIRED: 1-2 short sentences only — e.g. \"I've pulled up the full details below — would you like to add it to your cart?\""
+          : "CRITICAL: Top Matching Products cards are shown BELOW your text in the UI (text first, then cards). products[] (price, tags, scent_notes, short_description) / cheapest_* are for YOUR use only (history). " +
+            "DEFAULT browse reply: 1-2 short generic sentences only — FORBIDDEN to list product names, prices, bullets, or 'here are some options'. " +
+            "Say cards are shown below (NEVER say above). " +
+            "FOLLOW-UP — cheapest / most expensive / compare shown cards: answer briefly from products[] or cheapest_* / most_expensive_* (name or #N + price once), then offer to add it. " +
+            "FOLLOW-UP — best / recommend / suggest: NEVER invent a universal best. If the customer gave a preference (floral, fresh, woody, daytime, evening, gift, EDP, women/men, budget), " +
+            "pick ONE product from products[] using gender, fragrance_type, scent_notes, tags, short_description, and price; say why in one short sentence; offer to add it. " +
+            "If they ask for the best with NO preference, ask one short preference question — do not pick randomly. " +
+            "Never dump the full catalog list in chat. " +
+            matchInstruction +
+            (pagination
+              ? " If the customer asks for more products/results/next page and pagination.has_next_page is true, call search_catalog again with the same query/filters and pagination.cursor from this result."
+              : "")
     };
 
     console.log("[tool] enriched product listing for LLM history", {

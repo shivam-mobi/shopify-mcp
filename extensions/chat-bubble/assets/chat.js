@@ -1571,7 +1571,18 @@
             productsContainer.appendChild(productCard);
           });
 
-          refresh();
+          const fitDescriptions = () => {
+            productsContainer
+              .querySelectorAll('.shop-ai-product-card--detail')
+              .forEach((card) => ShopAIChat.Product.fitDetailDescription(card, 2));
+          };
+          requestAnimationFrame(() => {
+            fitDescriptions();
+            refresh();
+            setTimeout(fitDescriptions, 50);
+            setTimeout(refresh, 80);
+            setTimeout(refresh, 300);
+          });
           setTimeout(refresh, 120);
         }
 
@@ -3884,12 +3895,24 @@
        * Left/right controls for a horizontal scroller.
        */
       createScrollControls: function(carousel, scroller, options = {}) {
+        const lockCircleShape = function(btn) {
+          // Theme button:active/:focus often forces square corners — pin circle inline
+          btn.style.setProperty('border-radius', '999px', 'important');
+          btn.style.setProperty('width', '28px', 'important');
+          btn.style.setProperty('height', '28px', 'important');
+          btn.style.setProperty('min-width', '28px', 'important');
+          btn.style.setProperty('min-height', '28px', 'important');
+          btn.style.setProperty('padding', '0', 'important');
+          btn.style.setProperty('appearance', 'none', 'important');
+        };
+
         const prevBtn = document.createElement('button');
         prevBtn.type = 'button';
         prevBtn.classList.add('shop-ai-product-scroll', 'shop-ai-product-scroll--prev');
         prevBtn.setAttribute('aria-label', options.prevLabel || 'Scroll left');
         prevBtn.innerHTML =
           '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>';
+        lockCircleShape(prevBtn);
 
         const nextBtn = document.createElement('button');
         nextBtn.type = 'button';
@@ -3897,22 +3920,32 @@
         nextBtn.setAttribute('aria-label', options.nextLabel || 'Scroll right');
         nextBtn.innerHTML =
           '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>';
+        lockCircleShape(nextBtn);
+
+        const setEdgeVisibility = function(btn, hide) {
+          btn.hidden = hide;
+          btn.classList.toggle('is-edge-hidden', hide);
+          btn.setAttribute('aria-hidden', hide ? 'true' : 'false');
+          if (hide) {
+            btn.style.setProperty('display', 'none', 'important');
+          } else {
+            btn.style.setProperty('display', 'inline-flex', 'important');
+          }
+        };
 
         const refresh = function() {
           const maxScroll = scroller.scrollWidth - scroller.clientWidth;
           const canScroll = maxScroll > 4;
           carousel.classList.toggle('has-overflow', canScroll);
           if (!canScroll) {
-            prevBtn.hidden = true;
-            nextBtn.hidden = true;
+            setEdgeVisibility(prevBtn, true);
+            setEdgeVisibility(nextBtn, true);
             return;
           }
-          // Keep both visible on small screens so users notice scrolling is possible;
-          // only dim/disable at the edges.
-          prevBtn.hidden = false;
-          nextBtn.hidden = false;
           const atStart = scroller.scrollLeft <= 4;
           const atEnd = scroller.scrollLeft >= maxScroll - 4;
+          setEdgeVisibility(prevBtn, atStart);
+          setEdgeVisibility(nextBtn, atEnd);
           prevBtn.disabled = atStart;
           nextBtn.disabled = atEnd;
           prevBtn.classList.toggle('is-disabled', atStart);
@@ -3934,11 +3967,15 @@
           event.preventDefault();
           event.stopPropagation();
           if (!prevBtn.disabled) scrollByStep(-1);
+          lockCircleShape(prevBtn);
+          prevBtn.blur();
         });
         nextBtn.addEventListener('click', function(event) {
           event.preventDefault();
           event.stopPropagation();
           if (!nextBtn.disabled) scrollByStep(1);
+          lockCircleShape(nextBtn);
+          nextBtn.blur();
         });
         scroller.addEventListener('scroll', refresh, { passive: true });
         if (typeof ResizeObserver !== 'undefined') {
@@ -3976,6 +4013,64 @@
             product.showDetailProfile === true &&
             this.hasFragranceProfile(product)
         );
+      },
+
+      /**
+       * Truncate detail description so text + "Read more" fit in maxLines (default 2).
+       * Must run after the card is in the DOM with real width.
+       */
+      fitDetailDescription: function(card, maxLines) {
+        if (!card) return;
+        const desc = card.querySelector('.shop-ai-product-description.is-collapsed');
+        if (!desc) return;
+        const textEl = desc.querySelector('.shop-ai-product-description-text');
+        const toggle = desc.querySelector('.shop-ai-product-description-toggle');
+        const fullText = desc.getAttribute('data-full-description') || '';
+        if (!textEl || !toggle || !fullText) return;
+
+        const lines = Math.max(1, Number(maxLines) || 2);
+        const styles = window.getComputedStyle(desc);
+        let lineHeight = parseFloat(styles.lineHeight);
+        if (!Number.isFinite(lineHeight) || lineHeight <= 0) {
+          lineHeight = (parseFloat(styles.fontSize) || 11) * 1.35;
+        }
+        const maxHeight = lineHeight * lines + 1;
+
+        const fits = () => desc.scrollHeight <= maxHeight + 0.5;
+
+        // If full text already fits in 2 lines with no toggle, hide toggle
+        textEl.textContent = fullText;
+        toggle.hidden = true;
+        if (fits()) {
+          desc.classList.remove('is-collapsed');
+          toggle.remove();
+          desc.removeAttribute('data-full-description');
+          return;
+        }
+        toggle.hidden = false;
+        toggle.textContent = 'Read more';
+
+        let low = 0;
+        let high = fullText.length;
+        let best = '';
+        while (low <= high) {
+          const mid = Math.floor((low + high) / 2);
+          let slice = fullText.slice(0, mid).replace(/\s+\S*$/, '').trim();
+          if (!slice && mid > 0) slice = fullText.slice(0, mid).trim();
+          textEl.textContent = slice ? `${slice}…` : '…';
+          if (fits()) {
+            best = textEl.textContent;
+            low = mid + 1;
+          } else {
+            high = mid - 1;
+          }
+        }
+
+        if (!best) {
+          best = `${fullText.slice(0, 60).replace(/\s+\S*$/, '').trim()}…`;
+        }
+        textEl.textContent = best;
+        desc.setAttribute('data-preview-description', best);
       },
 
       buildPyramidIcon: function(tier) {
@@ -4134,7 +4229,7 @@
           overall.classList.add('shop-ai-product-reviews-overall');
           const overallLabel = document.createElement('div');
           overallLabel.classList.add('shop-ai-product-reviews-label');
-          overallLabel.textContent = 'Overall Rating';
+          overallLabel.textContent = 'Rating';
           const score = document.createElement('div');
           score.classList.add('shop-ai-product-reviews-score');
           score.textContent =
@@ -4202,8 +4297,33 @@
         // Add product title (full text always visible)
         const title = document.createElement('h3');
         title.classList.add('shop-ai-product-title');
-        title.setAttribute('aria-label', product.title || 'Product title');
-        title.textContent = product.title || '';
+        const productTitle = String(product.title || '').trim();
+        const productVendor = String(product.vendor || '').trim();
+        const isDetailCard = ShopAIChat.Product.shouldShowDetailProfile(product);
+        title.setAttribute(
+          'aria-label',
+          isDetailCard && productVendor
+            ? `${productTitle} · ${productVendor}`
+            : productTitle || 'Product title'
+        );
+
+        if (isDetailCard && productVendor) {
+          const titleText = document.createElement('span');
+          titleText.classList.add('shop-ai-product-title-text');
+          titleText.textContent = productTitle;
+          const sep = document.createElement('span');
+          sep.classList.add('shop-ai-product-title-sep');
+          sep.setAttribute('aria-hidden', 'true');
+          sep.textContent = ' · ';
+          const brand = document.createElement('span');
+          brand.classList.add('shop-ai-product-title-brand');
+          brand.textContent = productVendor;
+          title.appendChild(titleText);
+          title.appendChild(sep);
+          title.appendChild(brand);
+        } else {
+          title.textContent = productTitle;
+        }
 
         let productHref = '';
         if (product.url) {
@@ -4232,10 +4352,11 @@
 
         info.appendChild(title);
 
-        if (product.vendor) {
+        // Listing cards keep brand on its own line; detail cards use Title · Brand
+        if (productVendor && !isDetailCard) {
           const vendorEl = document.createElement('p');
           vendorEl.classList.add('shop-ai-product-vendor');
-          vendorEl.textContent = product.vendor;
+          vendorEl.textContent = productVendor;
           info.appendChild(vendorEl);
         }
 
@@ -4269,61 +4390,56 @@
           ).trim();
 
           if (fullText) {
-            const previewLimit = 140;
-            const needsToggle = fullText.length > previewLimit;
-            const previewText = needsToggle
-              ? `${fullText.slice(0, previewLimit).replace(/\s+\S*$/, '').trim()}…`
-              : fullText;
-
             const descWrap = document.createElement('div');
             descWrap.classList.add('shop-ai-product-description-wrap');
 
             const desc = document.createElement('p');
-            desc.classList.add('shop-ai-product-description');
+            desc.classList.add('shop-ai-product-description', 'is-collapsed');
+            desc.setAttribute('data-full-description', fullText);
 
             const descText = document.createElement('span');
             descText.classList.add('shop-ai-product-description-text');
-            descText.textContent = previewText;
+            // Temporary full text; fitDetailDescription trims to 2 lines after mount
+            descText.textContent = fullText;
             desc.appendChild(descText);
 
-            if (needsToggle) {
-              desc.classList.add('is-collapsed');
-              // Use <span> not <button> — theme CSS often forces buttons to block/full-width
-              const toggle = document.createElement('span');
-              toggle.classList.add('shop-ai-product-description-toggle');
-              toggle.setAttribute('role', 'button');
-              toggle.setAttribute('tabindex', '0');
-              toggle.textContent = 'Read more';
-              toggle.setAttribute('aria-expanded', 'false');
+            const toggle = document.createElement('span');
+            toggle.classList.add('shop-ai-product-description-toggle');
+            toggle.setAttribute('role', 'button');
+            toggle.setAttribute('tabindex', '0');
+            toggle.textContent = 'Read more';
+            toggle.setAttribute('aria-expanded', 'false');
+            toggle.hidden = true;
 
-              const setExpanded = (expanded) => {
-                descText.textContent = expanded ? `${fullText} ` : previewText;
-                desc.classList.toggle('is-expanded', expanded);
-                desc.classList.toggle('is-collapsed', !expanded);
-                toggle.textContent = expanded ? 'Read less' : 'Read more';
-                toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-              };
+            const setExpanded = (expanded) => {
+              const preview =
+                desc.getAttribute('data-preview-description') ||
+                descText.textContent;
+              descText.textContent = expanded ? `${fullText} ` : preview;
+              desc.classList.toggle('is-expanded', expanded);
+              desc.classList.toggle('is-collapsed', !expanded);
+              toggle.textContent = expanded ? 'Read less' : 'Read more';
+              toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+            };
 
-              const onToggle = (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                if (typeof event.stopImmediatePropagation === 'function') {
-                  event.stopImmediatePropagation();
-                }
-                const expanded = toggle.getAttribute('aria-expanded') !== 'true';
-                setExpanded(expanded);
-              };
+            const onToggle = (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (typeof event.stopImmediatePropagation === 'function') {
+                event.stopImmediatePropagation();
+              }
+              const expanded = toggle.getAttribute('aria-expanded') !== 'true';
+              setExpanded(expanded);
+            };
 
-              toggle.addEventListener('click', onToggle);
-              toggle.addEventListener('keydown', function(event) {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  onToggle(event);
-                }
-              });
-              // Keep on same line as description end
-              desc.appendChild(document.createTextNode('\u00A0'));
-              desc.appendChild(toggle);
-            }
+            toggle.addEventListener('click', onToggle);
+            toggle.addEventListener('keydown', function(event) {
+              if (event.key === 'Enter' || event.key === ' ') {
+                onToggle(event);
+              }
+            });
+            desc.appendChild(document.createTextNode('\u00A0'));
+            desc.appendChild(toggle);
 
             descWrap.appendChild(desc);
             info.appendChild(descWrap);

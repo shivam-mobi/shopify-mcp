@@ -756,29 +756,66 @@
   margin-top: 2px;
 }
 
-.shop-ai-chat-input-field {
-  flex: 1;
-  display: block;
+.shop-ai-chat-input-field,
+.shop-ai-chat-window textarea.shop-ai-chat-input-field,
+.shop-ai-input-wrap textarea.shop-ai-chat-input-field,
+.shop-ai-chat-container textarea.shop-ai-chat-input-field {
+  flex: 1 !important;
+  display: block !important;
   height: 20px;
   min-height: 20px;
-  padding: 0 4px 0 0;
-  border: none;
-  background: transparent;
-  font-size: 14px;
-  line-height: 20px;
-  outline: none;
-  min-width: 0;
-  width: 100%;
-  color: #111;
-  resize: none;
-  overflow-x: hidden;
-  overflow-y: hidden;
-  font-family: inherit;
-  box-sizing: content-box;
+  max-height: none;
+  padding: 0 4px 0 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+  -webkit-box-shadow: none !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  font-size: 14px !important;
+  line-height: 20px !important;
+  min-width: 0 !important;
+  width: 100% !important;
+  color: #111 !important;
+  resize: none !important;
+  overflow-x: hidden !important;
+  overflow-y: hidden !important;
+  font-family: inherit !important;
+  box-sizing: content-box !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  caret-color: #111;
+}
+
+.shop-ai-chat-input-field:hover,
+.shop-ai-chat-input-field:focus,
+.shop-ai-chat-input-field:focus-visible,
+.shop-ai-chat-input-field:active,
+.shop-ai-chat-window textarea.shop-ai-chat-input-field:hover,
+.shop-ai-chat-window textarea.shop-ai-chat-input-field:focus,
+.shop-ai-chat-window textarea.shop-ai-chat-input-field:focus-visible,
+.shop-ai-input-wrap textarea.shop-ai-chat-input-field:hover,
+.shop-ai-input-wrap textarea.shop-ai-chat-input-field:focus,
+.shop-ai-input-wrap textarea.shop-ai-chat-input-field:focus-visible {
+  border: 0 !important;
+  border-width: 0 !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  -webkit-box-shadow: none !important;
+  background: transparent !important;
 }
 
 .shop-ai-chat-input-field::placeholder {
-  color: #9CA3AF;
+  color: #9CA3AF !important;
+  opacity: 1 !important;
 }
 
 .shop-ai-voice-btn {
@@ -1064,7 +1101,7 @@
   gap: 12px;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 5px 28px;
+  padding: 5px 8px;
   scrollbar-width: thin;
   width: 100%;
   min-height: 0;
@@ -1073,36 +1110,69 @@
   box-sizing: border-box;
 }
 
-.shop-ai-product-scroll {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
+.shop-ai-chat-container button.shop-ai-product-scroll,
+.shop-ai-product-carousel button.shop-ai-product-scroll,
+.shop-ai-chat-container .shop-ai-product-scroll,
+.shop-ai-product-carousel .shop-ai-product-scroll {
+  position: absolute !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
   z-index: 5;
-  width: 34px;
-  height: 34px;
-  border: 1px solid #D1D5DB;
-  border-radius: 999px;
-  background: #fff;
-  color: var(--shop-ai-brand-text, #b8004d);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  min-height: 28px !important;
+  max-width: 28px !important;
+  max-height: 28px !important;
+  border: 1px solid #D1D5DB !important;
+  border-radius: 999px !important;
+  background: #fff !important;
+  color: var(--shop-ai-brand-text, #b8004d) !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16) !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
   cursor: pointer;
-  padding: 0;
+  padding: 0 !important;
+  margin: 0 !important;
   opacity: 1;
   pointer-events: auto;
+  appearance: none !important;
+  -webkit-appearance: none !important;
   transition: background 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
   -webkit-tap-highlight-color: transparent;
 }
 
-.shop-ai-product-scroll:hover {
-  background: var(--shop-ai-brand-soft, #fce6ef);
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
+.shop-ai-chat-container button.shop-ai-product-scroll:hover,
+.shop-ai-chat-container button.shop-ai-product-scroll:focus,
+.shop-ai-chat-container button.shop-ai-product-scroll:focus-visible,
+.shop-ai-chat-container button.shop-ai-product-scroll:active,
+.shop-ai-product-carousel button.shop-ai-product-scroll:hover,
+.shop-ai-product-carousel button.shop-ai-product-scroll:focus,
+.shop-ai-product-carousel button.shop-ai-product-scroll:focus-visible,
+.shop-ai-product-carousel button.shop-ai-product-scroll:active,
+.shop-ai-chat-container .shop-ai-product-scroll:hover,
+.shop-ai-chat-container .shop-ai-product-scroll:focus,
+.shop-ai-chat-container .shop-ai-product-scroll:focus-visible,
+.shop-ai-chat-container .shop-ai-product-scroll:active,
+.shop-ai-product-carousel .shop-ai-product-scroll:hover,
+.shop-ai-product-carousel .shop-ai-product-scroll:focus,
+.shop-ai-product-carousel .shop-ai-product-scroll:focus-visible,
+.shop-ai-product-carousel .shop-ai-product-scroll:active {
+  background: var(--shop-ai-brand-soft, #fce6ef) !important;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16) !important;
+  border-radius: 999px !important;
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  min-height: 28px !important;
+  padding: 0 !important;
+  transform: translateY(-50%) !important;
+  outline: none !important;
 }
 
 .shop-ai-product-scroll:focus-visible {
-  outline: 2px solid var(--shop-ai-brand, #e60060);
+  outline: 2px solid var(--shop-ai-brand, #e60060) !important;
   outline-offset: 2px;
 }
 
@@ -1110,14 +1180,25 @@
 .shop-ai-product-scroll:disabled {
   opacity: 0.35;
   cursor: default;
-  box-shadow: none;
+  box-shadow: none !important;
+  border-radius: 999px !important;
 }
 
-.shop-ai-product-scroll--prev { left: 0; }
-.shop-ai-product-scroll--next { right: 0; }
+.shop-ai-product-scroll--prev { left: 2px; }
+.shop-ai-product-scroll--next { right: 2px; }
 
-.shop-ai-product-scroll[hidden] {
+/* Must beat display:inline-flex !important on the button selectors above */
+.shop-ai-chat-container button.shop-ai-product-scroll[hidden],
+.shop-ai-product-carousel button.shop-ai-product-scroll[hidden],
+.shop-ai-chat-container .shop-ai-product-scroll[hidden],
+.shop-ai-product-carousel .shop-ai-product-scroll[hidden],
+.shop-ai-chat-container button.shop-ai-product-scroll.is-edge-hidden,
+.shop-ai-product-carousel button.shop-ai-product-scroll.is-edge-hidden,
+.shop-ai-chat-container .shop-ai-product-scroll.is-edge-hidden,
+.shop-ai-product-carousel .shop-ai-product-scroll.is-edge-hidden {
   display: none !important;
+  pointer-events: none !important;
+  visibility: hidden !important;
 }
 
 .shop-ai-product-grid::-webkit-scrollbar { height: 5px; }
@@ -1146,6 +1227,20 @@
 .shop-ai-product-card:hover {
   transform: translateY(-2px);
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
+}
+
+/* Listing cards: no hover lift/shadow — it reserved left gutter space */
+.shop-ai-product-card:not(.shop-ai-product-card--detail):hover {
+  transform: none;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  border-color: #E5E7EB;
+}
+
+.shop-ai-product-card--detail:hover,
+.shop-ai-product-section--detail .shop-ai-product-card--detail:hover {
+  transform: none;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  border-color: #F0F0F0;
 }
 
 /* Detail cards (get_product_details only) */
@@ -1194,10 +1289,10 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  border: 1px solid #1a1a1a;
-  border-radius: 10px;
-  padding: 8px 12px;
-  background: #fff;
+  border: 1px solid #f0e6dc;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, #fffaf6 0%, #fff 100%);
 }
 
 .shop-ai-fragrance-chip-row {
@@ -1208,11 +1303,12 @@
 
 .shop-ai-fragrance-chip-row strong {
   font-weight: 700;
+  color: #8a6a4a;
 }
 
 .shop-ai-fragrance-chip-divider {
   height: 1px;
-  background: #ececec;
+  background: #f0e6dc;
   margin: 0;
 }
 
@@ -1372,8 +1468,26 @@
   color: #111;
 }
 
+.shop-ai-product-title-sep {
+  font-weight: 400;
+  color: #9CA3AF;
+}
+
+.shop-ai-product-title-brand {
+  font-weight: 600;
+  color: var(--shop-ai-brand-text, #b8004d);
+}
+
+.shop-ai-product-card--detail .shop-ai-product-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .shop-ai-product-title--link { cursor: pointer; }
 .shop-ai-product-title--link:hover { text-decoration: underline; }
+.shop-ai-product-title--link:hover .shop-ai-product-title-brand {
+  text-decoration: underline;
+}
 
 .shop-ai-product-vendor {
   margin: 0 0 4px;
@@ -1395,6 +1509,15 @@
   color: #4B5563;
   white-space: normal;
   display: block;
+}
+
+.shop-ai-product-description.is-collapsed {
+  /* Measured to 2 lines in JS so Read more stays on line 2 */
+  overflow: hidden;
+}
+
+.shop-ai-product-description.is-expanded {
+  overflow: visible;
 }
 
 .shop-ai-product-description-text {
@@ -1484,6 +1607,13 @@
   align-items: center;
 }
 
+/* Listing cards: fit 3 size chips per row */
+.shop-ai-product-card:not(.shop-ai-product-card--detail) .shop-ai-product-variants {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
 .shop-ai-chat-container .shop-ai-product-variant,
 .shop-ai-product-card .shop-ai-product-variant {
   appearance: none !important;
@@ -1517,6 +1647,15 @@
   outline: none !important;
   transform: none !important;
   transition: background 0.15s, border-color 0.15s, color 0.15s !important;
+}
+
+.shop-ai-product-card:not(.shop-ai-product-card--detail) .shop-ai-product-variant {
+  width: 100% !important;
+  max-width: 100% !important;
+  padding: 4px 3px !important;
+  font-size: 9.5px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
 }
 
 .shop-ai-chat-container .shop-ai-product-variant:hover:not(:disabled):not(.is-disabled),
@@ -1693,7 +1832,7 @@
     overflow-x: auto;
     overflow-y: hidden;
     min-height: 0;
-    padding: 4px 30px 8px;
+    padding: 4px 8px 8px;
   }
 
   .shop-ai-product-section--detail .shop-ai-product-grid {
@@ -1719,9 +1858,12 @@
     flex-shrink: 0;
   }
 
+  .shop-ai-chat-container button.shop-ai-product-scroll,
+  .shop-ai-product-carousel button.shop-ai-product-scroll,
   .shop-ai-product-scroll {
-    width: 36px;
-    height: 36px;
+    width: 28px !important;
+    height: 28px !important;
+    border-radius: 999px !important;
   }
 }
 

@@ -29,11 +29,10 @@ export function getStorefrontCatalogTools() {
       name: GET_PRODUCT_DETAILS,
       description:
         "Get rich product details from the Storefront API (replaces lookup_catalog). " +
-        "Use when the customer asks for product details, available sizes, notes, scent type, " +
-        "fragrance info, or reviews for a product already shown. " +
+        "Use when the customer asks for product details, sizes, notes, scent type, fragrance info, or reviews. " +
         "Pass product or variant GIDs from the latest search_catalog products[]. " +
-        "Returns ALL variants (sizes), tags, and metafields: scent_type, key_notes, " +
-        "top_notes, middle_notes, base_notes, product_review_summary, product_type. " +
+        "Returns variants + metafields for YOUR understanding. A Product Details card is shown in the UI — " +
+        "do NOT paste Price/Notes/Rating lists into chat; reply in 1-2 short sentences only. " +
         "Never use lookup_catalog.",
       input_schema: {
         type: "object",
@@ -91,8 +90,10 @@ export async function callStorefrontCatalogTool(toolName, toolArgs = {}) {
       result_count: products.length,
       query_match: products.length > 0,
       instruction:
-        "The Product Details card UI already shows sizes, notes, scent type, and reviews. " +
-        "Reply in 1-2 short sentences only — do NOT paste Type/Sizes/Notes/Rating lists in chat text."
+        "INTERNAL ONLY: products[] has full detail for your understanding. " +
+        "The Product Details card is shown BELOW your reply (text first, then the card). " +
+        "Do NOT paste Price / Fragrance Type / Family / Key Notes / Top-Middle-Base Notes / Rating into chat. " +
+        "NEVER say details are above. Reply in 1-2 short sentences only (e.g. details are shown below — want to add it to cart?)."
     });
   } catch (error) {
     console.error("[storefront-catalog-tools]", toolName, error);
