@@ -376,7 +376,8 @@ export function createToolService() {
             "Never dump the full catalog list in chat. " +
             matchInstruction +
             (pagination
-              ? " If the customer asks for more products/results/next page and pagination.has_next_page is true, call search_catalog again with the same query/filters and pagination.cursor from this result."
+              ? " If the customer asks for more products/results/next page and pagination.has_next_page is true, call search_catalog again with the same query/filters and pagination.cursor from THIS tool result. " +
+                "CRITICAL: copy pagination.cursor EXACTLY as the full string value — do not truncate, rewrite, re-encode, shorten, or change any character. A single wrong character causes Malformed cursor and zero products."
               : "")
     };
 
