@@ -40,6 +40,8 @@ const PRODUCT_DETAIL_FRAGMENT = `
   }
   metafields(identifiers: [
     {namespace: "custom", key: "fragrance_family_new"}
+    {namespace: "custom", key: "fragrance_family"}
+    {namespace: "custom", key: "scent_type_new"}
     {namespace: "custom", key: "scent_type"}
     {namespace: "custom", key: "key_notes"}
     {namespace: "custom", key: "top_notes"}
@@ -52,6 +54,22 @@ const PRODUCT_DETAIL_FRAGMENT = `
     key
     type
     value
+    reference {
+      ... on Metaobject {
+        handle
+        type
+        fields { key value }
+      }
+    }
+    references(first: 10) {
+      nodes {
+        ... on Metaobject {
+          handle
+          type
+          fields { key value }
+        }
+      }
+    }
   }
 `;
 
@@ -161,11 +179,48 @@ function metafieldMap(metafields = []) {
   for (const mf of metafields || []) {
     if (!mf?.key) continue;
     map[mf.key] = mf.value ?? null;
+    map[`${mf.key}__meta`] = mf;
   }
   return map;
 }
 
-function fragranceFamilyLabel(raw) {
+function metaobjectDisplayLabel(metaobject) {
+  if (!metaobject || typeof metaobject !== "object") return null;
+  const fields = Array.isArray(metaobject.fields) ? metaobject.fields : [];
+  const byKey = Object.fromEntries(
+    fields
+      .filter((f) => f?.key)
+      .map((f) => [String(f.key), String(f.value || "").trim()])
+  );
+  const preferred =
+    byKey.label ||
+    byKey.name ||
+    byKey.title ||
+    byKey.display_name ||
+    byKey.value ||
+    "";
+  if (preferred) return preferred;
+  const handle = String(metaobject.handle || "").trim();
+  if (handle) {
+    return handle
+      .replace(/[-_]+/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  return null;
+}
+
+function fragranceFamilyLabel(raw, metafield = null) {
+  // Prefer resolved Storefront metaobject reference(s)
+  if (metafield?.reference) {
+    const single = metaobjectDisplayLabel(metafield.reference);
+    if (single) return single;
+  }
+  const refs = metafield?.references?.nodes;
+  if (Array.isArray(refs) && refs.length) {
+    const labels = refs.map(metaobjectDisplayLabel).filter(Boolean);
+    if (labels.length) return labels.join(", ");
+  }
+
   const value = String(raw || "").trim();
   if (!value || value.includes("gid://shopify/Metaobject")) return null;
   try {
@@ -182,12 +237,83 @@ function fragranceFamilyLabel(raw) {
   return value.includes("gid://") ? null : value;
 }
 
+function parseMetaobjectGids(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.map((v) => String(v || "").trim()).filter((v) => v.includes("gid://"));
+    }
+  } catch {
+    // single gid
+  }
+  return value.includes("gid://") ? [value] : [];
+}
+
+function handleToLabel(handleLike) {
+  const raw = String(handleLike || "").trim();
+  if (!raw) return null;
+  const handle = raw.includes(".") ? raw.split(".").pop() : raw;
+  if (!handle || handle.includes("gid://")) return null;
+  return handle
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+}
+
+// Seed map from known Perfumania fragrance_family_new metaobjects (Admin can't read
+// metaobjects without read_metaobjects scope — learn more at runtime when possible).
+const FRAGRANCE_FAMILY_GID_LABELS = {
+  "gid://shopify/Metaobject/123821228165": "Fresh",
+  "gid://shopify/Metaobject/123821326469": "Warm & Spicy (Oriental)",
+  "gid://shopify/Metaobject/123821293701": "Woody & Earthy",
+  "gid://shopify/Metaobject/123821260933": "Floral"
+};
+
+const SCENT_TYPE_GID_LABELS = {
+  "gid://shopify/Metaobject/123821916293": "Fresh Aquatics.",
+  "gid://shopify/Metaobject/123822473349": "Woody & Warm Spices.",
+  "gid://shopify/Metaobject/123822080133": "Fruity Florals.",
+  "gid://shopify/Metaobject/123822211205": "Powdery Florals & Aldehydes.",
+  "gid://shopify/Metaobject/123821588613": "Amber & Soft Oriental.",
+  "gid://shopify/Metaobject/123822014597": "Fresh Florals.",
+  "gid://shopify/Metaobject/123821817989": "Cool Spices."
+};
+
+function labelsFromGids(gids, map) {
+  const labels = [];
+  for (const gid of gids || []) {
+    if (map[gid]) labels.push(map[gid]);
+  }
+  return labels.length ? [...new Set(labels)].join(", ") : null;
+}
+
 export function extractFragranceMetafields(product) {
   const mf = metafieldMap(product?.metafields);
   const review = parseReviewSummary(mf.product_review_summary);
+  const familyGids = parseMetaobjectGids(mf.fragrance_family_new);
+  const scentGids = parseMetaobjectGids(mf.scent_type_new);
+
+  // Prefer fragrance_family_new (metaobject) when Storefront can resolve it;
+  // fall back to plain custom.fragrance_family text, then known GID labels.
+  const fromNew = fragranceFamilyLabel(
+    mf.fragrance_family_new,
+    mf.fragrance_family_new__meta
+  );
+  const fromPlain = String(mf.fragrance_family || "").trim() || null;
+  const fromFamilyGids = labelsFromGids(familyGids, FRAGRANCE_FAMILY_GID_LABELS);
+
+  const scentFromRef = fragranceFamilyLabel(
+    mf.scent_type_new,
+    mf.scent_type_new__meta
+  );
+  const scentPlain = String(mf.scent_type || "").trim() || null;
+  const scentFromGids = labelsFromGids(scentGids, SCENT_TYPE_GID_LABELS);
+
   return {
-    fragrance_family: fragranceFamilyLabel(mf.fragrance_family_new),
-    scent_type: String(mf.scent_type || "").trim() || null,
+    fragrance_family: fromNew || fromPlain || fromFamilyGids,
+    scent_type: scentFromRef || scentPlain || scentFromGids,
     key_notes: String(mf.key_notes || "").trim() || null,
     top_notes: String(mf.top_notes || "").trim() || null,
     middle_notes: String(mf.middle_notes || "").trim() || null,
@@ -195,8 +321,115 @@ export function extractFragranceMetafields(product) {
     product_type_metafield: String(mf.product_type || "").trim() || null,
     product_review_summary: review,
     average_rating: review?.average_rating ?? null,
-    total_reviews: review?.total_reviews ?? null
+    total_reviews: review?.total_reviews ?? null,
+    _family_gids: familyGids,
+    _scent_gids: scentGids
   };
+}
+
+async function adminGraphql(query, variables = {}) {
+  const { shop } = getStorefrontConfig();
+  const token = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "";
+  if (!shop || !token) return null;
+
+  const endpoint = `https://${shop}/admin/api/${STOREFRONT_API_VERSION}/graphql.json`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": token
+    },
+    body: JSON.stringify({ query, variables })
+  });
+  const json = await response.json().catch(() => ({}));
+  if (Array.isArray(json.errors) && json.errors.length) {
+    console.warn(
+      "[storefront-api] admin",
+      json.errors.map((e) => e.message).join("; ")
+    );
+  }
+  return json.data || null;
+}
+
+/**
+ * Fill missing fragrance_family / scent_type from Admin plain metafields,
+ * global scent handle, and learned GID labels (metaobjects aren't readable
+ * without read_metaobjects scope).
+ */
+async function enrichFragranceLabelsFromAdmin(products = []) {
+  const need = (products || []).filter(
+    (p) => p?.id && (!p.fragrance_family || !p.scent_type)
+  );
+  if (!need.length) return products;
+
+  const ids = need.map((p) => p.id);
+  const data = await adminGraphql(
+    `query($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Product {
+          id
+          fragrance_family: metafield(namespace: "custom", key: "fragrance_family") { value }
+          fragrance_family_new: metafield(namespace: "custom", key: "fragrance_family_new") { value }
+          scent_type: metafield(namespace: "custom", key: "scent_type") { value }
+          scent_type_new: metafield(namespace: "custom", key: "scent_type_new") { value }
+          scent_type_handle: metafield(namespace: "global", key: "-customscent_type_new-[listmetaobject_reference]") { value }
+        }
+      }
+    }`,
+    { ids }
+  );
+
+  const byId = new Map();
+  for (const node of data?.nodes || []) {
+    if (!node?.id) continue;
+    const famPlain = String(node.fragrance_family?.value || "").trim() || null;
+    const scentPlain = String(node.scent_type?.value || "").trim() || null;
+    const familyGids = parseMetaobjectGids(node.fragrance_family_new?.value);
+    const scentGids = parseMetaobjectGids(node.scent_type_new?.value);
+    const scentHandle = handleToLabel(node.scent_type_handle?.value);
+
+    // Learn GID labels when both plain + new exist
+    if (famPlain && familyGids.length) {
+      for (const gid of familyGids) FRAGRANCE_FAMILY_GID_LABELS[gid] = famPlain;
+    }
+    if (scentPlain && scentGids.length) {
+      for (const gid of scentGids) SCENT_TYPE_GID_LABELS[gid] = scentPlain;
+    }
+
+    byId.set(node.id, {
+      fragrance_family:
+        famPlain || labelsFromGids(familyGids, FRAGRANCE_FAMILY_GID_LABELS),
+      scent_type:
+        scentPlain ||
+        labelsFromGids(scentGids, SCENT_TYPE_GID_LABELS) ||
+        scentHandle
+    });
+  }
+
+  return products.map((product) => {
+    const extra = byId.get(product.id);
+    if (!extra) return product;
+    const next = { ...product };
+    if (!next.fragrance_family && extra.fragrance_family) {
+      next.fragrance_family = extra.fragrance_family;
+    }
+    if (!next.scent_type && extra.scent_type) {
+      next.scent_type = extra.scent_type;
+    }
+    // Re-resolve from learned maps using GIDs captured at map time
+    if (!next.fragrance_family && product._family_gids?.length) {
+      next.fragrance_family = labelsFromGids(
+        product._family_gids,
+        FRAGRANCE_FAMILY_GID_LABELS
+      );
+    }
+    if (!next.scent_type && product._scent_gids?.length) {
+      next.scent_type = labelsFromGids(product._scent_gids, SCENT_TYPE_GID_LABELS);
+    }
+    delete next._family_gids;
+    delete next._scent_gids;
+    return next;
+  });
 }
 
 export function mapStorefrontProductToCatalog(product) {
@@ -349,10 +582,18 @@ export async function fetchStorefrontProductsByIds(productIds = []) {
     { ids }
   );
 
-  return (data?.nodes || [])
+  const mapped = (data?.nodes || [])
     .filter((n) => n?.id)
     .map(mapStorefrontProductToCatalog)
     .filter(Boolean);
+
+  const enriched = await enrichFragranceLabelsFromAdmin(mapped);
+  return enriched.map((product) => {
+    const cleaned = { ...product };
+    delete cleaned._family_gids;
+    delete cleaned._scent_gids;
+    return cleaned;
+  });
 }
 
 export async function fetchStorefrontProductDetails(ids = []) {

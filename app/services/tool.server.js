@@ -652,10 +652,10 @@ export function createToolService() {
       selectedVariant?.image_url ||
       resolveProductImageUrl(product);
 
-    const shortDescription = stripHtmlToPlain(descriptionHtml)
+    const fullDescription = stripHtmlToPlain(descriptionHtml)
       .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 180);
+      .trim();
+    const shortDescription = fullDescription.slice(0, 180);
     const sizeLabels = [
       ...new Set(
         [
@@ -687,6 +687,7 @@ export function createToolService() {
       description: descriptionHtml,
       descriptionHtml,
       shortDescription: shortDescription || null,
+      fullDescription: fullDescription || null,
       sizes: sizeLabels,
       url: productUrl,
       availableForSale: availability.availableForSale,
@@ -717,10 +718,14 @@ export function createToolService() {
       base_notes: product.base_notes || null,
       product_type_metafield: product.product_type_metafield || null,
       product_review_summary: product.product_review_summary || null,
-      average_rating:
-        typeof product.average_rating === "number" ? product.average_rating : null,
-      total_reviews:
-        typeof product.total_reviews === "number" ? product.total_reviews : null,
+      average_rating: (() => {
+        const n = Number(product.average_rating);
+        return Number.isFinite(n) && n > 0 ? n : null;
+      })(),
+      total_reviews: (() => {
+        const n = Number(product.total_reviews);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+      })(),
       showDetailProfile: product.showDetailProfile === true,
       ...(shouldBuildCompareAttrs(product)
         ? buildCompareAttributes({

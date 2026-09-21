@@ -4030,30 +4030,29 @@
         wrap.classList.add('shop-ai-fragrance-profile');
 
         const chips = [];
-        const typeLabel =
-          product.product_type_metafield || product.productType || product.product_type || '';
+        // Match PDP: Fragrance Family / Scent Type / Key Notes (not Product Type)
         if (product.fragrance_family) chips.push(['Fragrance Family', product.fragrance_family]);
         if (product.scent_type) chips.push(['Scent Type', product.scent_type]);
         if (product.key_notes) chips.push(['Key Notes', product.key_notes]);
-        if (typeLabel) chips.push(['Product Type', typeLabel]);
 
         if (chips.length) {
-          const chipRow = document.createElement('div');
-          chipRow.classList.add('shop-ai-fragrance-chips');
-          chips.forEach(([label, value]) => {
-            const box = document.createElement('div');
-            box.classList.add('shop-ai-fragrance-chip');
-            const lab = document.createElement('div');
-            lab.classList.add('shop-ai-fragrance-chip-label');
-            lab.textContent = label;
-            const val = document.createElement('div');
-            val.classList.add('shop-ai-fragrance-chip-value');
-            val.textContent = value;
-            box.appendChild(lab);
-            box.appendChild(val);
-            chipRow.appendChild(box);
+          const chipBox = document.createElement('div');
+          chipBox.classList.add('shop-ai-fragrance-chips');
+          chips.forEach(([label, value], index) => {
+            const row = document.createElement('div');
+            row.classList.add('shop-ai-fragrance-chip-row');
+            const lab = document.createElement('strong');
+            lab.textContent = `${label}:`;
+            row.appendChild(lab);
+            row.appendChild(document.createTextNode(` ${value}`));
+            chipBox.appendChild(row);
+            if (index < chips.length - 1) {
+              const divider = document.createElement('div');
+              divider.classList.add('shop-ai-fragrance-chip-divider');
+              chipBox.appendChild(divider);
+            }
           });
-          wrap.appendChild(chipRow);
+          wrap.appendChild(chipBox);
         }
 
         const noteRows = [
@@ -4065,10 +4064,6 @@
         if (noteRows.length) {
           const notes = document.createElement('div');
           notes.classList.add('shop-ai-fragrance-notes');
-          const notesTitle = document.createElement('div');
-          notesTitle.classList.add('shop-ai-fragrance-notes-title');
-          notesTitle.textContent = 'Fragrance Notes';
-          notes.appendChild(notesTitle);
           noteRows.forEach(([tier, label, value]) => {
             const row = document.createElement('div');
             row.classList.add('shop-ai-fragrance-note', `shop-ai-fragrance-note--${tier}`);
@@ -4088,17 +4083,53 @@
           wrap.appendChild(notes);
         }
 
-        const rating =
-          typeof product.average_rating === 'number' ? product.average_rating : null;
-        const reviews =
-          typeof product.total_reviews === 'number' ? product.total_reviews : null;
-        const starsBreakdown = product.product_review_summary?.stars || null;
+        const parseRatingFields = (product) => {
+          let rating = Number(product?.average_rating);
+          let reviews = Number(product?.total_reviews);
+          if (!Number.isFinite(rating) || rating <= 0) rating = null;
+          if (!Number.isFinite(reviews) || reviews < 0) reviews = null;
+
+          const summary = product?.product_review_summary;
+          const raw =
+            typeof summary === 'string'
+              ? summary
+              : summary && typeof summary.raw === 'string'
+                ? summary.raw
+                : '';
+          if (raw && (rating == null || reviews == null)) {
+            const avgMatch = raw.match(/averageRating=([0-9.]+)/i);
+            const totalMatch = raw.match(/totalReviews=([0-9]+)/i);
+            if (rating == null && avgMatch) {
+              const n = Number(avgMatch[1]);
+              if (Number.isFinite(n) && n > 0) rating = n;
+            }
+            if (reviews == null && totalMatch) {
+              const n = Number(totalMatch[1]);
+              if (Number.isFinite(n) && n >= 0) reviews = n;
+            }
+          }
+          if (
+            summary &&
+            typeof summary === 'object' &&
+            (rating == null || reviews == null)
+          ) {
+            if (rating == null) {
+              const n = Number(summary.average_rating);
+              if (Number.isFinite(n) && n > 0) rating = n;
+            }
+            if (reviews == null) {
+              const n = Number(summary.total_reviews);
+              if (Number.isFinite(n) && n >= 0) reviews = n;
+            }
+          }
+          return { rating, reviews };
+        };
+
+        const { rating, reviews } = parseRatingFields(product);
 
         if ((rating != null && rating > 0) || (reviews != null && reviews > 0)) {
           const reviewBlock = document.createElement('div');
           reviewBlock.classList.add('shop-ai-product-reviews');
-          const summary = document.createElement('div');
-          summary.classList.add('shop-ai-product-reviews-summary');
           const overall = document.createElement('div');
           overall.classList.add('shop-ai-product-reviews-overall');
           const overallLabel = document.createElement('div');
@@ -4117,40 +4148,7 @@
             count.textContent = `${reviews} Review${reviews === 1 ? '' : 's'}`;
             overall.appendChild(count);
           }
-          summary.appendChild(overall);
-
-          if (starsBreakdown && typeof starsBreakdown === 'object') {
-            const bars = document.createElement('div');
-            bars.classList.add('shop-ai-product-reviews-bars');
-            const total = Math.max(
-              1,
-              Object.values(starsBreakdown).reduce((sum, n) => sum + (Number(n) || 0), 0)
-            );
-            for (let star = 5; star >= 1; star -= 1) {
-              const count = Number(starsBreakdown[String(star)]) || 0;
-              const row = document.createElement('div');
-              row.classList.add('shop-ai-product-reviews-bar-row');
-              const lab = document.createElement('span');
-              lab.classList.add('shop-ai-product-reviews-bar-label');
-              lab.textContent = String(star);
-              const track = document.createElement('div');
-              track.classList.add('shop-ai-product-reviews-bar-track');
-              const fill = document.createElement('div');
-              fill.classList.add('shop-ai-product-reviews-bar-fill');
-              fill.style.width = `${Math.round((count / total) * 100)}%`;
-              track.appendChild(fill);
-              const num = document.createElement('span');
-              num.classList.add('shop-ai-product-reviews-bar-count');
-              num.textContent = String(count);
-              row.appendChild(lab);
-              row.appendChild(track);
-              row.appendChild(num);
-              bars.appendChild(row);
-            }
-            summary.appendChild(bars);
-          }
-
-          reviewBlock.appendChild(summary);
+          reviewBlock.appendChild(overall);
           wrap.appendChild(reviewBlock);
         }
 
@@ -4241,11 +4239,95 @@
           info.appendChild(vendorEl);
         }
 
-        if (product.shortDescription) {
-          const desc = document.createElement('p');
-          desc.classList.add('shop-ai-product-description');
-          desc.textContent = product.shortDescription;
-          info.appendChild(desc);
+        if (
+          ShopAIChat.Product.shouldShowDetailProfile(product) &&
+          (product.shortDescription || product.fullDescription || product.descriptionHtml || product.description)
+        ) {
+          const stripHtml = (html) =>
+            String(html || '')
+              .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+              .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+              .replace(/<[^>]+>/g, ' ')
+              .replace(/&nbsp;/gi, ' ')
+              .replace(/&amp;/gi, '&')
+              .replace(/&lt;/gi, '<')
+              .replace(/&gt;/gi, '>')
+              .replace(/&quot;/gi, '"')
+              .replace(/&#39;/gi, "'")
+              .replace(/\s+/g, ' ')
+              .trim();
+
+          const rawHtml =
+            typeof product.descriptionHtml === 'string'
+              ? product.descriptionHtml
+              : product.description?.html || product.description || '';
+          const fullText = String(
+            product.fullDescription ||
+              stripHtml(rawHtml) ||
+              product.shortDescription ||
+              ''
+          ).trim();
+
+          if (fullText) {
+            const previewLimit = 140;
+            const needsToggle = fullText.length > previewLimit;
+            const previewText = needsToggle
+              ? `${fullText.slice(0, previewLimit).replace(/\s+\S*$/, '').trim()}…`
+              : fullText;
+
+            const descWrap = document.createElement('div');
+            descWrap.classList.add('shop-ai-product-description-wrap');
+
+            const desc = document.createElement('p');
+            desc.classList.add('shop-ai-product-description');
+
+            const descText = document.createElement('span');
+            descText.classList.add('shop-ai-product-description-text');
+            descText.textContent = previewText;
+            desc.appendChild(descText);
+
+            if (needsToggle) {
+              desc.classList.add('is-collapsed');
+              // Use <span> not <button> — theme CSS often forces buttons to block/full-width
+              const toggle = document.createElement('span');
+              toggle.classList.add('shop-ai-product-description-toggle');
+              toggle.setAttribute('role', 'button');
+              toggle.setAttribute('tabindex', '0');
+              toggle.textContent = 'Read more';
+              toggle.setAttribute('aria-expanded', 'false');
+
+              const setExpanded = (expanded) => {
+                descText.textContent = expanded ? `${fullText} ` : previewText;
+                desc.classList.toggle('is-expanded', expanded);
+                desc.classList.toggle('is-collapsed', !expanded);
+                toggle.textContent = expanded ? 'Read less' : 'Read more';
+                toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+              };
+
+              const onToggle = (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (typeof event.stopImmediatePropagation === 'function') {
+                  event.stopImmediatePropagation();
+                }
+                const expanded = toggle.getAttribute('aria-expanded') !== 'true';
+                setExpanded(expanded);
+              };
+
+              toggle.addEventListener('click', onToggle);
+              toggle.addEventListener('keydown', function(event) {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  onToggle(event);
+                }
+              });
+              // Keep on same line as description end
+              desc.appendChild(document.createTextNode('\u00A0'));
+              desc.appendChild(toggle);
+            }
+
+            descWrap.appendChild(desc);
+            info.appendChild(descWrap);
+          }
         }
 
         const fragranceProfile = ShopAIChat.Product.createFragranceProfile(product);
