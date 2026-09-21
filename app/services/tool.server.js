@@ -157,8 +157,15 @@ export function createToolService() {
     let historyContent = toolUseResponse.content;
 
     if (AppConfig.tools.productSearchNames.includes(toolName)) {
-      const ranked = processProductSearchResult(toolUseResponse, toolArgs);
+      let ranked = processProductSearchResult(toolUseResponse, toolArgs);
       if (ranked.length > 0) {
+        // Notes/reviews UI only for get_product_details — not browse listings
+        if (toolName === "get_product_details") {
+          ranked = ranked.map((product) => ({
+            ...product,
+            showDetailProfile: true
+          }));
+        }
         productsToDisplay.push(...ranked);
       }
       // Always rewrite history (including empty after price-range drop) so the LLM
@@ -342,10 +349,11 @@ export function createToolService() {
         : "No products to show: say you could not find a match and ask them to rephrase.";
 
     const detailInstruction =
-      toolName === "lookup_catalog"
-        ? "lookup_catalog / product details: cards already show image, price, sizes, stock, and a short description. " +
-          "Reply in 1-2 short sentences (e.g. details are shown above — want to add one to cart?). " +
-          "Do NOT paste titles, prices, full descriptions, 'View Product', 'Image:', or markdown images."
+      toolName === "get_product_details"
+        ? "get_product_details: the Product Details card already shows image, price, sizes, " +
+          "fragrance chips (scent type / key notes / product type), top/middle/base notes, and review rating. " +
+          "FORBIDDEN in chat text: dumping Type/Sizes/Notes/Rating/Price lists. " +
+          "Reply in 1-2 short sentences only (e.g. details are shown above — want to add one to cart?)."
         : matchInstruction;
 
     const enriched = {
@@ -354,7 +362,7 @@ export function createToolService() {
       products,
       ...listingMeta,
       ...(pagination ? { pagination } : {}),
-      query_match: toolName === "lookup_catalog" ? true : matchInfo.query_match,
+      query_match: toolName === "get_product_details" ? true : matchInfo.query_match,
       match_count: matchInfo.match_count,
       result_count: matchInfo.result_count,
       ui_instruction:
@@ -701,6 +709,19 @@ export function createToolService() {
       yGroup: product.yGroup || "",
       features: Array.isArray(product.features) ? product.features : undefined,
       tags: Array.isArray(product.tags) ? product.tags : product.tags,
+      fragrance_family: product.fragrance_family || null,
+      scent_type: product.scent_type || null,
+      key_notes: product.key_notes || null,
+      top_notes: product.top_notes || null,
+      middle_notes: product.middle_notes || null,
+      base_notes: product.base_notes || null,
+      product_type_metafield: product.product_type_metafield || null,
+      product_review_summary: product.product_review_summary || null,
+      average_rating:
+        typeof product.average_rating === "number" ? product.average_rating : null,
+      total_reviews:
+        typeof product.total_reviews === "number" ? product.total_reviews : null,
+      showDetailProfile: product.showDetailProfile === true,
       ...(shouldBuildCompareAttrs(product)
         ? buildCompareAttributes({
             tags: product.tags,

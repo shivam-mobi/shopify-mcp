@@ -115,7 +115,7 @@ export const AppConfig = {
     productSearchNames: [
       "search_catalog",
       "search_shop_catalog",
-      "lookup_catalog"
+      "get_product_details"
     ],
     /** Show "Calling tool: …" in the storefront chat UI (set CHAT_SHOW_TOOL_CALLS=true in dev). */
     showToolCallsInChat: process.env.CHAT_SHOW_TOOL_CALLS === "true"

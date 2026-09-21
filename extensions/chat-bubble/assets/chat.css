@@ -1148,6 +1148,248 @@
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
 }
 
+/* Detail cards (get_product_details only) */
+.shop-ai-product-section--detail .shop-ai-product-grid {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+
+.shop-ai-product-card--detail {
+  min-width: min(100%, 280px);
+  max-width: 320px;
+}
+
+.shop-ai-product-section--detail .shop-ai-product-card--detail {
+  min-width: min(100%, 300px);
+  max-width: 100%;
+  width: 100%;
+}
+
+.shop-ai-product-section--detail .shop-ai-product-scroll {
+  display: none;
+}
+
+.shop-ai-fragrance-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 10px 0 4px;
+  width: 100%;
+}
+
+.shop-ai-fragrance-chips {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.shop-ai-fragrance-chip {
+  border: 1px solid #e5e5e5;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fafafa;
+}
+
+.shop-ai-fragrance-chip-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #6b7280;
+  margin-bottom: 3px;
+}
+
+.shop-ai-fragrance-chip-value {
+  font-size: 13px;
+  line-height: 1.4;
+  color: #111;
+  font-weight: 500;
+}
+
+.shop-ai-fragrance-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fffaf6 0%, #fff 100%);
+  border: 1px solid #f0e6dc;
+}
+
+.shop-ai-fragrance-notes-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8a6a4a;
+  margin-bottom: 2px;
+}
+
+.shop-ai-fragrance-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.shop-ai-fragrance-note-text {
+  flex: 1;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.shop-ai-fragrance-note-text strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 3px;
+  color: #111;
+}
+
+.shop-ai-fragrance-note-text p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #555;
+}
+
+.shop-ai-fragrance-pyramid {
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  margin-top: 0;
+  line-height: 0;
+}
+
+.shop-ai-fragrance-pyramid svg {
+  display: block;
+  width: 42px;
+  height: 42px;
+  overflow: visible;
+}
+
+/* Soft warm inactive fill (PDP beige) */
+.shop-ai-fragrance-pyramid .pyr-band {
+  fill: #edd5c0;
+}
+
+/* Soft PDP palette: dusty rose / mustard / burnt orange */
+.shop-ai-fragrance-pyramid.is-top .pyr-band-top { fill: #d48990; }
+.shop-ai-fragrance-pyramid.is-middle .pyr-band-mid { fill: #d4a84b; }
+.shop-ai-fragrance-pyramid.is-base .pyr-band-base { fill: #e07830; }
+
+.shop-ai-product-reviews {
+  border-top: 1px solid #ececec;
+  padding-top: 14px;
+  margin-top: 2px;
+}
+
+.shop-ai-product-reviews-summary {
+  display: grid;
+  grid-template-columns: minmax(96px, 112px) 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.shop-ai-product-reviews-overall {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shop-ai-product-reviews-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #111;
+  line-height: 1.2;
+}
+
+.shop-ai-product-reviews-score {
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: #111;
+  margin: 2px 0 0;
+}
+
+.shop-ai-product-stars {
+  display: flex;
+  gap: 2px;
+  margin: 2px 0 0;
+}
+
+.shop-ai-product-star {
+  display: inline-flex;
+  line-height: 0;
+}
+
+.shop-ai-product-star svg {
+  display: block;
+  fill: #d8d8d8;
+}
+
+.shop-ai-product-star.is-full svg,
+.shop-ai-product-star.is-half svg {
+  fill: #111;
+}
+
+.shop-ai-product-reviews-count {
+  font-size: 13px;
+  color: var(--shop-ai-brand, #e60060);
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.shop-ai-product-reviews-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 2px;
+}
+
+.shop-ai-product-reviews-bar-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 20px;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: #333;
+}
+
+.shop-ai-product-reviews-bar-label {
+  font-weight: 600;
+  text-align: right;
+  color: #444;
+}
+
+.shop-ai-product-reviews-bar-count {
+  text-align: right;
+  color: #555;
+  font-variant-numeric: tabular-nums;
+}
+
+.shop-ai-product-reviews-bar-track {
+  height: 10px;
+  background: #efefef;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.shop-ai-product-reviews-bar-fill {
+  height: 100%;
+  background: #1a1a1a;
+  border-radius: 3px;
+  min-width: 0;
+  transition: width 0.25s ease;
+}
+
+@media (max-width: 360px) {
+  .shop-ai-product-reviews-summary {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+}
+
 .shop-ai-product-image {
   height: 140px;
   width: 100%;

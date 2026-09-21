@@ -425,8 +425,25 @@ export function buildLlmProductSummary(rankedProducts = []) {
       vendor: product.vendor || profile.brand || null,
       brand: profile.brand || product.vendor || null,
       gender: profile.gender,
-      fragrance_type: profile.fragranceType,
-      scent_notes: profile.scentNotes,
+      fragrance_type:
+        product.product_type_metafield ||
+        product.productType ||
+        profile.fragranceType,
+      fragrance_family: product.fragrance_family || null,
+      scent_type: product.scent_type || null,
+      key_notes: product.key_notes || null,
+      top_notes: product.top_notes || null,
+      middle_notes: product.middle_notes || null,
+      base_notes: product.base_notes || null,
+      scent_notes: product.key_notes
+        ? [product.key_notes, product.top_notes, product.middle_notes, product.base_notes]
+            .map((v) => String(v || "").trim())
+            .filter(Boolean)
+        : profile.scentNotes,
+      average_rating:
+        typeof product.average_rating === "number" ? product.average_rating : null,
+      total_reviews:
+        typeof product.total_reviews === "number" ? product.total_reviews : null,
       tags: profile.relevantTags.length ? profile.relevantTags : null,
       short_description: shortDescription
     };

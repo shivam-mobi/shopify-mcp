@@ -1520,13 +1520,20 @@
         // Create a wrapper for the product section
         const productSection = document.createElement('div');
         productSection.classList.add('shop-ai-product-section');
+        const isDetailView =
+          list.length > 0 && list.some((p) => p && p.showDetailProfile === true);
+        if (isDetailView) {
+          productSection.classList.add('shop-ai-product-section--detail');
+        }
         messagesContainer.appendChild(productSection);
         this.placeAssistantTextBeforeProducts();
 
         // Add a header for the product results
         const header = document.createElement('div');
         header.classList.add('shop-ai-product-header');
-        header.innerHTML = '<h4>Top Matching Products</h4>';
+        header.innerHTML = isDetailView
+          ? '<h4>Product Details</h4>'
+          : '<h4>Top Matching Products</h4>';
         productSection.appendChild(header);
 
         // Horizontal carousel with scroll arrows (so users see more products exist)
@@ -3948,9 +3955,214 @@
        * @param {Object} product - Product data
        * @returns {HTMLElement} Product card element
        */
+      hasFragranceProfile: function(product) {
+        if (!product || typeof product !== 'object') return false;
+        return Boolean(
+          product.fragrance_family ||
+            product.scent_type ||
+            product.key_notes ||
+            product.top_notes ||
+            product.middle_notes ||
+            product.base_notes ||
+            product.product_type_metafield ||
+            (typeof product.average_rating === 'number' && product.average_rating > 0) ||
+            (typeof product.total_reviews === 'number' && product.total_reviews > 0)
+        );
+      },
+
+      shouldShowDetailProfile: function(product) {
+        return Boolean(
+          product &&
+            product.showDetailProfile === true &&
+            this.hasFragranceProfile(product)
+        );
+      },
+
+      buildPyramidIcon: function(tier) {
+        const wrap = document.createElement('div');
+        wrap.classList.add('shop-ai-fragrance-pyramid', `is-${tier}`);
+        wrap.setAttribute('aria-hidden', 'true');
+        const uid = Math.random().toString(36).slice(2, 9);
+        const clipId = `shop-ai-pyr-clip-${uid}`;
+        // Soft rounded triangle — same silhouette as Perfumania PDP icons
+        const roundedTri =
+          'M19.6,9.2 Q24,3.2 28.4,9.2 L41.8,38.2 Q44.5,44 38.8,44 L9.2,44 Q3.5,44 6.2,38.2 Z';
+        wrap.innerHTML = `
+          <svg viewBox="0 0 48 48" width="42" height="42" xmlns="http://www.w3.org/2000/svg" focusable="false">
+            <defs>
+              <clipPath id="${clipId}">
+                <path d="${roundedTri}" />
+              </clipPath>
+            </defs>
+            <g clip-path="url(#${clipId})">
+              <rect class="pyr-band pyr-band-top" x="0" y="0" width="48" height="16" />
+              <rect class="pyr-band pyr-band-mid" x="0" y="16" width="48" height="13" />
+              <rect class="pyr-band pyr-band-base" x="0" y="29" width="48" height="19" />
+            </g>
+          </svg>
+        `.trim();
+        return wrap;
+      },
+
+      buildStarRow: function(rating, maxStars) {
+        const row = document.createElement('div');
+        row.classList.add('shop-ai-product-stars');
+        row.setAttribute('aria-hidden', 'true');
+        const score = Math.max(0, Math.min(Number(rating) || 0, maxStars || 5));
+        for (let i = 1; i <= (maxStars || 5); i += 1) {
+          const star = document.createElement('span');
+          star.classList.add('shop-ai-product-star');
+          if (score >= i - 0.25) star.classList.add('is-full');
+          else if (score >= i - 0.75) star.classList.add('is-half');
+          star.innerHTML =
+            '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">' +
+            '<path d="M12 2.6l2.9 6.1 6.7.9-4.9 4.6 1.2 6.6L12 17.8 6.1 20.8l1.2-6.6L2.4 9.6l6.7-.9L12 2.6z"/>' +
+            '</svg>';
+          row.appendChild(star);
+        }
+        return row;
+      },
+
+      createFragranceProfile: function(product) {
+        if (!this.shouldShowDetailProfile(product)) return null;
+
+        const wrap = document.createElement('div');
+        wrap.classList.add('shop-ai-fragrance-profile');
+
+        const chips = [];
+        const typeLabel =
+          product.product_type_metafield || product.productType || product.product_type || '';
+        if (product.fragrance_family) chips.push(['Fragrance Family', product.fragrance_family]);
+        if (product.scent_type) chips.push(['Scent Type', product.scent_type]);
+        if (product.key_notes) chips.push(['Key Notes', product.key_notes]);
+        if (typeLabel) chips.push(['Product Type', typeLabel]);
+
+        if (chips.length) {
+          const chipRow = document.createElement('div');
+          chipRow.classList.add('shop-ai-fragrance-chips');
+          chips.forEach(([label, value]) => {
+            const box = document.createElement('div');
+            box.classList.add('shop-ai-fragrance-chip');
+            const lab = document.createElement('div');
+            lab.classList.add('shop-ai-fragrance-chip-label');
+            lab.textContent = label;
+            const val = document.createElement('div');
+            val.classList.add('shop-ai-fragrance-chip-value');
+            val.textContent = value;
+            box.appendChild(lab);
+            box.appendChild(val);
+            chipRow.appendChild(box);
+          });
+          wrap.appendChild(chipRow);
+        }
+
+        const noteRows = [
+          ['top', 'Top Notes', product.top_notes],
+          ['middle', 'Middle Notes', product.middle_notes],
+          ['base', 'Base Notes', product.base_notes]
+        ].filter(([, , value]) => Boolean(String(value || '').trim()));
+
+        if (noteRows.length) {
+          const notes = document.createElement('div');
+          notes.classList.add('shop-ai-fragrance-notes');
+          const notesTitle = document.createElement('div');
+          notesTitle.classList.add('shop-ai-fragrance-notes-title');
+          notesTitle.textContent = 'Fragrance Notes';
+          notes.appendChild(notesTitle);
+          noteRows.forEach(([tier, label, value]) => {
+            const row = document.createElement('div');
+            row.classList.add('shop-ai-fragrance-note', `shop-ai-fragrance-note--${tier}`);
+            const icon = this.buildPyramidIcon(tier);
+            const text = document.createElement('div');
+            text.classList.add('shop-ai-fragrance-note-text');
+            const lab = document.createElement('strong');
+            lab.textContent = label;
+            const body = document.createElement('p');
+            body.textContent = value;
+            text.appendChild(lab);
+            text.appendChild(body);
+            row.appendChild(icon);
+            row.appendChild(text);
+            notes.appendChild(row);
+          });
+          wrap.appendChild(notes);
+        }
+
+        const rating =
+          typeof product.average_rating === 'number' ? product.average_rating : null;
+        const reviews =
+          typeof product.total_reviews === 'number' ? product.total_reviews : null;
+        const starsBreakdown = product.product_review_summary?.stars || null;
+
+        if ((rating != null && rating > 0) || (reviews != null && reviews > 0)) {
+          const reviewBlock = document.createElement('div');
+          reviewBlock.classList.add('shop-ai-product-reviews');
+          const summary = document.createElement('div');
+          summary.classList.add('shop-ai-product-reviews-summary');
+          const overall = document.createElement('div');
+          overall.classList.add('shop-ai-product-reviews-overall');
+          const overallLabel = document.createElement('div');
+          overallLabel.classList.add('shop-ai-product-reviews-label');
+          overallLabel.textContent = 'Overall Rating';
+          const score = document.createElement('div');
+          score.classList.add('shop-ai-product-reviews-score');
+          score.textContent =
+            rating != null ? (Number.isInteger(rating) ? String(rating) : rating.toFixed(1)) : '—';
+          overall.appendChild(overallLabel);
+          overall.appendChild(score);
+          overall.appendChild(this.buildStarRow(rating || 0, 5));
+          if (reviews != null) {
+            const count = document.createElement('div');
+            count.classList.add('shop-ai-product-reviews-count');
+            count.textContent = `${reviews} Review${reviews === 1 ? '' : 's'}`;
+            overall.appendChild(count);
+          }
+          summary.appendChild(overall);
+
+          if (starsBreakdown && typeof starsBreakdown === 'object') {
+            const bars = document.createElement('div');
+            bars.classList.add('shop-ai-product-reviews-bars');
+            const total = Math.max(
+              1,
+              Object.values(starsBreakdown).reduce((sum, n) => sum + (Number(n) || 0), 0)
+            );
+            for (let star = 5; star >= 1; star -= 1) {
+              const count = Number(starsBreakdown[String(star)]) || 0;
+              const row = document.createElement('div');
+              row.classList.add('shop-ai-product-reviews-bar-row');
+              const lab = document.createElement('span');
+              lab.classList.add('shop-ai-product-reviews-bar-label');
+              lab.textContent = String(star);
+              const track = document.createElement('div');
+              track.classList.add('shop-ai-product-reviews-bar-track');
+              const fill = document.createElement('div');
+              fill.classList.add('shop-ai-product-reviews-bar-fill');
+              fill.style.width = `${Math.round((count / total) * 100)}%`;
+              track.appendChild(fill);
+              const num = document.createElement('span');
+              num.classList.add('shop-ai-product-reviews-bar-count');
+              num.textContent = String(count);
+              row.appendChild(lab);
+              row.appendChild(track);
+              row.appendChild(num);
+              bars.appendChild(row);
+            }
+            summary.appendChild(bars);
+          }
+
+          reviewBlock.appendChild(summary);
+          wrap.appendChild(reviewBlock);
+        }
+
+        return wrap.children.length ? wrap : null;
+      },
+
       createCard: function(product) {
         const card = document.createElement('div');
         card.classList.add('shop-ai-product-card');
+        if (ShopAIChat.Product.shouldShowDetailProfile(product)) {
+          card.classList.add('shop-ai-product-card--detail');
+        }
 
         const variants = Array.isArray(product.variants) ? product.variants.filter(Boolean) : [];
         const preferredVariantId = String(
@@ -4034,6 +4246,11 @@
           desc.classList.add('shop-ai-product-description');
           desc.textContent = product.shortDescription;
           info.appendChild(desc);
+        }
+
+        const fragranceProfile = ShopAIChat.Product.createFragranceProfile(product);
+        if (fragranceProfile) {
+          info.appendChild(fragranceProfile);
         }
 
         // Add product price
