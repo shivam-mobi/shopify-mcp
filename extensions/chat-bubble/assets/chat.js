@@ -4472,10 +4472,23 @@
         stock.classList.add('shop-ai-product-stock');
         info.appendChild(stock);
 
+        const actions = document.createElement('div');
+        actions.classList.add('shop-ai-product-actions');
+
         const button = document.createElement('button');
         button.classList.add('shop-ai-add-to-cart');
         button.textContent = 'Add to Cart';
         button.dataset.productId = product.id;
+
+        const buyNowButton = document.createElement('button');
+        buyNowButton.type = 'button';
+        buyNowButton.classList.add('shop-ai-buy-now');
+        buyNowButton.textContent = 'Buy Now';
+        buyNowButton.style.display = 'none';
+
+        actions.appendChild(button);
+        actions.appendChild(buyNowButton);
+        info.appendChild(actions);
 
         const isVariantAvailable = (variant) => {
           if (!variant) {
@@ -4515,6 +4528,13 @@
             image.src = selectedVariant.image_url;
           }
 
+          const buyNowUrl =
+            selectedVariant?.buy_now_url ||
+            selectedVariant?.checkout_url ||
+            product.buy_now_url ||
+            product.checkout_url ||
+            '';
+
           stock.classList.remove('in-stock', 'out-of-stock');
           card.classList.remove('shop-ai-product-card--out-of-stock');
           if (available) {
@@ -4523,6 +4543,15 @@
             button.disabled = false;
             button.textContent = 'Add to Cart';
             button.style.display = '';
+            if (buyNowUrl) {
+              buyNowButton.disabled = false;
+              buyNowButton.style.display = '';
+              buyNowButton.dataset.checkoutUrl = buyNowUrl;
+            } else {
+              buyNowButton.disabled = true;
+              buyNowButton.style.display = 'none';
+              buyNowButton.dataset.checkoutUrl = '';
+            }
           } else {
             stock.classList.add('out-of-stock');
             stock.textContent = 'Out of stock';
@@ -4531,6 +4560,9 @@
             button.textContent = 'Out of Stock';
             // Keep button visible when variants exist so user can switch sizes
             button.style.display = variants.length > 1 ? '' : 'none';
+            buyNowButton.disabled = true;
+            buyNowButton.style.display = 'none';
+            buyNowButton.dataset.checkoutUrl = '';
           }
 
           if (variants.length > 1) {
@@ -4578,7 +4610,7 @@
             variantRow.appendChild(chip);
           });
 
-          info.appendChild(variantRow);
+          info.insertBefore(variantRow, stock);
         }
 
         button.addEventListener('click', function() {
@@ -4593,7 +4625,15 @@
             }
           }
         });
-        info.appendChild(button);
+
+        buyNowButton.addEventListener('click', function(event) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (buyNowButton.disabled) return;
+          const url = String(buyNowButton.dataset.checkoutUrl || '').trim();
+          if (!url) return;
+          window.open(url, '_blank', 'noopener,noreferrer');
+        });
 
         applySelectedVariant(selectedVariant);
 

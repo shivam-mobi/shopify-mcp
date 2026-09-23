@@ -1715,9 +1715,20 @@
   display: none !important;
 }
 
-.shop-ai-add-to-cart {
+.shop-ai-product-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 6px;
+  margin-top: auto;
   width: 100%;
-  padding: 8px 12px;
+}
+
+.shop-ai-add-to-cart {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  padding: 8px 10px;
   background: var(--shop-ai-brand);
   color: #fff;
   border: none;
@@ -1727,7 +1738,31 @@
   cursor: pointer;
   transition: background 0.15s;
   box-sizing: border-box;
-  margin-top: auto;
+}
+
+.shop-ai-buy-now {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  padding: 8px 10px;
+  background: #fff;
+  color: var(--shop-ai-brand);
+  border: 1px solid var(--shop-ai-brand);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  box-sizing: border-box;
+}
+
+.shop-ai-buy-now:hover {
+  background: var(--shop-ai-brand);
+  color: #fff;
+}
+
+.shop-ai-buy-now:disabled {
+  display: none;
 }
 
 .shop-ai-add-to-cart:hover {

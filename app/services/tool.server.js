@@ -5,6 +5,7 @@
 import { saveMessage } from "../db.server";
 import AppConfig from "./config.server";
 import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId, resolveProductDescriptionHtml } from "./product-compare.server.js";
+import { applyBuyNowUrlsToProducts } from "./shopify-prefilled-cart.server.js";
 
 /**
  * Fix LLM mistakes for search_catalog args:
@@ -166,6 +167,7 @@ export function createToolService() {
             showDetailProfile: true
           }));
         }
+        ranked = await applyBuyNowUrlsToProducts(ranked, conversationId);
         productsToDisplay.push(...ranked);
       }
       // Always rewrite history (including empty after price-range drop) so the LLM
@@ -494,6 +496,7 @@ export function createToolService() {
       id: normalizedVariantId,
       variantId: normalizedVariantId,
       variant_id: normalizedVariantId,
+      checkout_url: variant.checkout_url || null,
       title: optionLabel,
       label: optionLabel,
       price,
@@ -729,6 +732,11 @@ export function createToolService() {
         return Number.isFinite(n) && n >= 0 ? n : null;
       })(),
       showDetailProfile: product.showDetailProfile === true,
+      checkout_url:
+        selectedVariant?.checkout_url ||
+        product.checkout_url ||
+        variant?.checkout_url ||
+        null,
       ...(shouldBuildCompareAttrs(product)
         ? buildCompareAttributes({
             tags: product.tags,

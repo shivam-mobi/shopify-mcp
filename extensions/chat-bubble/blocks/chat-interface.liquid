@@ -1,4 +1,5 @@
-<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=product-detail-notes-27">
+{% assign chat_asset_version = 'buy-now-shipping-prefill-29' %}
+<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v={{ chat_asset_version }}">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
 {% assign brand_color = block.settings.chat_bubble_color | default: '#e60060' %}
@@ -13,7 +14,7 @@
 
 <div
   class="shop-ai-chat-container"
-  data-shop-ai-assets="cart-qty-fix-1"
+  data-shop-ai-assets="{{ chat_asset_version }}"
   style="--shop-ai-brand: {{ brand_color }}; --shop-ai-brand-dark: #c40052; --shop-ai-brand-soft: #fce6ef; --shop-ai-brand-border: #f5a0c0; --shop-ai-brand-text: #b8004d; --shop-ai-tip-shadow: 0 6px 16px rgba(230, 0, 96, 0.28);"
 >
   <!-- Floating launcher -->
@@ -165,7 +166,7 @@
   </div>
 </div>
 
-<script src="{{ 'chat.js' | asset_url }}?v=product-detail-notes-27" defer></script>
+<script src="{{ 'chat.js' | asset_url }}?v={{ chat_asset_version }}" defer></script>
 <script>
   window.shopChatConfig = {
     apiUrl: "https://struggle-throwing-recycled.ngrok-free.dev",
