@@ -978,7 +978,6 @@
         chatWindow.classList.toggle('expanded', shouldExpand);
         sessionStorage.setItem(CHAT_EXPANDED_KEY, shouldExpand ? '1' : '0');
         this.updateExpandButtonLabels(shouldExpand);
-
         this.scrollToBottom();
       },
 
@@ -1522,6 +1521,12 @@
         productSection.classList.add('shop-ai-product-section');
         const isDetailView =
           list.length > 0 && list.some((p) => p && p.showDetailProfile === true);
+        // Replace prior Featured picks / detail rows only — keep search listing carousels
+        if (isDetailView) {
+          messagesContainer
+            .querySelectorAll('.shop-ai-product-section--detail')
+            .forEach((section) => section.remove());
+        }
         if (isDetailView) {
           productSection.classList.add('shop-ai-product-section--detail');
         }
@@ -1532,7 +1537,7 @@
         const header = document.createElement('div');
         header.classList.add('shop-ai-product-header');
         header.innerHTML = isDetailView
-          ? '<h4>Product Details</h4>'
+          ? '<h4>Product details</h4>'
           : '<h4>Top Matching Products</h4>';
         productSection.appendChild(header);
 
@@ -1543,19 +1548,31 @@
         const productsContainer = document.createElement('div');
         productsContainer.classList.add('shop-ai-product-grid');
 
-        const { prevBtn, nextBtn, refresh } = ShopAIChat.Product.createScrollControls(
-          carousel,
-          productsContainer,
-          {
-            prevLabel: 'Scroll products left',
-            nextLabel: 'Scroll products right',
-            stepSelector: '.shop-ai-product-card'
-          }
-        );
+        let prevBtn = null;
+        let nextBtn = null;
+        let refresh = function() {};
 
-        carousel.appendChild(prevBtn);
+        if (!isDetailView) {
+          const controls = ShopAIChat.Product.createScrollControls(
+            carousel,
+            productsContainer,
+            {
+              prevLabel: 'Scroll products left',
+              nextLabel: 'Scroll products right',
+              stepSelector: '.shop-ai-product-card'
+            }
+          );
+          prevBtn = controls.prevBtn;
+          nextBtn = controls.nextBtn;
+          refresh = controls.refresh;
+          carousel.appendChild(prevBtn);
+        }
+
         carousel.appendChild(productsContainer);
-        carousel.appendChild(nextBtn);
+
+        if (!isDetailView && nextBtn) {
+          carousel.appendChild(nextBtn);
+        }
         productSection.appendChild(carousel);
 
         if (!list.length) {
@@ -1563,8 +1580,8 @@
           noProductsMessage.textContent = "No products found";
           noProductsMessage.style.padding = "10px";
           productsContainer.appendChild(noProductsMessage);
-          prevBtn.hidden = true;
-          nextBtn.hidden = true;
+          if (prevBtn) prevBtn.hidden = true;
+          if (nextBtn) nextBtn.hidden = true;
         } else {
           list.forEach(product => {
             const productCard = ShopAIChat.Product.createCard(product);
@@ -1577,13 +1594,20 @@
               .forEach((card) => ShopAIChat.Product.fitDetailDescription(card, 2));
           };
           requestAnimationFrame(() => {
+            productsContainer.scrollLeft = 0;
             fitDescriptions();
             refresh();
             setTimeout(fitDescriptions, 50);
-            setTimeout(refresh, 80);
+            setTimeout(() => {
+              productsContainer.scrollLeft = 0;
+              refresh();
+            }, 80);
             setTimeout(refresh, 300);
           });
-          setTimeout(refresh, 120);
+          setTimeout(() => {
+            productsContainer.scrollLeft = 0;
+            refresh();
+          }, 120);
         }
 
         this.scrollToBottom();
@@ -3933,11 +3957,18 @@
           }
         };
 
+        const getSlideCards = function() {
+          const selector = options.stepSelector || '.shop-ai-product-card';
+          return Array.from(scroller.querySelectorAll(selector));
+        };
+
         const refresh = function() {
-          const maxScroll = scroller.scrollWidth - scroller.clientWidth;
-          const canScroll = maxScroll > 4;
+          const cards = getSlideCards();
+          const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+          const canScroll = cards.length > 1 && maxScroll > 4;
           carousel.classList.toggle('has-overflow', canScroll);
           if (!canScroll) {
+            scroller.scrollLeft = 0;
             setEdgeVisibility(prevBtn, true);
             setEdgeVisibility(nextBtn, true);
             return;

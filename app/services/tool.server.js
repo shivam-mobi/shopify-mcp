@@ -168,7 +168,14 @@ export function createToolService() {
           }));
         }
         ranked = await applyBuyNowUrlsToProducts(ranked, conversationId);
-        productsToDisplay.push(...ranked);
+
+        if (toolName === "get_product_details") {
+          const forUi = pickDetailProductsForUi(ranked, toolArgs);
+          productsToDisplay.length = 0;
+          productsToDisplay.push(...forUi);
+        } else {
+          productsToDisplay.push(...ranked);
+        }
       }
       // Always rewrite history (including empty after price-range drop) so the LLM
       // does not treat the raw MCP payload as confirmed matches.
@@ -199,6 +206,63 @@ export function createToolService() {
       console.error("Error processing product search results:", error);
       return [];
     }
+  };
+
+  const normalizeVariantGid = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const variantMatch = raw.match(/ProductVariant\/(\d+)/i);
+    if (variantMatch) return variantMatch[1];
+    return raw;
+  };
+
+  const extractDisplayVariantIds = (toolArgs) => {
+    if (!toolArgs || typeof toolArgs !== "object") return [];
+    const fromArgs = [
+      ...(Array.isArray(toolArgs.display_ids) ? toolArgs.display_ids : []),
+      ...(Array.isArray(toolArgs.display_variant_ids)
+        ? toolArgs.display_variant_ids
+        : [])
+    ];
+    return fromArgs.map(normalizeVariantGid).filter(Boolean);
+  };
+
+  const productVariantKey = (product) =>
+    normalizeVariantGid(
+      product?.variant_id || product?.variantId || product?.id
+    );
+
+  const filterProductsByVariantIds = (products, variantIds) => {
+    if (!Array.isArray(products) || !products.length) return [];
+    if (!Array.isArray(variantIds) || !variantIds.length) return products;
+
+    const wanted = new Set(variantIds.map(normalizeVariantGid).filter(Boolean));
+    const matched = products.filter((product) => {
+      const id = productVariantKey(product);
+      return id && wanted.has(id);
+    });
+
+    if (!matched.length) return products;
+
+    const order = new Map(variantIds.map((id, index) => [normalizeVariantGid(id), index]));
+    return matched.sort((a, b) => {
+      const aKey = productVariantKey(a);
+      const bKey = productVariantKey(b);
+      return (order.get(aKey) ?? 0) - (order.get(bKey) ?? 0);
+    });
+  };
+
+  /** Cards shown after get_product_details — driven by display_ids or full fetch set. */
+  const pickDetailProductsForUi = (products, toolArgs) => {
+    if (!Array.isArray(products) || !products.length) return [];
+
+    const displayIds = extractDisplayVariantIds(toolArgs);
+    if (displayIds.length) {
+      return filterProductsByVariantIds(products, displayIds);
+    }
+
+    const maxUiCards = 10;
+    return products.slice(0, maxUiCards);
   };
 
   /** Read catalog.filters.price (or filters.price) from search tool args. Amounts are minor units. */
@@ -364,14 +428,18 @@ export function createToolService() {
       result_count: matchInfo.result_count,
       ui_instruction:
         isDetail
-          ? "get_product_details: Product Details card is shown BELOW your text (text first, then the card). products[] is INTERNAL ONLY — do not paste into chat. " +
-            "FORBIDDEN: Price, Fragrance Type/Family, Scent Type, Key Notes, Top/Middle/Base Notes, Average Rating, bullets, field lists. " +
-            "NEVER say details are above — always say below. " +
-            "REQUIRED: 1-2 short sentences only — e.g. \"I've pulled up the full details below — would you like to add it to your cart?\""
+          ? "get_product_details: Product Details cards are shown BELOW your text (listing cards above stay visible). products[] is INTERNAL ONLY — do not paste metafield lists into chat. " +
+            "ids[] = batch fetch every variant you need from the latest search. display_ids[] = OPTIONAL UI subset when your answer focuses on specific product(s); copy GIDs exactly from ids[]. " +
+            "When you name specific products in text, include each one's variant in display_ids (same count, max 5). Omit display_ids to show detail cards for all ids[] fetched. " +
+            "Use this tool for ANY follow-up about shown products (reviews, scent, notes, compare, concentration, which one, etc.) — not only reviews. " +
+            "Reply briefly in natural language; say full detail is in the cards below. NEVER say details are above."
           : "CRITICAL: Top Matching Products cards are shown BELOW your text in the UI (text first, then cards). products[] (price, tags, scent_notes, description) / cheapest_* are for YOUR use only (history). " +
             "DEFAULT browse reply: 1-2 short generic sentences only — FORBIDDEN to list product names, prices, bullets, or 'here are some options'. " +
             "Say cards are shown below (NEVER say above). " +
-            "FOLLOW-UP — cheapest / most expensive / compare shown cards: answer briefly from products[] or cheapest_* / most_expensive_* (name or #N + price once), then offer to add it. " +
+            "FOLLOW-UP on shown cards (reviews, scent/notes, compare, cheapest, which one, EDP/EDT, differences, gift fit, or any product question): call get_product_details ONCE with ids:[every variant_id needed from this products[]]; use display_ids only for the product(s) your answer highlights. " +
+            "CHEAPEST / MOST EXPENSIVE (mandatory when asked): Use ONLY cheapest_title, cheapest_price, cheapest_position (or most_expensive_*) from THIS tool result — or read cheapest_answer / most_expensive_answer verbatim. " +
+            "Compare every products[].price_amount_cents across ALL cards; the lowest wins even if another card shares the same brand name (e.g. first 'Sauvage' is NOT automatically cheapest). Do NOT guess from memory or an older search_catalog result. " +
+            "Price-only cheapest/most expensive questions: answer in one short sentence from cheapest_* / most_expensive_* without calling get_product_details. " +
             "FOLLOW-UP — best / recommend / suggest: NEVER invent a universal best. If the customer gave a preference (floral, fresh, woody, daytime, evening, gift, EDP, women/men, budget), " +
             "pick ONE product from products[] using gender, fragrance_type, scent_notes, tags, description, and price; say why in one short sentence; offer to add it. " +
             "If they ask for the best with NO preference, ask one short preference question — do not pick randomly. " +

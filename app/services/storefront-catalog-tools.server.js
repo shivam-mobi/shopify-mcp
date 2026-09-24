@@ -29,10 +29,15 @@ export function getStorefrontCatalogTools() {
       name: GET_PRODUCT_DETAILS,
       description:
         "Get rich product details from the Storefront API (replaces lookup_catalog). " +
-        "Use when the customer asks for product details, sizes, notes, scent type, fragrance info, or reviews. " +
-        "Pass product or variant GIDs from the latest search_catalog products[]. " +
-        "Returns variants + metafields for YOUR understanding. A Product Details card is shown in the UI — " +
-        "do NOT paste Price/Notes/Rating lists into chat; reply in 1-2 short sentences only. " +
+        "Use for ANY follow-up about products already shown in search cards: reviews, ratings, scent/notes, " +
+        "fragrance family, concentration/sizes, compare, which one, differences, longevity, gift fit, etc. " +
+        "Pass variant GIDs from the latest search_catalog products[]. " +
+        "BATCH (CRITICAL): ids[] accepts MANY GIDs in ONE call — fetch everything you need to answer once. " +
+        "NEVER emit multiple get_product_details tool calls with one id each. " +
+        "display_ids[] (optional): variant GIDs for Product Details CARDS in the UI when your reply focuses on " +
+        "specific product(s). ids[] = data; display_ids[] = cards. Copy GIDs exactly from ids[]. " +
+        "Omit display_ids to show detail cards for all products in ids[]. Listing cards stay visible above. " +
+        "Returns metafields for YOUR understanding — cards show notes/reviews to the customer; do not paste field lists in chat. " +
         "Never use lookup_catalog.",
       input_schema: {
         type: "object",
@@ -40,12 +45,25 @@ export function getStorefrontCatalogTools() {
           ids: {
             type: "array",
             description:
-              "Product and/or ProductVariant GIDs (gid://shopify/Product/... or ProductVariant/...)",
+              "One or more Product and/or ProductVariant GIDs in a SINGLE call " +
+              "(gid://shopify/Product/... or ProductVariant/...). " +
+              "For multiple products, pass ALL needed ids here — do not call this tool repeatedly with one id.",
             items: { type: "string" }
           },
           id: {
             type: "string",
-            description: "Single product or variant GID (alternative to ids[])"
+            description:
+              "Single product or variant GID only when exactly one product needs details. " +
+              "Prefer ids[] with all GIDs when more than one product is involved."
+          },
+          display_ids: {
+            type: "array",
+            description:
+              "Optional variant GIDs for Product Details CARDS in the chat UI (subset of ids[]). " +
+              "Use when your answer highlights specific shown products — copy each GID exactly from ids[]. " +
+              "When naming multiple products in text, list each variant here (max 5). " +
+              "Omit to show detail cards for every id in ids[] (up to UI limit).",
+            items: { type: "string" }
           }
         }
       }
@@ -91,9 +109,10 @@ export async function callStorefrontCatalogTool(toolName, toolArgs = {}) {
       query_match: products.length > 0,
       instruction:
         "INTERNAL ONLY: products[] has full detail for your understanding. " +
-        "The Product Details card is shown BELOW your reply (text first, then the card). " +
-        "Do NOT paste Price / Fragrance Type / Family / Key Notes / Top-Middle-Base Notes / Rating into chat. " +
-        "NEVER say details are above. Reply in 1-2 short sentences only (e.g. details are shown below — want to add it to cart?)."
+        "Product Details cards appear BELOW your reply; Top Matching Products listing stays above. " +
+        "Do NOT paste Price / notes / rating field lists into chat — answer briefly; point to cards below. " +
+        "ids[] batch-fetches; display_ids[] controls which detail cards show (optional). " +
+        "One get_product_details call per customer question — never one call per product."
     });
   } catch (error) {
     console.error("[storefront-catalog-tools]", toolName, error);

@@ -1243,26 +1243,23 @@
   border-color: #F0F0F0;
 }
 
-/* Detail cards (get_product_details only) */
+/* Detail cards — fixed-width horizontal row (same width when chat is expanded) */
 .shop-ai-product-section--detail .shop-ai-product-grid {
-  flex-wrap: wrap;
-  overflow-x: visible;
-  /* No room reserved for carousel arrows — use full width */
-  padding: 4px 2px 8px;
-  gap: 10px;
-}
-
-.shop-ai-product-card--detail {
-  min-width: min(100%, 280px);
-  max-width: 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 5px 8px;
+  gap: 12px;
+  scrollbar-width: thin;
 }
 
 .shop-ai-product-section--detail .shop-ai-product-card--detail {
-  min-width: 100%;
-  max-width: 100%;
-  width: 100%;
-  box-sizing: border-box;
+  flex: 0 0 300px;
+  width: 300px;
+  min-width: 300px;
+  max-width: 300px;
   overflow: visible;
+  height: auto;
 }
 
 .shop-ai-product-section--detail .shop-ai-product-info {
@@ -1271,10 +1268,6 @@
 
 .shop-ai-product-section--detail .shop-ai-product-image {
   height: 180px;
-}
-
-.shop-ai-product-section--detail .shop-ai-product-scroll {
-  display: none !important;
 }
 
 .shop-ai-fragrance-profile {
@@ -1871,13 +1864,16 @@
   }
 
   .shop-ai-product-section--detail .shop-ai-product-grid {
-    padding: 4px 2px 8px;
-    overflow-x: visible;
+    padding: 5px 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
   }
 
   .shop-ai-product-section--detail .shop-ai-product-card--detail {
-    min-width: 100%;
-    max-width: 100%;
+    flex: 0 0 min(300px, 88vw);
+    width: min(300px, 88vw);
+    min-width: min(300px, 88vw);
+    max-width: min(300px, 88vw);
   }
 
   .shop-ai-product-card {

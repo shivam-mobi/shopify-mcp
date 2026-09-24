@@ -549,6 +549,16 @@ function parsePriceAmountCents(product = {}) {
     return Number(product.priceAmountCents);
   }
 
+  // Match the price shown on the product card (not the cheapest variant on the PDP).
+  const priceText = String(product.price || "").replace(/,/g, "");
+  const match = priceText.match(/(\d+(?:\.\d+)?)/);
+  if (match) {
+    const major = Number(match[1]);
+    if (Number.isFinite(major)) {
+      return Math.round(major * 100);
+    }
+  }
+
   const fromVariants = Array.isArray(product.variants)
     ? product.variants
         .map((v) => Number(v?.priceAmountCents))
@@ -558,13 +568,7 @@ function parsePriceAmountCents(product = {}) {
     return Math.min(...fromVariants);
   }
 
-  const priceText = String(product.price || "").replace(/,/g, "");
-  const match = priceText.match(/(\d+(?:\.\d+)?)/);
-  if (!match) return null;
-  const major = Number(match[1]);
-  if (!Number.isFinite(major)) return null;
-  // Display prices are major units (e.g. 110.95) → cents
-  return Math.round(major * 100);
+  return null;
 }
 
 /**
@@ -604,7 +608,8 @@ export function buildProductListingMetadata(rankedProducts = []) {
           cheapest_position: cheapest.position,
           cheapest_variant_id: cheapest.variant_id,
           cheapest_title: cheapest.title,
-          cheapest_price: cheapest.price
+          cheapest_price: cheapest.price,
+          cheapest_answer: `${cheapest.title} at ${cheapest.price} (card #${cheapest.position})`
         }
       : {}),
     ...(mostExpensive
@@ -612,7 +617,8 @@ export function buildProductListingMetadata(rankedProducts = []) {
           most_expensive_position: mostExpensive.position,
           most_expensive_variant_id: mostExpensive.variant_id,
           most_expensive_title: mostExpensive.title,
-          most_expensive_price: mostExpensive.price
+          most_expensive_price: mostExpensive.price,
+          most_expensive_answer: `${mostExpensive.title} at ${mostExpensive.price} (card #${mostExpensive.position})`
         }
       : {})
   };
