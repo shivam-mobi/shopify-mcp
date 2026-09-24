@@ -217,6 +217,46 @@ export async function getConversationHistory(conversationId) {
 }
 
 /**
+ * Stored Shopify catalog pagination cursor for this conversation (search_catalog).
+ * @param {string} conversationId
+ * @returns {Promise<string|null>}
+ */
+export async function getConversationCatalogPaginationCursor(conversationId) {
+  if (!conversationId) return null;
+  try {
+    await createOrUpdateConversation(conversationId);
+    const row = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { catalogPaginationCursor: true }
+    });
+    const cursor = row?.catalogPaginationCursor;
+    return typeof cursor === "string" && cursor.trim() ? cursor.trim() : null;
+  } catch (error) {
+    console.error("Error reading catalog pagination cursor:", error);
+    return null;
+  }
+}
+
+/**
+ * @param {string} conversationId
+ * @param {string|null} cursor
+ */
+export async function setConversationCatalogPaginationCursor(conversationId, cursor) {
+  if (!conversationId) return;
+  try {
+    await createOrUpdateConversation(conversationId);
+    const value =
+      typeof cursor === "string" && cursor.trim() ? cursor.trim() : null;
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { catalogPaginationCursor: value }
+    });
+  } catch (error) {
+    console.error("Error saving catalog pagination cursor:", error);
+  }
+}
+
+/**
  * Resolve the shopper id used as ShopperCart.id (localStorage shopper id).
  * Never use conversation id — that would create one cart per chat.
  */

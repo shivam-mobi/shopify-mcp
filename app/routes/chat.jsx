@@ -3,11 +3,24 @@
  * Handles chat interactions with the configured LLM provider and tools
  */
 import MCPClient, { ensureMcpToolsWarmed } from "../mcp-client";
-import { saveMessage, getConversationHistory, storeCustomerAccountUrls, getCustomerAccountUrls as getCustomerAccountUrlsFromDb, getConversationCartId, getConversationCustomerProfile } from "../db.server";
+import {
+  saveMessage,
+  getConversationHistory,
+  storeCustomerAccountUrls,
+  getCustomerAccountUrls as getCustomerAccountUrlsFromDb,
+  getConversationCartId,
+  getConversationCustomerProfile,
+  getConversationCatalogPaginationCursor
+} from "../db.server";
 import AppConfig from "../services/config.server";
 import { createSseStream } from "../services/streaming.server";
 import { createLlmService } from "../services/llm.server";
 import { createToolService, normalizeCatalogSearchArgs } from "../services/tool.server";
+import {
+  applyStoredCatalogPaginationCursor,
+  isCatalogSearchToolName,
+  llmRequestedCatalogPaginationCursor
+} from "../services/catalog-pagination.server.js";
 import { handleCartToolCall, isCartTool, buildActiveCartContextMessage } from "../services/cart.server";
 import {
   getCartWrapperTools,
@@ -503,6 +516,33 @@ async function handleChatSession({
             // LLMs sometimes nest filters under context — hoist before MCP / price post-filter
             if (AppConfig.tools.productSearchNames.includes(toolName)) {
               toolArgs = normalizeCatalogSearchArgs(toolArgs);
+            }
+
+            if (isCatalogSearchToolName(toolName)) {
+              if (llmRequestedCatalogPaginationCursor(toolArgs)) {
+                const storedCursor = await getConversationCatalogPaginationCursor(
+                  conversationId
+                );
+                const beforeCursor =
+                  toolArgs?.catalog?.pagination?.cursor ??
+                  toolArgs?.pagination?.cursor;
+                toolArgs = applyStoredCatalogPaginationCursor(toolArgs, storedCursor);
+                const afterCursor =
+                  toolArgs?.catalog?.pagination?.cursor ??
+                  toolArgs?.pagination?.cursor;
+                if (
+                  storedCursor &&
+                  beforeCursor &&
+                  afterCursor &&
+                  beforeCursor !== afterCursor
+                ) {
+                  console.log("[chat] replaced LLM catalog pagination.cursor with stored cursor", {
+                    conversationId,
+                    llmCursorLength: String(beforeCursor).length,
+                    storedCursorLength: storedCursor.length
+                  });
+                }
+              }
             }
 
             const toolUseMessage = `Calling tool: ${toolName} with arguments: ${JSON.stringify(toolArgs)}`;

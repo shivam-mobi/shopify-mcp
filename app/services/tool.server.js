@@ -2,8 +2,12 @@
  * Tool Service
  * Manages tool execution and processing
  */
-import { saveMessage } from "../db.server";
+import { saveMessage, setConversationCatalogPaginationCursor } from "../db.server";
 import AppConfig from "./config.server";
+import {
+  extractCatalogPaginationCursorFromResponse,
+  isCatalogSearchToolName
+} from "./catalog-pagination.server.js";
 import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId, resolveProductDescriptionHtml } from "./product-compare.server.js";
 import { applyBuyNowUrlsToProducts } from "./shopify-prefilled-cart.server.js";
 
@@ -185,6 +189,17 @@ export function createToolService() {
         toolName,
         toolArgs
       );
+    }
+
+    if (conversationId && isCatalogSearchToolName(toolName)) {
+      const cursor = extractCatalogPaginationCursorFromResponse(toolUseResponse);
+      await setConversationCatalogPaginationCursor(conversationId, cursor);
+      if (cursor) {
+        console.log("[tool] saved catalog pagination cursor for conversation", {
+          conversationId,
+          cursorLength: cursor.length
+        });
+      }
     }
 
     await addToolResultToHistory(conversationHistory, toolUseId, historyContent, conversationId);
