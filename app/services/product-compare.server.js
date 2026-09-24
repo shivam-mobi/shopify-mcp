@@ -486,6 +486,77 @@ function omitNullishFields(obj = {}) {
   );
 }
 
+function collectProductTagList(product) {
+  if (!product || typeof product !== "object") return [];
+  const tags = [];
+  if (Array.isArray(product.tags)) {
+    tags.push(...product.tags);
+  } else if (typeof product.tags === "string" && product.tags.trim()) {
+    tags.push(product.tags);
+  }
+  return tags.map((t) => String(t || "").trim()).filter(Boolean);
+}
+
+function normalizeGenderTagValue(tag) {
+  return String(tag || "")
+    .replace(/^gender_/i, "")
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .trim();
+}
+
+/** Read Perfumania catalog.filters.gender from search tool args. */
+export function extractCatalogGenderFilter(toolArgs) {
+  if (!toolArgs || typeof toolArgs !== "object") return null;
+  const raw =
+    toolArgs.catalog?.filters?.gender ?? toolArgs.filters?.gender ?? null;
+  if (raw == null || raw === "") return null;
+  const g = String(raw).toLowerCase().trim();
+  if (g === "men" || g === "man" || g === "mens") return "men";
+  if (g === "women" || g === "woman" || g === "womens") return "women";
+  if (g === "unisex") return "unisex";
+  return null;
+}
+
+export function productMatchesCatalogGender(product, genderFilter) {
+  if (!genderFilter) return true;
+
+  const genderTags = collectProductTagList(product).filter((t) =>
+    /^gender_/i.test(t)
+  );
+  if (!genderTags.length) return true;
+
+  const hasMen = genderTags.some((t) => {
+    const v = normalizeGenderTagValue(t);
+    return v === "men" || v === "man" || v === "mens";
+  });
+  const hasWomen = genderTags.some((t) => {
+    const v = normalizeGenderTagValue(t);
+    return v === "women" || v === "woman" || v === "womens";
+  });
+  const hasUnisex = genderTags.some((t) => normalizeGenderTagValue(t) === "unisex");
+
+  if (genderFilter === "men") {
+    if (hasWomen && !hasMen && !hasUnisex) return false;
+    return hasMen || hasUnisex;
+  }
+  if (genderFilter === "women") {
+    if (hasMen && !hasWomen && !hasUnisex) return false;
+    return hasWomen || hasUnisex;
+  }
+  if (genderFilter === "unisex") {
+    return hasUnisex;
+  }
+  return true;
+}
+
+export function filterProductsByCatalogGender(products, genderFilter) {
+  if (!genderFilter || !Array.isArray(products)) return products;
+  return products.filter((product) =>
+    productMatchesCatalogGender(product, genderFilter)
+  );
+}
+
 /**
  * Pull preference signals from Perfumania-style tags (GENDER_*, TYPE_*, *note_*, BRAND_*).
  */

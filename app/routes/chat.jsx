@@ -55,6 +55,13 @@ import {
   callStorefrontCatalogTool,
   filterLookupCatalogForLlm
 } from "../services/storefront-catalog-tools.server.js";
+import {
+  getCatalogSearchWrapperTools,
+  filterCatalogSearchToolsForLlm,
+  isCatalogSearchWrapperTool,
+  callCatalogSearchWrapperTool,
+  ensureCatalogGenderFilter
+} from "../services/catalog-search-tools.server.js";
 import { logEmptyToolResultIfNeeded } from "../services/tool-empty-log.server.js";
 import { storeToolEmptyResultLog } from "../db.server.js";
 import {
@@ -373,6 +380,7 @@ async function handleChatSession({
     }
 
     const cartWrapperTools = getCartWrapperTools();
+    const catalogSearchWrapperTools = getCatalogSearchWrapperTools();
     const storePolicyTools = getStorePolicyTools();
     const storefrontCatalogTools = getStorefrontCatalogTools();
     const loggedInCustomerId = String(
@@ -384,17 +392,19 @@ async function handleChatSession({
     const customerAddressTools =
       customerLoggedIn && loggedInCustomerId ? getCustomerAddressTools() : [];
     const mcpToolsForLlm = filterLookupCatalogForLlm(
-      filterCartToolsForLlm(mcpClient.tools)
+      filterCatalogSearchToolsForLlm(filterCartToolsForLlm(mcpClient.tools))
     );
     const allTools = [
       ...mcpToolsForLlm,
+      ...catalogSearchWrapperTools,
       ...cartWrapperTools,
       ...storePolicyTools,
       ...storefrontCatalogTools,
       ...customerAddressTools
     ];
 
-    console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length} (${mcpToolsForLlm.length} after cart/lookup filter)`);
+    console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length} (${mcpToolsForLlm.length} after cart/catalog/lookup filter)`);
+    console.log(`Catalog search wrapper tools: ${catalogSearchWrapperTools.length}`);
     console.log(`Cart wrapper tools: ${cartWrapperTools.length}`);
     console.log(`Store policy tools: ${storePolicyTools.length} (local fallback if Shopify policy empty)`);
     console.log(`Storefront catalog tools: ${storefrontCatalogTools.length} (get_product_details only)`);
@@ -518,6 +528,10 @@ async function handleChatSession({
               toolArgs = normalizeCatalogSearchArgs(toolArgs);
             }
 
+            if (isCatalogSearchWrapperTool(toolName)) {
+              toolArgs = ensureCatalogGenderFilter(toolArgs);
+            }
+
             if (isCatalogSearchToolName(toolName)) {
               if (llmRequestedCatalogPaginationCursor(toolArgs)) {
                 const storedCursor = await getConversationCatalogPaginationCursor(
@@ -611,6 +625,13 @@ async function handleChatSession({
                 console.log("[chat] storefront catalog tool invoke", { toolName, toolArgs });
                 toolUseResponse = await callStorefrontCatalogTool(toolName, toolArgs);
                 console.log("[chat] storefront catalog tool done", { toolName });
+              } else if (isCatalogSearchWrapperTool(toolName)) {
+                console.log("[chat] catalog search wrapper invoke", { toolName, toolArgs });
+                toolUseResponse = await callCatalogSearchWrapperTool(
+                  mcpClient,
+                  toolArgs
+                );
+                console.log("[chat] catalog search wrapper done", { toolName });
               } else if (isCartWrapperTool(toolName)) {
                 console.log("[chat] cart wrapper invoke", { toolName, toolArgs });
                 toolUseResponse = await callCartWrapperTool(

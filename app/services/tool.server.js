@@ -8,112 +8,20 @@ import {
   extractCatalogPaginationCursorFromResponse,
   isCatalogSearchToolName
 } from "./catalog-pagination.server.js";
-import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId, resolveProductDescriptionHtml } from "./product-compare.server.js";
+import {
+  enrichProductsWithComparison,
+  buildCompareAttributes,
+  buildLlmProductSummary,
+  buildProductListingMetadata,
+  resolveProductVariantId,
+  resolveProductDescriptionHtml,
+  extractCatalogGenderFilter,
+  filterProductsByCatalogGender
+} from "./product-compare.server.js";
 import { applyBuyNowUrlsToProducts } from "./shopify-prefilled-cart.server.js";
+import { normalizeCatalogSearchArgs } from "./catalog-search-args.server.js";
 
-/**
- * Fix LLM mistakes for search_catalog args:
- * - filters must be catalog.filters, never inside catalog.context
- * - filters/pagination must not sit top-level beside catalog (Shopify ignores them)
- */
-export function normalizeCatalogSearchArgs(toolArgs = {}) {
-  if (!toolArgs || typeof toolArgs !== "object") {
-    return toolArgs;
-  }
-
-  const hasCatalogWrapper =
-    toolArgs.catalog != null && typeof toolArgs.catalog === "object";
-  const catalog = hasCatalogWrapper
-    ? { ...toolArgs.catalog }
-    : { ...toolArgs };
-
-  // Hoist misplaced top-level filters/pagination into catalog when using { catalog: {...} }
-  if (hasCatalogWrapper) {
-    if (toolArgs.filters != null && typeof toolArgs.filters === "object") {
-      const existingFilters =
-        catalog.filters != null && typeof catalog.filters === "object"
-          ? { ...catalog.filters }
-          : {};
-      const topFilters = { ...toolArgs.filters };
-      const mergedFilters = { ...existingFilters, ...topFilters };
-      if (existingFilters.price || topFilters.price) {
-        mergedFilters.price = {
-          ...(existingFilters.price && typeof existingFilters.price === "object"
-            ? existingFilters.price
-            : {}),
-          ...(topFilters.price && typeof topFilters.price === "object"
-            ? topFilters.price
-            : {})
-        };
-      }
-      catalog.filters = mergedFilters;
-      console.warn("[tool] hoisted top-level filters → catalog.filters", {
-        filters: mergedFilters
-      });
-    }
-
-    if (toolArgs.pagination != null && typeof toolArgs.pagination === "object") {
-      catalog.pagination = {
-        ...(catalog.pagination && typeof catalog.pagination === "object"
-          ? catalog.pagination
-          : {}),
-        ...toolArgs.pagination
-      };
-      console.warn("[tool] hoisted top-level pagination → catalog.pagination", {
-        pagination: catalog.pagination
-      });
-    }
-  }
-
-  if (catalog.context != null && typeof catalog.context === "object") {
-    const context = { ...catalog.context };
-
-    if (context.filters != null && typeof context.filters === "object") {
-      const nestedFilters = { ...context.filters };
-      delete context.filters;
-
-      const existingFilters =
-        catalog.filters != null && typeof catalog.filters === "object"
-          ? { ...catalog.filters }
-          : {};
-
-      const mergedFilters = {
-        ...existingFilters,
-        ...nestedFilters
-      };
-
-      if (existingFilters.price || nestedFilters.price) {
-        mergedFilters.price = {
-          ...(existingFilters.price && typeof existingFilters.price === "object"
-            ? existingFilters.price
-            : {}),
-          ...(nestedFilters.price && typeof nestedFilters.price === "object"
-            ? nestedFilters.price
-            : {})
-        };
-      }
-
-      catalog.filters = mergedFilters;
-      console.warn(
-        "[tool] hoisted filters from catalog.context → catalog.filters",
-        { filters: mergedFilters }
-      );
-    }
-
-    if (Object.keys(context).length > 0) {
-      catalog.context = context;
-    } else {
-      delete catalog.context;
-    }
-  }
-
-  if (hasCatalogWrapper) {
-    const { filters: _f, pagination: _p, ...rest } = toolArgs;
-    return { ...rest, catalog };
-  }
-
-  return catalog;
-}
+export { normalizeCatalogSearchArgs };
 
 /**
  * Creates a tool service instance
@@ -162,7 +70,7 @@ export function createToolService() {
     let historyContent = toolUseResponse.content;
 
     if (AppConfig.tools.productSearchNames.includes(toolName)) {
-      let ranked = processProductSearchResult(toolUseResponse, toolArgs);
+      let ranked = processProductSearchResult(toolUseResponse, toolArgs, toolName);
       if (ranked.length > 0) {
         // Notes/reviews UI only for get_product_details — not browse listings
         if (toolName === "get_product_details") {
@@ -205,14 +113,29 @@ export function createToolService() {
     await addToolResultToHistory(conversationHistory, toolUseId, historyContent, conversationId);
   };
 
-  const processProductSearchResult = (toolUseResponse, toolArgs = null) => {
+  const processProductSearchResult = (toolUseResponse, toolArgs = null, toolName = null) => {
     try {
       console.log("Processing product search result");
       const responseData = extractToolResponseData(toolUseResponse);
       const products = extractProductsFromResponse(responseData);
       const priceFilter = extractPriceFilter(toolArgs);
+      const genderFilter = extractCatalogGenderFilter(toolArgs);
 
-      const formatted = products
+      const catalogProducts = genderFilter
+        ? filterProductsByCatalogGender(products, genderFilter)
+        : products;
+
+      if (genderFilter) {
+        console.log("[tool] catalog gender tag filter", {
+          gender: genderFilter,
+          before: products.length,
+          after: catalogProducts.length
+        });
+      } else if (isCatalogSearchToolName(toolName)) {
+        console.log("[tool] catalog.filters.gender not set — gender tag filter skipped");
+      }
+
+      const formatted = catalogProducts
         .map((product) => formatProductData(product, priceFilter))
         .filter(Boolean);
 
