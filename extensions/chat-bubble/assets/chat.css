@@ -1244,13 +1244,18 @@
 }
 
 /* Detail cards — fixed-width horizontal row (same width when chat is expanded) */
+.shop-ai-product-section--detail .shop-ai-product-carousel {
+  position: relative;
+}
+
 .shop-ai-product-section--detail .shop-ai-product-grid {
   flex-wrap: nowrap;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 5px 8px;
+  padding: 4px 0 8px;
   gap: 12px;
   scrollbar-width: thin;
+  scroll-snap-type: x proximity;
 }
 
 .shop-ai-product-section--detail .shop-ai-product-card--detail {
@@ -1260,6 +1265,37 @@
   max-width: 300px;
   overflow: visible;
   height: auto;
+  scroll-snap-align: start;
+}
+
+/* Overlay arrows — no side padding reserved; hide when not usable */
+.shop-ai-product-section--detail .shop-ai-product-scroll {
+  z-index: 6;
+}
+
+.shop-ai-product-section--detail .shop-ai-product-scroll--prev {
+  left: 4px;
+}
+
+.shop-ai-product-section--detail .shop-ai-product-scroll--next {
+  right: 4px;
+}
+
+.shop-ai-product-section--detail button.shop-ai-product-scroll--prev[hidden],
+.shop-ai-product-section--detail button.shop-ai-product-scroll--prev.is-edge-hidden,
+.shop-ai-product-section--detail .shop-ai-product-scroll--prev[hidden],
+.shop-ai-product-section--detail .shop-ai-product-scroll--prev.is-edge-hidden,
+.shop-ai-product-section--detail .shop-ai-product-scroll--prev:disabled {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.shop-ai-product-section--detail .shop-ai-product-scroll--next[hidden],
+.shop-ai-product-section--detail .shop-ai-product-scroll--next.is-edge-hidden {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 
 .shop-ai-product-section--detail .shop-ai-product-info {

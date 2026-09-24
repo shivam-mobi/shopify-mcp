@@ -1544,35 +1544,27 @@
         // Horizontal carousel with scroll arrows (so users see more products exist)
         const carousel = document.createElement('div');
         carousel.classList.add('shop-ai-product-carousel');
+        if (isDetailView) {
+          carousel.classList.add('shop-ai-product-carousel--detail');
+        }
 
         const productsContainer = document.createElement('div');
         productsContainer.classList.add('shop-ai-product-grid');
 
-        let prevBtn = null;
-        let nextBtn = null;
-        let refresh = function() {};
+        const { prevBtn, nextBtn, refresh } = ShopAIChat.Product.createScrollControls(
+          carousel,
+          productsContainer,
+          {
+            prevLabel: 'Scroll products left',
+            nextLabel: 'Scroll products right',
+            stepSelector: '.shop-ai-product-card',
+            snapToCard: isDetailView
+          }
+        );
 
-        if (!isDetailView) {
-          const controls = ShopAIChat.Product.createScrollControls(
-            carousel,
-            productsContainer,
-            {
-              prevLabel: 'Scroll products left',
-              nextLabel: 'Scroll products right',
-              stepSelector: '.shop-ai-product-card'
-            }
-          );
-          prevBtn = controls.prevBtn;
-          nextBtn = controls.nextBtn;
-          refresh = controls.refresh;
-          carousel.appendChild(prevBtn);
-        }
-
+        carousel.appendChild(prevBtn);
         carousel.appendChild(productsContainer);
-
-        if (!isDetailView && nextBtn) {
-          carousel.appendChild(nextBtn);
-        }
+        carousel.appendChild(nextBtn);
         productSection.appendChild(carousel);
 
         if (!list.length) {
@@ -3984,6 +3976,29 @@
         };
 
         const scrollByStep = function(direction) {
+          if (options.snapToCard) {
+            const cards = getSlideCards();
+            if (!cards.length) return;
+
+            let activeIndex = 0;
+            const scrollLeft = scroller.scrollLeft;
+            for (let i = 0; i < cards.length; i += 1) {
+              if (cards[i].offsetLeft <= scrollLeft + 6) {
+                activeIndex = i;
+              }
+            }
+
+            const nextIndex = Math.max(
+              0,
+              Math.min(cards.length - 1, activeIndex + direction)
+            );
+            scroller.scrollTo({
+              left: cards[nextIndex].offsetLeft,
+              behavior: 'smooth'
+            });
+            return;
+          }
+
           let amount = Math.max(140, scroller.clientWidth * 0.75);
           if (options.stepSelector) {
             const stepEl = scroller.querySelector(options.stepSelector);
