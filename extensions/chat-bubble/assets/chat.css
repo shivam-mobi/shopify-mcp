@@ -1806,3 +1806,151 @@
   .shop-ai-greeting { font-size: 22px; }
   .shop-ai-chat-send { width: 40px; height: 40px; min-width: 40px; }
 }
+
+/* ── Installation video lightbox ── */
+.shop-ai-video-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000002;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.shop-ai-video-modal[hidden] {
+  display: none !important;
+}
+
+.shop-ai-video-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: rgba(17, 24, 39, 0.72);
+  cursor: pointer;
+}
+
+.shop-ai-video-modal-panel {
+  position: relative;
+  z-index: 1;
+  width: min(920px, 100%);
+  max-height: min(90vh, 720px);
+  display: flex;
+  flex-direction: column;
+  background: #111;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+}
+
+.shop-ai-video-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 16px;
+  background: #1f2937;
+  color: #f9fafb;
+}
+
+.shop-ai-video-modal-title {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shop-ai-video-modal-close {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #f9fafb;
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.shop-ai-video-modal-close:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.shop-ai-video-modal-body {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+}
+
+.shop-ai-video-modal-iframe,
+.shop-ai-video-modal-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.shop-ai-video-modal-iframe[hidden],
+.shop-ai-video-modal-native[hidden] {
+  display: none !important;
+}
+
+.shop-ai-video-modal-native {
+  object-fit: contain;
+  background: #000;
+}
+
+.shop-ai-video-modal-footer {
+  padding: 10px 14px 12px;
+  background: #1f2937;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.shop-ai-video-modal-footer[hidden] {
+  display: none !important;
+}
+
+.shop-ai-video-modal-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #d1d5db;
+}
+
+.shop-ai-video-modal-youtube-fallback {
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: #fff;
+  color: #111;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.shop-ai-video-modal-youtube-fallback:hover {
+  background: #f3f4f6;
+}
+
+body.shop-ai-video-modal-open {
+  overflow: hidden;
+}
+
+@media (max-width: 480px) {
+  .shop-ai-video-modal {
+    padding: 8px;
+  }
+
+  .shop-ai-video-modal-panel {
+    border-radius: 10px;
+  }
+}

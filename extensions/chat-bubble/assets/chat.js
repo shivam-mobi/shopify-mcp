@@ -757,6 +757,8 @@
             }
           }
         });
+
+        ShopAIChat.VideoModal.bindClickDelegation(this.elements.container);
       },
 
       /**
@@ -1468,13 +1470,9 @@
           }
 
           if (product.youtubeUrl) {
-            const yt = document.createElement('a');
-            yt.classList.add('shop-ai-product-youtube');
-            yt.href = product.youtubeUrl;
-            yt.target = '_blank';
-            yt.rel = 'noopener noreferrer';
-            yt.textContent = 'Installation Video';
-            links.appendChild(yt);
+            links.appendChild(
+              ShopAIChat.VideoModal.createInstallVideoLink(product.youtubeUrl, 'Installation Video')
+            );
           }
 
           row.appendChild(links);
@@ -2510,6 +2508,336 @@
           // Clear the conversation ID since we couldn't fetch this conversation
           clearConversationId();
         }
+      }
+    },
+
+    /**
+     * Installation video lightbox (YouTube / Vimeo embed).
+     */
+    VideoModal: {
+      _bound: false,
+      _keydownBound: false,
+      _elements: null,
+      _lastFocus: null,
+      _watchUrl: null,
+
+      getStorefrontOrigin: function() {
+        const fromConfig = window.shopChatConfig?.storefrontUrl;
+        if (fromConfig) {
+          try {
+            return new URL(String(fromConfig).replace(/\/+$/, '')).origin;
+          } catch (error) {
+            /* use window origin */
+          }
+        }
+        return window.location.origin;
+      },
+
+      buildYoutubeEmbedUrl: function(videoId) {
+        const origin = encodeURIComponent(this.getStorefrontOrigin());
+        const referrer = encodeURIComponent(window.location.href);
+        return (
+          `https://www.youtube.com/embed/${encodeURIComponent(videoId)}` +
+          '?autoplay=1&rel=0&modestbranding=1&playsinline=1&enablejsapi=1' +
+          `&origin=${origin}&widget_referrer=${referrer}`
+        );
+      },
+
+      parseYoutubeVideoId: function(parsed) {
+        const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+        if (host === 'youtu.be') {
+          return parsed.pathname.replace(/^\//, '').split('/')[0] || null;
+        }
+        if (
+          host === 'youtube.com' ||
+          host === 'm.youtube.com' ||
+          host === 'music.youtube.com'
+        ) {
+          let id = parsed.searchParams.get('v');
+          if (!id && parsed.pathname.startsWith('/embed/')) {
+            id = parsed.pathname.split('/').filter(Boolean)[1];
+          }
+          if (!id && parsed.pathname.startsWith('/shorts/')) {
+            id = parsed.pathname.split('/').filter(Boolean)[1];
+          }
+          return id || null;
+        }
+        return null;
+      },
+
+      parseEmbedUrl: function(url) {
+        try {
+          const raw = String(url || '').trim();
+          if (!raw) return null;
+          const parsed = new URL(raw, window.location.href);
+          const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+
+          if (/\.(mp4|webm)(\?|#|$)/i.test(parsed.pathname)) {
+            return {
+              provider: 'file',
+              watchUrl: parsed.href,
+              embedUrl: parsed.href
+            };
+          }
+
+          const youtubeId = this.parseYoutubeVideoId(parsed);
+          if (youtubeId) {
+            return {
+              provider: 'youtube',
+              videoId: youtubeId,
+              watchUrl: `https://www.youtube.com/watch?v=${encodeURIComponent(youtubeId)}`,
+              embedUrl: this.buildYoutubeEmbedUrl(youtubeId)
+            };
+          }
+
+          if (host === 'vimeo.com') {
+            const segment = parsed.pathname.split('/').filter(Boolean)[0];
+            if (segment && /^\d+$/.test(segment)) {
+              return {
+                provider: 'vimeo',
+                embedUrl: `https://player.vimeo.com/video/${segment}?autoplay=1`
+              };
+            }
+          }
+
+          if (host === 'player.vimeo.com') {
+            const match = parsed.pathname.match(/\/video\/(\d+)/);
+            if (match) {
+              return {
+                provider: 'vimeo',
+                embedUrl: `https://player.vimeo.com/video/${match[1]}?autoplay=1`
+              };
+            }
+          }
+
+          return null;
+        } catch (error) {
+          return null;
+        }
+      },
+
+      createInstallVideoLink: function(url, label) {
+        const link = document.createElement('a');
+        link.classList.add('shop-ai-product-youtube');
+        link.href = String(url || '').trim();
+        link.rel = 'noopener noreferrer';
+        link.textContent = label || 'Installation Video';
+        return link;
+      },
+
+      ensureModal: function() {
+        if (this._elements?.root) {
+          return this._elements;
+        }
+
+        const root = document.createElement('div');
+        root.className = 'shop-ai-video-modal';
+        root.hidden = true;
+        root.setAttribute('role', 'dialog');
+        root.setAttribute('aria-modal', 'true');
+        root.setAttribute('aria-label', 'Installation video');
+
+        const backdrop = document.createElement('button');
+        backdrop.type = 'button';
+        backdrop.className = 'shop-ai-video-modal-backdrop';
+        backdrop.setAttribute('aria-label', 'Close video');
+
+        const panel = document.createElement('div');
+        panel.className = 'shop-ai-video-modal-panel';
+
+        const header = document.createElement('div');
+        header.className = 'shop-ai-video-modal-header';
+
+        const title = document.createElement('div');
+        title.className = 'shop-ai-video-modal-title';
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'shop-ai-video-modal-close';
+        closeBtn.setAttribute('aria-label', 'Close');
+        closeBtn.innerHTML = '&times;';
+
+        header.appendChild(title);
+        header.appendChild(closeBtn);
+
+        const body = document.createElement('div');
+        body.className = 'shop-ai-video-modal-body';
+
+        const iframe = document.createElement('iframe');
+        iframe.className = 'shop-ai-video-modal-iframe';
+        iframe.setAttribute('allowfullscreen', '');
+        iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+        iframe.setAttribute(
+          'allow',
+          'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
+        );
+
+        const video = document.createElement('video');
+        video.className = 'shop-ai-video-modal-native';
+        video.setAttribute('controls', '');
+        video.setAttribute('playsinline', '');
+        video.setAttribute('preload', 'metadata');
+
+        body.appendChild(iframe);
+        body.appendChild(video);
+
+        const footer = document.createElement('div');
+        footer.className = 'shop-ai-video-modal-footer';
+        footer.hidden = true;
+
+        const hint = document.createElement('p');
+        hint.className = 'shop-ai-video-modal-hint';
+        hint.textContent =
+          'Embedded YouTube cannot use your Google login in this window. If you see a sign-in prompt, open YouTube in a popup.';
+
+        const youtubeBtn = document.createElement('button');
+        youtubeBtn.type = 'button';
+        youtubeBtn.className = 'shop-ai-video-modal-youtube-fallback';
+        youtubeBtn.textContent = 'Open YouTube player';
+
+        footer.appendChild(hint);
+        footer.appendChild(youtubeBtn);
+
+        panel.appendChild(header);
+        panel.appendChild(body);
+        panel.appendChild(footer);
+        root.appendChild(backdrop);
+        root.appendChild(panel);
+        document.body.appendChild(root);
+
+        const self = this;
+        backdrop.addEventListener('click', function() {
+          self.close();
+        });
+        closeBtn.addEventListener('click', function() {
+          self.close();
+        });
+        youtubeBtn.addEventListener('click', function() {
+          self.openYoutubePopup();
+        });
+
+        this._elements = { root, title, iframe, video, footer, youtubeBtn, closeBtn };
+        return this._elements;
+      },
+
+      openYoutubePopup: function() {
+        const watchUrl = this._watchUrl;
+        if (!watchUrl) return;
+
+        const width = Math.min(960, Math.round(window.innerWidth * 0.92));
+        const height = Math.min(640, Math.round(window.innerHeight * 0.88));
+        const left = Math.round(window.screenX + (window.outerWidth - width) / 2);
+        const top = Math.round(window.screenY + (window.outerHeight - height) / 2);
+        const features =
+          `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`;
+
+        const popup = window.open(watchUrl, 'shopAiInstallVideo', features);
+        if (popup) {
+          popup.focus();
+        } else {
+          window.open(watchUrl, '_blank', 'noopener,noreferrer');
+        }
+      },
+
+      bindClickDelegation: function(container) {
+        if (this._bound || !container) return;
+        this._bound = true;
+
+        const self = this;
+        container.addEventListener('click', function(event) {
+          const link = event.target.closest('a[href]');
+          if (!link || link.classList.contains('shop-ai-product-pdf')) return;
+
+          const href = link.getAttribute('href') || '';
+          const isInstallUiLink =
+            link.classList.contains('shop-ai-product-youtube') ||
+            Boolean(link.closest('.shop-ai-install-resources'));
+
+          const isAssistantInstallLink =
+            Boolean(link.closest('.shop-ai-message.assistant')) &&
+            /installation\s*video/i.test(String(link.textContent || '').trim());
+
+          if (!isInstallUiLink && !isAssistantInstallLink) return;
+          if (!self.parseEmbedUrl(href)) return;
+
+          event.preventDefault();
+          event.stopPropagation();
+          self.open(href, link.textContent);
+        });
+
+        if (!this._keydownBound) {
+          this._keydownBound = true;
+          document.addEventListener('keydown', function(event) {
+            if (event.key !== 'Escape') return;
+            if (!self._elements?.root || self._elements.root.hidden) return;
+            self.close();
+          });
+        }
+      },
+
+      open: function(url, titleText) {
+        const embed = this.parseEmbedUrl(url);
+        if (!embed) {
+          window.open(url, '_blank', 'noopener,noreferrer');
+          return;
+        }
+
+        this._lastFocus = document.activeElement;
+        this._watchUrl = embed.watchUrl || url;
+        const modal = this.ensureModal();
+        const heading = String(titleText || 'Installation video').trim();
+        modal.title.textContent = heading;
+
+        const useNativeVideo = embed.provider === 'file';
+        modal.iframe.hidden = useNativeVideo;
+        modal.video.hidden = !useNativeVideo;
+
+        if (useNativeVideo) {
+          modal.iframe.removeAttribute('src');
+          modal.iframe.src = '';
+          modal.video.setAttribute('title', heading);
+          modal.video.src = embed.embedUrl;
+          modal.video.load();
+          modal.video.play().catch(function() {
+            /* autoplay may be blocked until user taps play */
+          });
+        } else {
+          modal.video.removeAttribute('src');
+          modal.video.pause();
+          modal.iframe.setAttribute('title', heading);
+          modal.iframe.src = embed.embedUrl;
+        }
+
+        if (modal.footer) {
+          modal.footer.hidden = embed.provider !== 'youtube';
+        }
+
+        modal.root.hidden = false;
+        document.body.classList.add('shop-ai-video-modal-open');
+        modal.closeBtn.focus();
+      },
+
+      close: function() {
+        const modal = this._elements;
+        if (!modal?.root) return;
+
+        modal.root.hidden = true;
+        modal.iframe.src = '';
+        if (modal.video) {
+          modal.video.pause();
+          modal.video.removeAttribute('src');
+        }
+        this._watchUrl = null;
+        document.body.classList.remove('shop-ai-video-modal-open');
+
+        if (this._lastFocus && typeof this._lastFocus.focus === 'function') {
+          try {
+            this._lastFocus.focus();
+          } catch (error) {
+            /* ignore */
+          }
+        }
+        this._lastFocus = null;
       }
     },
 
@@ -4264,13 +4592,9 @@
 
         const youtubeUrl = String(product.youtubeUrl || product.youtube_url || '').trim();
         if (youtubeUrl) {
-          const ytLink = document.createElement('a');
-          ytLink.classList.add('shop-ai-product-youtube');
-          ytLink.href = youtubeUrl;
-          ytLink.target = '_blank';
-          ytLink.rel = 'noopener noreferrer';
-          ytLink.textContent = 'Installation Video';
-          resources.appendChild(ytLink);
+          resources.appendChild(
+            ShopAIChat.VideoModal.createInstallVideoLink(youtubeUrl, 'Installation Video')
+          );
         }
 
         info.appendChild(resources);
@@ -4511,13 +4835,9 @@
 
         const youtubeUrl = String(product.youtubeUrl || product.youtube_url || '').trim();
         if (youtubeUrl) {
-          const ytLink = document.createElement('a');
-          ytLink.classList.add('shop-ai-product-youtube');
-          ytLink.href = youtubeUrl;
-          ytLink.target = '_blank';
-          ytLink.rel = 'noopener noreferrer';
-          ytLink.textContent = 'Installation Video';
-          info.appendChild(ytLink);
+          info.appendChild(
+            ShopAIChat.VideoModal.createInstallVideoLink(youtubeUrl, 'Installation Video')
+          );
         }
 
         if (inStock) {
