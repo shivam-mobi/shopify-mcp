@@ -1169,11 +1169,7 @@ export async function mergeThemeCartIntoConversation(
     });
     await persistCartFromResponse(conversationId, response);
     const cart = extractCartPayload(response);
-    const items = (cart?.line_items || []).map((line) => ({
-      title: line.item?.title || "Product",
-      quantity: line.quantity || 1,
-      variant_id: line.item?.id
-    }));
+    const items = themeImportItemsFromLines(cart?.line_items || []);
 
     console.log("[cart-wrapper] theme_cart_import created cart", {
       conversationId,
@@ -1207,12 +1203,13 @@ export async function mergeThemeCartIntoConversation(
     }
   }
 
+  const splitLines = hasSplitVariantLines(live.cart?.line_items);
+  if (splitLines) {
+    changed = true;
+  }
+
   if (!changed) {
-    const items = (live.cart.line_items || []).map((line) => ({
-      title: line.item?.title || "Product",
-      quantity: line.quantity || 1,
-      variant_id: line.item?.id
-    }));
+    const items = themeImportItemsFromLines(live.cart?.line_items || []);
     return {
       success: true,
       merged: false,
@@ -1238,28 +1235,40 @@ export async function mergeThemeCartIntoConversation(
 
   let cart = extractCartPayload(response);
   const expected = new Map(lineItems.map((line) => [line.item.id, line.quantity]));
-  const looksComplete =
-    Array.isArray(cart?.line_items) &&
-    cart.line_items.length === expected.size &&
-    cart.line_items.every((line) => {
-      const id = normalizeVariantId(line?.item?.id);
-      return id && expected.has(id) && Number(line.quantity) === expected.get(id);
-    });
+  const variantTotalsMatch = (lines) => {
+    const totals = sumQuantitiesByVariant(lines || []);
+    if (totals.size !== expected.size) return false;
+    for (const [id, qty] of expected.entries()) {
+      const row = totals.get(id);
+      if (!row || Number(row.quantity) !== Number(qty)) return false;
+    }
+    return true;
+  };
+
+  let looksComplete = variantTotalsMatch(cart?.line_items);
 
   if (!looksComplete) {
     const verified = await fetchLiveCart(mcpClient, conversationId);
-    if (verified?.cart) cart = verified.cart;
+    if (verified?.cart) {
+      cart = verified.cart;
+      looksComplete = variantTotalsMatch(cart?.line_items);
+    }
   }
 
-  const items = (cart?.line_items || []).map((line) => ({
-    title: line.item?.title || "Product",
-    quantity: line.quantity || 1,
-    variant_id: line.item?.id
-  }));
+  if (!looksComplete) {
+    console.warn("[cart-wrapper] theme_cart_import UCP qty mismatch after update", {
+      conversationId,
+      expected: Array.from(expected.entries())
+    });
+  }
+
+  const items = themeImportItemsFromLines(cart?.line_items || []);
 
   console.log("[cart-wrapper] theme_cart_import replaced chat from theme", {
     conversationId,
     themeCount: incoming.length,
+    uniqueVariants: themeByVariant.size,
+    splitLines,
     itemCount: items.length,
     changed
   });
@@ -3271,6 +3280,25 @@ function normalizeVariantId(id) {
   }
 
   return trimmed.split("?")[0];
+}
+
+/** True when the same ProductVariant appears on more than one cart line (e.g. BOGO). */
+function hasSplitVariantLines(lineItems = []) {
+  const variantIds = [];
+  for (const line of lineItems || []) {
+    const id = normalizeVariantId(line?.item?.id || line?.variant_id);
+    if (id) variantIds.push(id);
+  }
+  return variantIds.length > new Set(variantIds).size;
+}
+
+function themeImportItemsFromLines(lineItems = []) {
+  const byVariant = sumQuantitiesByVariant(lineItems);
+  return Array.from(byVariant.values()).map((entry) => ({
+    title: entry.title || "Product",
+    quantity: entry.quantity,
+    variant_id: entry.item.id
+  }));
 }
 
 /**
