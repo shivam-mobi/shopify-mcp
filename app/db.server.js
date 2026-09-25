@@ -238,6 +238,12 @@ async function getConversationShopperMeta(conversationId) {
   });
 }
 
+/** ShopperCart.id linked to this conversation, if bound. */
+export async function getConversationShopperId(conversationId) {
+  const meta = await getConversationShopperMeta(conversationId);
+  return meta?.shopperId || null;
+}
+
 async function upsertShopperCartFields(shopperId, fields = {}, meta = {}) {
   if (!shopperId) return null;
 

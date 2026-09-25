@@ -8,6 +8,7 @@ import {
   claimConversationForCustomer,
   bindConversationShopper
 } from "../db.server";
+import { buildPastSearchOfferInstruction } from "./shopper-search-memory.server.js";
 
 export function normalizeCustomerName(value) {
   const trimmed = String(value || "").trim();
@@ -117,7 +118,10 @@ export function buildCustomerDisplayName({ firstName, lastName } = {}) {
   return first || last || null;
 }
 
-export function buildCustomerContextHintMessage(profile = {}) {
+export function buildCustomerContextHintMessage(
+  profile = {},
+  { hasPastSearches = false } = {}
+) {
   const firstName = normalizeCustomerName(profile.firstName);
   const lastName = normalizeCustomerName(profile.lastName);
   const loggedIn = Boolean(profile.loggedIn);
@@ -138,11 +142,15 @@ export function buildCustomerContextHintMessage(profile = {}) {
     parts.push("Their profile has no first or last name on file.");
   }
 
+  const greetingScope = hasPastSearches
+    ? "For hi/hello greetings, include the standard help line (cabin/vehicle fitment, fresheners, home filters), then offer to continue with past searches from the returning-shopper message — past items come only from that list. "
+    : "For hi/hello greetings, briefly offer help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters. ";
+
   parts.push(
     "Use their first name naturally when you know it — briefly, not as the whole greeting. " +
       "If only last name is known, you may use it politely. " +
       "If no name is known, skip the name. " +
-      "For hi/hello greetings, briefly offer help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters. " +
+      greetingScope +
       "Do NOT say \"AI-powered shopping assistant\" — the chat UI already shows that. " +
       "Never say \"vehicle parts\" or long generic lines like \"How can I assist you today\". " +
       "Do not ask for their name at welcome unless needed for shipping or orders."
@@ -175,7 +183,10 @@ export function buildCustomerContextHintMessage(profile = {}) {
   };
 }
 
-export function buildWelcomePromptMessages(profile = {}, { welcomeTemplate } = {}) {
+export function buildWelcomePromptMessages(
+  profile = {},
+  { welcomeTemplate, searchMemoryLines = [] } = {}
+) {
   const firstName = normalizeCustomerName(profile.firstName);
   const lastName = normalizeCustomerName(profile.lastName);
   const loggedIn = Boolean(profile.loggedIn);
@@ -198,10 +209,18 @@ export function buildWelcomePromptMessages(profile = {}, { welcomeTemplate } = {
     customerLines.push("Guest customer — no name is known.");
   }
 
+  const pastOffers = Array.isArray(searchMemoryLines) ? searchMemoryLines : [];
+  const pastSearchRule = buildPastSearchOfferInstruction(pastOffers, {
+    maxInReply: 3,
+    confirmBeforeTools: false,
+    withStandardIntro: true
+  });
   const instruction =
     "Generate the opening welcome message for a NEW chat session. " +
-    "Reply with 1-2 short sentences only. " +
-    "Say you can help with cabin air filters and vehicle fitment (year, make, model), cabin filter air fresheners, and home filters. " +
+    (pastSearchRule
+      ? `Reply with up to 3 short sentences. ${pastSearchRule} `
+      : "Reply with 1-2 short sentences only. " +
+        "Say you can help with cabin air filters and vehicle fitment (year, make, model), cabin filter air fresheners, and home filters. ") +
     "Do NOT say \"AI-powered shopping assistant\" or \"I'm your AI-powered shopping assistant\" — the chat UI already shows that. " +
     "If first name is known, you may start with a brief Hi {firstName}! — then the help line. " +
     "If no name is known, skip the name — never output 'Hi !'. " +
@@ -242,7 +261,11 @@ export function isSimpleGreeting(userMessage = "") {
   return GREETING_PATTERN.test(String(userMessage || "").trim());
 }
 
-export function buildGreetingHintMessage(userMessage, profile = {}) {
+export function buildGreetingHintMessage(
+  userMessage,
+  profile = {},
+  { pastSearchOffers = null, recentSearchSnippet = null } = {}
+) {
   if (!isSimpleGreeting(userMessage)) {
     return null;
   }
@@ -252,12 +275,34 @@ export function buildGreetingHintMessage(userMessage, profile = {}) {
     ? `You may start with "Hi ${firstName}!" then the assistant line. `
     : "Do not invent or ask for a name. ";
 
+  const offers = Array.isArray(pastSearchOffers) && pastSearchOffers.length
+    ? pastSearchOffers
+    : String(recentSearchSnippet || "")
+        .split(";")
+        .map((s) => s.trim())
+        .filter(Boolean);
+  const pastSearchRule = offers.length
+    ? buildPastSearchOfferInstruction(offers, {
+        maxInReply: 3,
+        confirmBeforeTools: false,
+        withStandardIntro: true
+      })
+    : null;
+  const memoryHint =
+    pastSearchRule ||
+    "Mention you help with cabin air filters and vehicle fitment (year/make/model), cabin filter air fresheners, and home filters. ";
+
+  const lengthHint = offers.length
+    ? "Reply in up to 3 short sentences. "
+    : "Reply in 1-2 short sentences only. ";
+
   return {
     role: "system",
     content:
-      "The customer sent a simple greeting. Reply in 1-2 short sentences only. " +
+      "The customer sent a simple greeting. " +
+      lengthHint +
       nameHint +
-      "Mention you help with cabin air filters and vehicle fitment (year/make/model), cabin filter air fresheners, and home filters. " +
+      memoryHint +
       "Do NOT say \"AI-powered shopping assistant\" or \"I'm your AI-powered shopping assistant\" — the chat UI already shows that. " +
       "Do NOT say 'vehicle parts', 'How can I assist you today', or other long generic support lines. " +
       "Do not call tools for a plain greeting."

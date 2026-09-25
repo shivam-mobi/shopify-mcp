@@ -2354,6 +2354,10 @@
             ShopAIChat.UI.displayFitmentOptions(data);
             break;
 
+          case 'shopper_search_suggestions':
+            ShopAIChat.UI.displayFitmentOptions(data);
+            break;
+
           case 'customer_addresses':
             ShopAIChat.UI.displayCustomerAddresses(data);
             break;

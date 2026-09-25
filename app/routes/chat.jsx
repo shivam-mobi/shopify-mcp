@@ -3,7 +3,16 @@
  * Handles chat interactions with the configured LLM provider and tools
  */
 import MCPClient, { ensureMcpToolsWarmed } from "../mcp-client";
-import { saveMessage, getConversationHistory, storeCustomerAccountUrls, getCustomerAccountUrls as getCustomerAccountUrlsFromDb, getConversationCartId, getConversationCustomerProfile } from "../db.server";
+import {
+  saveMessage,
+  getConversationHistory,
+  storeCustomerAccountUrls,
+  getCustomerAccountUrls as getCustomerAccountUrlsFromDb,
+  getConversationCartId,
+  getConversationCustomerProfile,
+  getConversationShopperId,
+  resolveShopperId
+} from "../db.server";
 import AppConfig from "../services/config.server";
 import { createSseStream } from "../services/streaming.server";
 import { createLlmService } from "../services/llm.server";
@@ -64,7 +73,23 @@ import {
   buildGreetingHintMessage,
   extractAssistantText
 } from "../services/customer-context.server.js";
+import {
+  loadMemoriesForUserMessage,
+  buildShopperSearchMemoryHintMessage,
+  buildWelcomeSearchMemoryLines,
+  recordSearchMemoryFromTool,
+  listShopperSearchMemory,
+  memoriesToSuggestionPayload,
+  getRecentSearchOffers
+} from "../services/shopper-search-memory.server.js";
 
+async function resolveShopperIdForChat(conversationId, body = {}) {
+  const bound = await getConversationShopperId(conversationId);
+  if (bound) return bound;
+  return resolveShopperId({
+    anonymousShopperId: body.shopper_id || body.anonymous_shopper_id
+  });
+}
 
 /**
  * Rract Router loader function for handling GET requests
@@ -228,9 +253,21 @@ async function handleWelcomeSession({
     }
 
     const customerProfile = await syncCustomerContextFromRequest(conversationId, body);
+    const shopperId = await resolveShopperIdForChat(conversationId, body);
+    const welcomeMemories = shopperId
+      ? await listShopperSearchMemory(shopperId, { limit: 5 })
+      : [];
     const welcomeMessages = buildWelcomePromptMessages(customerProfile, {
-      welcomeTemplate: body.welcome_template
+      welcomeTemplate: body.welcome_template,
+      searchMemoryLines: buildWelcomeSearchMemoryLines(welcomeMemories)
     });
+    const welcomeSuggestions = memoriesToSuggestionPayload(welcomeMemories);
+    if (welcomeSuggestions) {
+      stream.sendMessage({
+        type: "shopper_search_suggestions",
+        ...welcomeSuggestions
+      });
+    }
 
     let welcomeText = "";
     try {
@@ -417,6 +454,7 @@ async function handleChatSession({
     let installMediaToDisplay = null;
 
     const customerProfile = await syncCustomerContextFromRequest(conversationId, body);
+    const shopperId = await resolveShopperIdForChat(conversationId, body);
 
     // Save user message to the database
     await saveMessage(conversationId, 'user', userMessage);
@@ -475,14 +513,40 @@ async function handleChatSession({
       conversationHistory.unshift(catalogSearchHint);
     }
 
-    const customerContextHint = buildCustomerContextHintMessage(customerProfile);
+    let searchMemories = [];
+    if (shopperId) {
+      searchMemories = await loadMemoriesForUserMessage(shopperId, userMessage);
+    }
+
+    const customerContextHint = buildCustomerContextHintMessage(customerProfile, {
+      hasPastSearches: searchMemories.length > 0
+    });
     if (customerContextHint) {
       conversationHistory.unshift(customerContextHint);
     }
 
-    const greetingHint = buildGreetingHintMessage(userMessage, customerProfile);
+    const greetingHint = buildGreetingHintMessage(userMessage, customerProfile, {
+      pastSearchOffers: getRecentSearchOffers(searchMemories)
+    });
     if (greetingHint) {
       conversationHistory.unshift(greetingHint);
+    }
+
+    if (shopperId && searchMemories.length) {
+      const searchMemoryHint = buildShopperSearchMemoryHintMessage(
+        userMessage,
+        searchMemories
+      );
+      if (searchMemoryHint) {
+        conversationHistory.unshift(searchMemoryHint);
+      }
+      const turnSuggestions = memoriesToSuggestionPayload(searchMemories);
+      if (turnSuggestions) {
+        stream.sendMessage({
+          type: "shopper_search_suggestions",
+          ...turnSuggestions
+        });
+      }
     }
 
     // Execute the conversation stream
@@ -701,6 +765,17 @@ async function handleChatSession({
                   if (addressUi?.addresses?.length) {
                     customerAddressesToDisplay = addressUi;
                   }
+                }
+
+                if (shopperId) {
+                  recordSearchMemoryFromTool({
+                    shopperId,
+                    toolName,
+                    toolArgs,
+                    toolUseResponse
+                  }).catch((err) => {
+                    console.warn("[shopper-memory] tool record failed:", err?.message || err);
+                  });
                 }
               }
             } catch (historyError) {

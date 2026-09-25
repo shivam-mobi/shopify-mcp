@@ -181,6 +181,24 @@ model StoreCustomer {
   @@index([shopDomain])
 }
 
+/// Recent successful cabin / home / freshener lookups per browser shopper (ShopperCart.id).
+model ShopperSearchMemory {
+  id             String   @id @default(cuid())
+  shopperId      String
+  intent         String // cabin | home | freshener
+  vehicleYear    Int?
+  vehicleMake    String?
+  vehicleModel   String?
+  vehicleEngine  String?
+  homeFilterSize String?
+  homeMerv       String?
+  useCount       Int      @default(1)
+  lastUsedAt     DateTime
+  createdAt      DateTime @default(now())
+
+  @@index([shopperId, intent, lastUsedAt])
+}
+
 model StoreCustomerAddress {
   id               String        @id @default(cuid())
   customerId       String
