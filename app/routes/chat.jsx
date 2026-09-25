@@ -555,7 +555,8 @@ async function handleChatSession({
                 console.log("[chat] catalog search invoke", { toolName, toolArgs, shop });
                 toolUseResponse = await callCatalogSearchTool(mcpClient, toolName, toolArgs, {
                   shop,
-                  conversationId
+                  conversationId,
+                  buyerIp
                 });
                 console.log("[chat] catalog search done", { toolName });
               } else if (isStorePolicyTool(toolName)) {

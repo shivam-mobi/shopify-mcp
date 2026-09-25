@@ -5,6 +5,7 @@ import {
   getCatalogAccessToken,
   hasCatalogCredentials
 } from "./services/catalog-auth.server";
+import { resolveStorefrontHostUrl } from "./services/storefront-config.server.js";
 
 /**
  * In-memory tools/list cache so we don't hit Shopify on every chat message.
@@ -526,17 +527,11 @@ export async function warmMcpToolsAtStartup({
     return { skipped: true };
   }
 
-  const hostUrl = String(
-    process.env.STOREFRONT_URL ||
-      process.env.SHOPIFY_STOREFRONT_URL ||
-      ""
-  )
-    .trim()
-    .replace(/\/+$/, "");
+  const hostUrl = resolveStorefrontHostUrl();
 
   if (!hostUrl) {
     const message =
-      "[mcp] STOREFRONT_URL is required to warm MCP tools at startup";
+      "[mcp] SHOPIFY_STORE_DOMAIN (or STOREFRONT_URL) is required to warm MCP tools at startup";
     if (failHard) {
       throw new Error(message);
     }

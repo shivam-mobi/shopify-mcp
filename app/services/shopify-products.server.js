@@ -1,5 +1,10 @@
 import { buildCompareAttributes } from "./product-compare.server.js";
 import { storeMcpCallLog } from "../db.server.js";
+import AppConfig from "./config.server.js";
+import {
+  resolveStorefrontHostUrl,
+  resolveStorefrontShopHostname
+} from "./storefront-config.server.js";
 
 const VARIANTS_BY_IDS_QUERY = `#graphql
   query VariantsByIds($ids: [ID!]!) {
@@ -45,15 +50,14 @@ const VARIANTS_BY_IDS_QUERY = `#graphql
   }
 `;
 
-const PRODUCTS_SEARCH_QUERY = `#graphql
-  query ProductsSearch($query: String!, $first: Int!) {
+const STOREFRONT_PRODUCTS_SEARCH_QUERY = `#graphql
+  query StorefrontProductsSearch($query: String!, $first: Int!) {
     products(first: $first, query: $query, sortKey: RELEVANCE) {
       edges {
         node {
           id
           title
           handle
-          status
           productType
           vendor
           tags
@@ -63,22 +67,21 @@ const PRODUCTS_SEARCH_QUERY = `#graphql
             url
           }
           variants(first: 15) {
-            edges {
-              node {
-                id
-                title
-                price
-                compareAtPrice
-                sku
-                availableForSale
-                inventoryQuantity
-                inventoryPolicy
-                image {
-                  url
-                }
-                inventoryItem {
-                  tracked
-                }
+            nodes {
+              id
+              title
+              sku
+              availableForSale
+              price {
+                amount
+                currencyCode
+              }
+              compareAtPrice {
+                amount
+                currencyCode
+              }
+              image {
+                url
               }
             }
           }
@@ -90,8 +93,10 @@ const PRODUCTS_SEARCH_QUERY = `#graphql
 
 const NODES_BATCH_SIZE = 50;
 const DEFAULT_API_VERSION = "2025-10";
+const DEFAULT_STOREFRONT_API_VERSION =
+  process.env.SHOPIFY_STOREFRONT_API_VERSION || DEFAULT_API_VERSION;
 const ADMIN_OPERATION_VARIANTS_BY_IDS = "VariantsByIds";
-const ADMIN_OPERATION_PRODUCTS_SEARCH = "ProductsSearch";
+const STOREFRONT_OPERATION_PRODUCTS_SEARCH = "StorefrontProductsSearch";
 
 function summarizeAdminGraphqlResponse(payload) {
   if (!payload || typeof payload !== "object") {
@@ -250,12 +255,8 @@ export function toVariantGid(variantId) {
 }
 
 function getStorefrontBaseUrl() {
-  const raw = (
-    process.env.STOREFRONT_URL ||
-    process.env.SHOPIFY_STOREFRONT_URL ||
-    ""
-  ).trim().replace(/\/+$/, "");
-  return raw || null;
+  const url = resolveStorefrontHostUrl();
+  return url || null;
 }
 
 function buildProductUrl(handle, onlineStoreUrl) {
@@ -410,6 +411,185 @@ function getAdminAccessToken() {
     process.env.SHOPIFY_ACCESS_TOKEN ||
     ""
   ).trim();
+}
+
+function getStorefrontPrivateToken() {
+  return (
+    process.env.SHOPIFY_STOREFRONT_PRIVATE_ACCESS_TOKEN ||
+    process.env.STOREFRONT_PRIVATE_ACCESS_TOKEN ||
+    process.env.SHOPIFY_STOREFRONT_PRIVATE_TOKEN ||
+    ""
+  ).trim();
+}
+
+function getStorefrontPublicToken() {
+  return (
+    process.env.STOREFRONT_PUBLIC_ACCESS_TOKEN ||
+    process.env.SHOPIFY_STOREFRONT_ACCESS_TOKEN ||
+    ""
+  ).trim();
+}
+
+function summarizeStorefrontGraphqlResponse(payload) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+  if (payload.error && !payload.data) {
+    return payload;
+  }
+  const edges = payload.data?.products?.edges;
+  if (!Array.isArray(edges)) {
+    return {
+      ...(payload.errors?.length ? { errors: payload.errors } : {}),
+      dataKeys: payload.data ? Object.keys(payload.data) : []
+    };
+  }
+  return {
+    ...(payload.errors?.length ? { errors: payload.errors } : {}),
+    productCount: edges.length,
+    sampleTitles: edges
+      .map((edge) => edge?.node?.title)
+      .filter(Boolean)
+      .slice(0, 5)
+  };
+}
+
+async function callStorefrontGraphql({
+  shop,
+  query,
+  variables,
+  operation,
+  buyerIp = null,
+  conversationId = null
+}) {
+  const shopHostname = resolveStorefrontShopHostname(shop);
+  if (!shopHostname) {
+    throw new Error("Missing shop domain for Shopify Storefront API");
+  }
+
+  const privateToken = getStorefrontPrivateToken();
+  const publicToken = getStorefrontPublicToken();
+  if (!privateToken && !publicToken) {
+    throw new Error(
+      "Missing Storefront API token (set SHOPIFY_STOREFRONT_PRIVATE_ACCESS_TOKEN or STOREFRONT_PUBLIC_ACCESS_TOKEN)"
+    );
+  }
+
+  const endpoint = `https://${shopHostname}/api/${DEFAULT_STOREFRONT_API_VERSION}/graphql.json`;
+  const headers = { "Content-Type": "application/json" };
+  let authMode = "private_token";
+
+  if (privateToken) {
+    headers["Shopify-Storefront-Private-Token"] = privateToken;
+    const ip =
+      String(buyerIp || "").trim() ||
+      AppConfig.mcp?.catalog?.buyerIpFallback ||
+      "127.0.0.1";
+    headers["Shopify-Storefront-Buyer-IP"] = ip;
+  } else {
+    authMode = "public_token";
+    headers["X-Shopify-Storefront-Access-Token"] = publicToken;
+  }
+
+  const startedAt = Date.now();
+  let statusCode = 0;
+  let responseBody = null;
+  let errorMessage = null;
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ query, variables })
+    });
+
+    statusCode = response.status;
+    responseBody = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const message =
+        responseBody?.errors?.[0]?.message ||
+        responseBody?.error ||
+        `HTTP ${response.status}`;
+      throw new Error(`Storefront GraphQL failed: ${message}`);
+    }
+
+    if (Array.isArray(responseBody?.errors) && responseBody.errors.length) {
+      const hasData = Boolean(responseBody.data);
+      if (!hasData) {
+        const message = responseBody.errors
+          .map((entry) => entry?.message || String(entry))
+          .filter(Boolean)
+          .join("; ");
+        throw new Error(message || "Shopify Storefront API returned errors");
+      }
+      console.warn(
+        "[shopify] Storefront GraphQL partial errors:",
+        responseBody.errors.map((e) => e.message).join("; ")
+      );
+    }
+
+    return responseBody;
+  } catch (error) {
+    errorMessage = error.message;
+    statusCode = Number.isInteger(error.status) ? error.status : statusCode || 0;
+    if (!responseBody) {
+      responseBody = { error: error.message };
+    }
+    throw error;
+  } finally {
+    void storeMcpCallLog({
+      conversationId,
+      server: "storefront",
+      method: "graphql",
+      toolName: operation,
+      endpoint,
+      request: {
+        shop: shopHostname,
+        operation,
+        variables,
+        authMode
+      },
+      response: errorMessage
+        ? {
+            error: errorMessage,
+            body: summarizeStorefrontGraphqlResponse(responseBody)
+          }
+        : summarizeStorefrontGraphqlResponse(responseBody),
+      statusCode,
+      durationMs: Date.now() - startedAt
+    });
+  }
+}
+
+function storefrontVariantNodeToAdminShape(variant, product) {
+  if (!variant?.id) return null;
+  const priceAmount = variant.price?.amount ?? variant.price;
+  const compareAmount = variant.compareAtPrice?.amount ?? variant.compareAtPrice;
+
+  return {
+    id: variant.id,
+    title: variant.title,
+    sku: variant.sku,
+    price: priceAmount,
+    compareAtPrice: compareAmount,
+    availableForSale: variant.availableForSale,
+    inventoryQuantity: null,
+    inventoryPolicy: null,
+    image: variant.image,
+    inventoryItem: null,
+    product: {
+      title: product.title,
+      handle: product.handle,
+      status: "ACTIVE",
+      vendor: product.vendor,
+      tags: product.tags,
+      descriptionHtml: product.descriptionHtml,
+      onlineStoreUrl: product.onlineStoreUrl,
+      featuredImage: product.featuredImage,
+      productType: product.productType
+    }
+  };
 }
 
 /**
@@ -658,22 +838,18 @@ export function parseHomeFilterSearchHints(extraQuery = "") {
 }
 
 /**
- * Build Admin product search query with fixed product_type + size/MERV tags.
- * Example:
- *   product_type:"Home Furnace Air Filter" AND tag:Width_10 AND tag:Height_10 AND tag:Depth_1 AND status:active
- *   product_type:"Home Furnace Air Filter" AND tag:merv-13 AND status:active
+ * Shared catalog search query: fixed product_type + size/MERV tags (+ optional keywords).
  */
-export function buildAdminProductSearchQuery(productType, extraQuery = "") {
+function buildProductTypeSearchQuery(productType, extraQuery = "", { activeOnly = false } = {}) {
   const type = String(productType || "").trim().replace(/"/g, '\\"');
   if (!type) {
-    throw new Error("productType is required for Admin product search");
+    throw new Error("productType is required for product search");
   }
 
   const { tags, remaining } = parseHomeFilterSearchHints(extraQuery);
   const parts = [`product_type:"${type}"`];
 
   for (const tag of tags) {
-    // Quote tags that contain special chars; Width_10 / merv-13 are safe either way.
     const safe = String(tag).replace(/"/g, '\\"');
     parts.push(/[^a-zA-Z0-9_-]/.test(safe) ? `tag:"${safe}"` : `tag:${safe}`);
   }
@@ -682,12 +858,25 @@ export function buildAdminProductSearchQuery(productType, extraQuery = "") {
     parts.push(remaining.replace(/"/g, '\\"'));
   }
 
-  parts.push("status:active");
+  if (activeOnly) {
+    parts.push("status:active");
+  }
+
   return parts.join(" AND ");
 }
 
+/** Admin-only search string (fitment tooling / legacy). */
+export function buildAdminProductSearchQuery(productType, extraQuery = "") {
+  return buildProductTypeSearchQuery(productType, extraQuery, { activeOnly: true });
+}
+
+/** Storefront products(query) — same type/tags as Admin, without status:active. */
+export function buildStorefrontProductSearchQuery(productType, extraQuery = "") {
+  return buildProductTypeSearchQuery(productType, extraQuery, { activeOnly: false });
+}
+
 /**
- * Search active products via Admin GraphQL with a fixed product type.
+ * Search published products via Storefront private GraphQL with a fixed product type.
  * Returns card-ready product objects (one per product, defaulting to first available variant).
  */
 export async function searchShopifyProductsByType({
@@ -695,47 +884,33 @@ export async function searchShopifyProductsByType({
   productType,
   query = "",
   first = 20,
-  conversationId = null
+  conversationId = null,
+  buyerIp = null
 } = {}) {
-  const shopDomain = resolveShopDomain(shop);
-  if (!shopDomain) {
-    throw new Error("Missing shop domain for Shopify Admin API");
-  }
-  if (!/\.myshopify\.com$/i.test(shopDomain)) {
-    throw new Error(
-      `Invalid shop for Admin API: "${shopDomain}". Expected *.myshopify.com`
-    );
+  const shopHostname = resolveStorefrontShopHostname(shop);
+  if (!shopHostname) {
+    throw new Error("Missing shop domain for Shopify Storefront API");
   }
 
-  const searchQuery = buildAdminProductSearchQuery(productType, query);
+  const searchQuery = buildStorefrontProductSearchQuery(productType, query);
   const hints = parseHomeFilterSearchHints(query);
   const limit = Math.max(1, Math.min(Number(first) || 20, 50));
-  const token = getAdminAccessToken();
-  const authMode = token ? "access_token" : "offline_session";
 
-  console.log("[shopify] ProductsSearch", {
-    shop: shopDomain,
+  console.log("[shopify] StorefrontProductsSearch", {
+    shop: shopHostname,
     productType,
     searchQuery,
     tags: hints.tags,
     remaining: hints.remaining,
-    limit,
-    authMode
+    limit
   });
 
-  let admin = null;
-  if (!token) {
-    const { unauthenticated } = await import("../shopify.server.js");
-    ({ admin } = await unauthenticated.admin(shopDomain));
-  }
-
-  const payload = await callAdminGraphql({
-    shop: shopDomain,
-    query: PRODUCTS_SEARCH_QUERY,
+  const payload = await callStorefrontGraphql({
+    shop: shopHostname,
+    query: STOREFRONT_PRODUCTS_SEARCH_QUERY,
     variables: { query: searchQuery, first: limit },
-    operation: ADMIN_OPERATION_PRODUCTS_SEARCH,
-    authMode,
-    admin,
+    operation: STOREFRONT_OPERATION_PRODUCTS_SEARCH,
+    buyerIp,
     conversationId
   });
 
@@ -746,14 +921,9 @@ export async function searchShopifyProductsByType({
     const node = edge?.node;
     if (!node) continue;
 
-    const status = String(node.status || "").toUpperCase();
-    if (status && status !== "ACTIVE") continue;
-
-    // Prefer an in-stock variant; fall back to first variant.
-    const variantEdges = node.variants?.edges || [];
+    const variantNodes = node.variants?.nodes || [];
     let chosen = null;
-    for (const vEdge of variantEdges) {
-      const v = vEdge?.node;
+    for (const v of variantNodes) {
       if (!v?.id) continue;
       if (v.availableForSale !== false) {
         chosen = v;
@@ -763,34 +933,26 @@ export async function searchShopifyProductsByType({
     }
     if (!chosen) continue;
 
-    const normalized = normalizeVariantNode({
-      ...chosen,
-      product: {
-        title: node.title,
-        handle: node.handle,
-        status: node.status,
-        vendor: node.vendor,
-        tags: node.tags,
-        descriptionHtml: node.descriptionHtml,
-        onlineStoreUrl: node.onlineStoreUrl,
-        featuredImage: node.featuredImage
-      }
-    });
+    const normalized = normalizeVariantNode(
+      storefrontVariantNodeToAdminShape(chosen, node)
+    );
 
     if (!normalized) continue;
 
+    const resolvedType = node.productType || productType;
     products.push({
       ...normalized,
       id: normalized.variantId,
       product_id: node.id,
-      productType: node.productType || productType,
-      product_type: node.productType || productType,
+      productType: resolvedType,
+      product_type: resolvedType,
       tags: Array.isArray(node.tags) ? node.tags : []
     });
   }
 
-  console.log("[shopify] ProductsSearch results", {
+  console.log("[shopify] StorefrontProductsSearch results", {
     productType,
+    searchQuery,
     count: products.length,
     sample: products.slice(0, 3).map((p) => p.title)
   });

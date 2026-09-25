@@ -5,6 +5,7 @@
 import { saveMessage } from "../db.server";
 import AppConfig from "./config.server";
 import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId, isFreshenerProduct, resolveProductDescriptionHtml } from "./product-compare.server.js";
+import { resolveStorefrontHostUrl } from "./storefront-config.server.js";
 
 /**
  * Creates a tool service instance
@@ -220,11 +221,7 @@ export function createToolService() {
 
     const variantId = product.variantId || product.variant_id || variant?.id;
     const availability = resolveProductAvailability(product, variant);
-    const storefrontBase = (
-      process.env.STOREFRONT_URL ||
-      process.env.SHOPIFY_STOREFRONT_URL ||
-      ""
-    ).trim().replace(/\/+$/, "");
+    const storefrontBase = resolveStorefrontHostUrl();
 
     let productUrl =
       product.url ||

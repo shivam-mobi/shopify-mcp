@@ -1,32 +1,32 @@
 /**
  * Catalog product search for Home Filters + Car Air Fresheners.
- * - home_filter  → Shopify Admin GraphQL (fixed product_type, accurate sizes)
- * - freshener    → Shopify MCP search_catalog only
+ * Both categories → Shopify Storefront private GraphQL (same product_type query as Admin).
  * Cabin / vehicle cabin air filters stay on get_fitment_next_step (MySQL).
  */
 import {
   searchShopifyProductsByType,
-  buildAdminProductSearchQuery
+  buildStorefrontProductSearchQuery
 } from "./shopify-products.server.js";
 
 export const CATALOG_SEARCH_TOOL_NAME = "search_store_products";
 
-/** Shopify Admin / catalog product types (exact strings). */
+/** Shopify catalog product types (exact strings). */
 export const PRODUCT_TYPE_HOME_FILTER = "Home Furnace Air Filter";
-export const PRODUCT_TYPE_FRESHENER = "Car Air Freshers";
+/** Exact Shopify product_type (Admin + Storefront search). */
+export const PRODUCT_TYPE_FRESHENER = "Car Air Fresheners";
 
 export const CATALOG_CATEGORY = {
   home_filter: {
     id: "home_filter",
     productType: PRODUCT_TYPE_HOME_FILTER,
     label: "home furnace air filters",
-    source: "admin_api"
+    source: "storefront_api"
   },
   freshener: {
     id: "freshener",
     productType: PRODUCT_TYPE_FRESHENER,
     label: "car air fresheners",
-    source: "mcp"
+    source: "storefront_api"
   }
 };
 
@@ -95,10 +95,6 @@ function normalizeSizeHaystack(text = "") {
     .replace(/\s+/g, "");
 }
 
-/**
- * Prefer products that contain the exact requested size in title/sku.
- * If none match, return results unchanged (so browse still works).
- */
 function preferExactSizeMatches(products, userQuery = "") {
   const sizes = extractFilterSizes(userQuery);
   if (!sizes.length || !products.length) return products;
@@ -111,25 +107,6 @@ function preferExactSizeMatches(products, userQuery = "") {
   });
 
   return exact.length ? exact : products;
-}
-
-function extractMcpProducts(response) {
-  if (!response || response.error) return [];
-
-  let data = response.structuredContent;
-  if (!data && Array.isArray(response.content) && response.content[0]?.text) {
-    try {
-      data = JSON.parse(response.content[0].text);
-    } catch {
-      data = null;
-    }
-  }
-  if (!data) return [];
-
-  if (Array.isArray(data.products)) return data.products;
-  if (Array.isArray(data.ucp?.products)) return data.ucp.products;
-  if (Array.isArray(data.items)) return data.items;
-  return [];
 }
 
 function productTypeOf(product = {}) {
@@ -149,14 +126,6 @@ function matchesFreshenerProduct(product, expectedType) {
 
   const hay = `${product.title || ""} ${product.name || ""} ${(product.tags || []).join(" ")}`.toLowerCase();
   return /freshener|freshers|scent|lavender|vanilla|orchid|linen|peach|black rock|new car/.test(hay);
-}
-
-function buildFreshenerMcpQuery(category, query = "") {
-  const q = String(query || "").trim();
-  if (!q) return category.productType;
-  if (q.toLowerCase().includes(category.productType.toLowerCase())) return q;
-  if (/freshener|freshers|scent/i.test(q)) return q;
-  return `${category.productType} ${q}`;
 }
 
 function successPayload({
@@ -187,9 +156,6 @@ function successPayload({
   });
 }
 
-/**
- * Tools exposed to the LLM for home filter / freshener product search.
- */
 export function getCatalogSearchTools() {
   return [
     {
@@ -202,7 +168,7 @@ export function getCatalogSearchTools() {
         "Three numbers or labeled thickness/depth → include Depth (e.g. 20x25x1). " +
         "length means Height (2nd number), thickness means Depth (3rd). " +
         "Example follow-up: after 24x10x1 if customer says length is 30, query must be 24x30x1 not 30x10x1. " +
-        "Use category=freshener for cabin-filter air fresheners (MCP catalog, optional scent in query). " +
+        "Use category=freshener for cabin-filter air fresheners (optional scent in query). " +
         "Do NOT use this for vehicle cabin air filters — use get_fitment_next_step instead. " +
         "Do NOT call search_catalog directly.",
       input_schema: {
@@ -212,7 +178,7 @@ export function getCatalogSearchTools() {
             type: "string",
             enum: ["home_filter", "freshener"],
             description:
-              "home_filter = Home Furnace Air Filter (Admin API); freshener = Car Air Freshers (MCP)"
+              "home_filter = Home Furnace Air Filter; freshener = Car Air Fresheners (Storefront API, product_type filter)"
           },
           query: {
             type: "string",
@@ -230,23 +196,26 @@ export function isCatalogSearchTool(toolName) {
   return toolName === CATALOG_SEARCH_TOOL_NAME;
 }
 
-/** Hide raw MCP catalog search — wrapper routes home vs freshener. */
 export function filterCatalogToolsForLlm(tools = []) {
   return tools.filter((tool) => !RAW_CATALOG_TOOL_NAMES.has(tool?.name));
 }
 
-async function searchHomeFiltersViaAdmin({
+async function searchHomeFiltersViaStorefront({
   category,
   userQuery,
   shop,
-  conversationId
+  conversationId,
+  buyerIp
 }) {
-  const adminQuery = buildAdminProductSearchQuery(category.productType, userQuery);
+  const storefrontQuery = buildStorefrontProductSearchQuery(
+    category.productType,
+    userQuery
+  );
 
-  console.log("[catalog-search] home_filter → Admin API", {
+  console.log("[catalog-search] home_filter → Storefront API", {
     productType: category.productType,
     userQuery,
-    adminQuery,
+    storefrontQuery,
     shop
   });
 
@@ -261,19 +230,24 @@ async function searchHomeFiltersViaAdmin({
     productType: category.productType,
     query: userQuery,
     first: 25,
-    conversationId
+    conversationId,
+    buyerIp
   });
 
-  // User asked for a MERV we don't carry, and no other valid MERV/size tags to search.
-  if (unsupportedMerv.length && !(tags || []).some((t) => String(t).startsWith("merv-") || String(t).startsWith("Width_"))) {
+  if (
+    unsupportedMerv.length &&
+    !(tags || []).some(
+      (t) => String(t).startsWith("merv-") || String(t).startsWith("Width_")
+    )
+  ) {
     return toolResult({
       success: true,
       found: false,
-      source: "admin_api",
+      source: "storefront_api",
       category: category.id,
       product_type: category.productType,
       query: userQuery || null,
-      search_query: searchQuery || adminQuery,
+      search_query: searchQuery || storefrontQuery,
       tags: [],
       unsupported_merv: unsupportedMerv,
       available_merv: availableMerv,
@@ -289,7 +263,7 @@ async function searchHomeFiltersViaAdmin({
 
   const products = preferExactSizeMatches(rawProducts, userQuery);
 
-  console.log("[catalog-search] Admin results", {
+  console.log("[catalog-search] Storefront home_filter results", {
     raw: rawProducts.length,
     afterSizePrefer: products.length,
     tags,
@@ -298,10 +272,10 @@ async function searchHomeFiltersViaAdmin({
   });
 
   const payload = successPayload({
-    source: "admin_api",
+    source: "storefront_api",
     category,
     userQuery,
-    searchQuery: searchQuery || adminQuery,
+    searchQuery: searchQuery || storefrontQuery,
     products
   });
 
@@ -324,66 +298,58 @@ async function searchHomeFiltersViaAdmin({
   return payload;
 }
 
-async function searchFreshenersViaMcp({ mcpClient, category, userQuery }) {
-  if (!mcpClient?.callTool) {
-    return toolError("MCP client unavailable for freshener search.");
-  }
+async function searchFreshenersViaStorefront({
+  category,
+  userQuery,
+  shop,
+  conversationId,
+  buyerIp
+}) {
+  const storefrontQuery = buildStorefrontProductSearchQuery(
+    category.productType,
+    userQuery
+  );
 
-  const searchQuery = buildFreshenerMcpQuery(category, userQuery);
-
-  console.log("[catalog-search] freshener → MCP search_catalog", {
+  console.log("[catalog-search] freshener → Storefront API", {
     productType: category.productType,
-    searchQuery
+    userQuery,
+    storefrontQuery,
+    shop
   });
 
-  let mcpResponse;
-  try {
-    mcpResponse = await mcpClient.callTool("search_catalog", {
-      catalog: { query: searchQuery }
-    });
-  } catch (error) {
-    console.error("[catalog-search] MCP freshener search failed", error);
-    return toolError(error.message || "MCP freshener search failed.");
-  }
+  const { searchQuery, products: rawProducts } = await searchShopifyProductsByType({
+    shop,
+    productType: category.productType,
+    query: userQuery,
+    first: 25,
+    conversationId,
+    buyerIp
+  });
 
-  if (mcpResponse?.isError) {
-    const errText = String(mcpResponse?.content?.[0]?.text || "MCP freshener search failed.");
-    return toolError(errText);
-  }
-
-  if (mcpResponse?.error) {
-    return toolError(
-      mcpResponse.error?.data || mcpResponse.error?.message || "MCP freshener search failed."
-    );
-  }
-
-  const rawProducts = extractMcpProducts(mcpResponse);
   const products = rawProducts.filter((p) =>
     matchesFreshenerProduct(p, category.productType)
   );
 
-  console.log("[catalog-search] MCP freshener results", {
+  console.log("[catalog-search] Storefront freshener results", {
     raw: rawProducts.length,
-    filtered: products.length
+    filtered: products.length,
+    searchQuery
   });
 
   return successPayload({
-    source: "mcp",
+    source: "storefront_api",
     category,
     userQuery,
-    searchQuery,
+    searchQuery: searchQuery || storefrontQuery,
     products
   });
 }
 
-/**
- * Route by category: home_filter → Admin API, freshener → MCP only.
- */
 export async function callCatalogSearchTool(
-  mcpClient,
+  _mcpClient,
   toolName,
   toolArgs = {},
-  { shop = null, conversationId = null } = {}
+  { shop = null, conversationId = null, buyerIp = null } = {}
 ) {
   if (toolName !== CATALOG_SEARCH_TOOL_NAME) {
     return toolError(`Unknown catalog search tool: ${toolName}`);
@@ -400,18 +366,21 @@ export async function callCatalogSearchTool(
 
   try {
     if (category.id === "home_filter") {
-      return await searchHomeFiltersViaAdmin({
+      return await searchHomeFiltersViaStorefront({
         category,
         userQuery,
         shop,
-        conversationId
+        conversationId,
+        buyerIp
       });
     }
 
-    return await searchFreshenersViaMcp({
-      mcpClient,
+    return await searchFreshenersViaStorefront({
       category,
-      userQuery
+      userQuery,
+      shop,
+      conversationId,
+      buyerIp
     });
   } catch (error) {
     console.error("[catalog-search] failed", {
