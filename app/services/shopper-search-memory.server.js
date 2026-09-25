@@ -314,20 +314,46 @@ export function buildSuggestionFromMemory(row) {
   return null;
 }
 
-export async function loadMemoriesForUserMessage(shopperId, userMessage = "") {
-  const detected = detectSearchIntentFromMessage(userMessage);
-  if (detected) {
-    const limit = LIMIT_BY_CONTEXT[detected] || 3;
-    return listShopperSearchMemory(shopperId, { intent: detected, limit });
-  }
-  return listShopperSearchMemory(shopperId, {
-    limit: LIMIT_BY_CONTEXT.welcome
-  });
+/** Newest saved searches for this shopper, loaded at the start of a chat turn. */
+export async function loadShopperMemoriesForTurn(shopperId) {
+  return listShopperSearchMemory(shopperId, { limit: 8 });
 }
 
-/** Standard storefront help line (greetings / welcome with history). */
+/**
+ * Facts for the model. Does not decide when to speak them — the system prompt does.
+ */
+export function buildShopperSearchMemoryContextMessage(rows = []) {
+  const lines = (Array.isArray(rows) ? rows : []).map(formatMemoryLine).filter(Boolean);
+  if (!lines.length) return null;
+
+  return {
+    role: "system",
+    content:
+      "SAVED SHOPPER SEARCHES (newest first; this is the full set for this shopper): " +
+      `${lines.join("; ")}. ` +
+      "This overrides the default blank size question and the default year/make/model question. " +
+      "If the latest customer message is trying to buy or find a filter and does not already give a new size or a new vehicle, " +
+      "you MUST suggest from this list in one short sentence and wait. " +
+      "If they named home or cabin, offer only that type, in the same style as: \"You can consider the saved search for the home filter size of 20x20.\" " +
+      "If they did not say home or cabin (for example \"want to purchase filter\"), ask one question and list the saved searches. " +
+      "Shape: \"Would you like to continue with a past search: a cabin filter for your 2020 Honda Civic 1.5L, a cabin filter for your 2008 Ford Focus 2.0L, or a home filter 20x20 or 10x10?\" " +
+      "Use only their real saved items. Do NOT say \"You can purchase\". " +
+      "Do NOT ask Width × Length × Thickness. Do NOT ask year, make, and model. " +
+      "Do NOT call search_store_products or get_fitment_next_step until they confirm a saved search or give new details. " +
+      "A plain hi/hello must NOT mention this list. " +
+      "Do not invent past searches that are not in this list."
+  };
+}
+
+/** One simple greeting sentence (plain words, no extra follow-up question). */
 export const STANDARD_STORE_HELP_LINE =
-  "I can help you with cabin air filters and vehicle fitment (year/make/model), cabin filter air fresheners, and home filters.";
+  "I can help with cabin air filters, cabin filter air fresheners, and home filters.";
+
+export function formatCompactGreeting(firstName) {
+  const name = String(firstName || "").trim();
+  if (name) return `Hi ${name}! ${STANDARD_STORE_HELP_LINE}`;
+  return STANDARD_STORE_HELP_LINE;
+}
 
 /**
  * Dynamic past-search list rule. When withStandardIntro is true, keep the catalog help line first, then continue-offer.
@@ -345,7 +371,7 @@ export function buildPastSearchOfferInstruction(offers = [], options = {}) {
   const listText = list.join("; ");
 
   let text = withStandardIntro
-    ? `Include this standard help line in the customer-visible reply (you may adapt wording slightly but keep cabin/vehicle fitment, fresheners, and home filters): "${STANDARD_STORE_HELP_LINE}" ` +
+    ? `Include this standard help line in the customer-visible reply (you may adapt wording slightly but keep cabin filters, fresheners, and home filters — do not say vehicle fitment): "${STANDARD_STORE_HELP_LINE}" ` +
       `Then ask if they want to continue with any of these past searches (full set — only these): ${listText}. `
     : "Past searches this shopper may continue (this is the full set — treat it as authoritative): " +
       listText +
@@ -363,38 +389,6 @@ export function buildPastSearchOfferInstruction(offers = [], options = {}) {
   }
 
   return text;
-}
-
-export function buildShopperSearchMemoryHintMessage(userMessage, rows = []) {
-  if (!Array.isArray(rows) || !rows.length) return null;
-
-  const detected = detectSearchIntentFromMessage(userMessage);
-  const rowsForHint =
-    isSimpleGreeting(userMessage) && !detected
-      ? selectMemoriesForGreeting(rows, GREETING_MEMORY_MAX)
-      : rows;
-  const offers = rowsForHint.map(formatMemoryOfferPhrase).filter(Boolean);
-  const useStandardIntro =
-    isSimpleGreeting(userMessage) && !detected;
-  const offerInstruction = buildPastSearchOfferInstruction(offers, {
-    maxInReply: 3,
-    confirmBeforeTools: Boolean(detected) || !isSimpleGreeting(userMessage),
-    withStandardIntro: useStandardIntro
-  });
-  if (!offerInstruction) return null;
-
-  const history = rowsForHint.map(formatMemoryLine).filter(Boolean);
-  const historyPrefix = history.length
-    ? `Returning shopper — search history (newest first): ${history.join("; ")}. `
-    : "Returning shopper. ";
-
-  return { role: "system", content: historyPrefix + offerInstruction };
-}
-
-function isSimpleGreeting(userMessage = "") {
-  return /^(hi|hello|hey|howdy|good\s+(morning|afternoon|evening))[\s!.?]*$/i.test(
-    String(userMessage || "").trim()
-  );
 }
 
 export function buildWelcomeSearchMemoryLines(rows = []) {

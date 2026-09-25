@@ -369,7 +369,10 @@
   }
 
   function getStaticWelcomeFallback() {
-    return window.shopChatConfig?.welcomeMessage || "I can help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters.";
+    return (
+      window.shopChatConfig?.welcomeMessage ||
+      "I can help with cabin air filters, cabin filter air fresheners, and home filters."
+    );
   }
 
   function getAssistantName() {
@@ -1098,7 +1101,7 @@
         if (greetingSubEl) {
           const sub =
             window.shopChatConfig?.greetingSubtitle ||
-            'Here to help you find the right cabin air filters, vehicle fitment, cabin filter air fresheners, and home filters.';
+            'Here to help you find the right cabin air filters, cabin filter air fresheners, and home filters.';
           greetingSubEl.textContent = decodeHtmlEntities(sub);
         }
 

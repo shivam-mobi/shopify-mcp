@@ -8,7 +8,10 @@ import {
   claimConversationForCustomer,
   bindConversationShopper
 } from "../db.server";
-import { buildPastSearchOfferInstruction } from "./shopper-search-memory.server.js";
+import {
+  STANDARD_STORE_HELP_LINE,
+  formatCompactGreeting
+} from "./shopper-search-memory.server.js";
 
 export function normalizeCustomerName(value) {
   const trimmed = String(value || "").trim();
@@ -142,9 +145,11 @@ export function buildCustomerContextHintMessage(
     parts.push("Their profile has no first or last name on file.");
   }
 
-  const greetingScope = hasPastSearches
-    ? "For hi/hello greetings, include the standard help line (cabin/vehicle fitment, fresheners, home filters), then offer to continue with past searches from the returning-shopper message — past items come only from that list. "
-    : "For hi/hello greetings, briefly offer help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters. ";
+  const greetingScope =
+    `For hi/hello greetings, reply in exactly ONE short sentence covering: ${STANDARD_STORE_HELP_LINE} ` +
+    `Example with name: "${formatCompactGreeting("Alex")}". Example without name: "${formatCompactGreeting()}". ` +
+    "No second sentence. No questions like \"How can I help/assist you?\". " +
+    "Do NOT mention past searches on a plain greeting. ";
 
   parts.push(
     "Use their first name naturally when you know it — briefly, not as the whole greeting. " +
@@ -209,23 +214,16 @@ export function buildWelcomePromptMessages(
     customerLines.push("Guest customer — no name is known.");
   }
 
-  const pastOffers = Array.isArray(searchMemoryLines) ? searchMemoryLines : [];
-  const pastSearchRule = buildPastSearchOfferInstruction(pastOffers, {
-    maxInReply: 3,
-    confirmBeforeTools: false,
-    withStandardIntro: true
-  });
   const instruction =
     "Generate the opening welcome message for a NEW chat session. " +
-    (pastSearchRule
-      ? `Reply with up to 3 short sentences. ${pastSearchRule} `
-      : "Reply with 1-2 short sentences only. " +
-        "Say you can help with cabin air filters and vehicle fitment (year, make, model), cabin filter air fresheners, and home filters. ") +
-    "Do NOT say \"AI-powered shopping assistant\" or \"I'm your AI-powered shopping assistant\" — the chat UI already shows that. " +
-    "If first name is known, you may start with a brief Hi {firstName}! — then the help line. " +
-    "If no name is known, skip the name — never output 'Hi !'. " +
-    "Do NOT use phrases like 'vehicle parts', 'How can I assist you today', or long generic offers. " +
-    "Do not call any tools. Do not ask a long list of questions." +
+    "Reply with exactly ONE short sentence (no second sentence). " +
+    `Must include all of: ${STANDARD_STORE_HELP_LINE} ` +
+    `With first name: "${formatCompactGreeting("Alex")}". Without name: "${formatCompactGreeting()}". ` +
+    "Do NOT mention past searches. " +
+    "Do NOT say \"AI-powered shopping assistant\" — the chat UI already shows that. " +
+    "Never output 'Hi !'. " +
+    "Forbidden: \"How can I help/assist you\", \"What can I do for you\", \"vehicle parts\", or extra filler. " +
+    "Do not call any tools." +
     (template
       ? ` Merchant welcome style hint (adapt, do not copy verbatim): ${template}`
       : "");
@@ -248,11 +246,7 @@ export function buildWelcomePromptMessages(
 
 export function getFallbackWelcomeMessage(profile = {}) {
   const firstName = normalizeCustomerName(profile.firstName);
-
-  if (firstName) {
-    return `Hi ${firstName}! I can help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters.`;
-  }
-  return "I can help with cabin air filters and vehicle fitment, cabin filter air fresheners, and home filters. What are you looking for?";
+  return formatCompactGreeting(firstName);
 }
 
 const GREETING_PATTERN = /^(hi|hello|hey|howdy|good\s+(morning|afternoon|evening)|what'?s\s+up|yo)[!.?\s]*$/i;
@@ -271,41 +265,21 @@ export function buildGreetingHintMessage(
   }
 
   const firstName = normalizeCustomerName(profile.firstName);
-  const nameHint = firstName
-    ? `You may start with "Hi ${firstName}!" then the assistant line. `
-    : "Do not invent or ask for a name. ";
-
-  const offers = Array.isArray(pastSearchOffers) && pastSearchOffers.length
-    ? pastSearchOffers
-    : String(recentSearchSnippet || "")
-        .split(";")
-        .map((s) => s.trim())
-        .filter(Boolean);
-  const pastSearchRule = offers.length
-    ? buildPastSearchOfferInstruction(offers, {
-        maxInReply: 3,
-        confirmBeforeTools: false,
-        withStandardIntro: true
-      })
-    : null;
-  const memoryHint =
-    pastSearchRule ||
-    "Mention you help with cabin air filters and vehicle fitment (year/make/model), cabin filter air fresheners, and home filters. ";
-
-  const lengthHint = offers.length
-    ? "Reply in up to 3 short sentences. "
-    : "Reply in 1-2 short sentences only. ";
+  const example = formatCompactGreeting(firstName);
 
   return {
     role: "system",
     content:
       "The customer sent a simple greeting. " +
-      lengthHint +
-      nameHint +
-      memoryHint +
-      "Do NOT say \"AI-powered shopping assistant\" or \"I'm your AI-powered shopping assistant\" — the chat UI already shows that. " +
-      "Do NOT say 'vehicle parts', 'How can I assist you today', or other long generic support lines. " +
-      "Do not call tools for a plain greeting."
+      "Reply with exactly ONE short sentence — no second sentence, no closing question. " +
+      (firstName
+        ? `Use their first name. Match this shape: "${example}". `
+        : `No name — match this shape: "${example}". `) +
+      `Must include: ${STANDARD_STORE_HELP_LINE} ` +
+      "Do NOT mention past searches. " +
+      "Do NOT say \"AI-powered shopping assistant\". " +
+      "Forbidden: \"How can I help/assist you\", \"What can I do for you\", \"vehicle parts\". " +
+      "Do not call tools."
   };
 }
 

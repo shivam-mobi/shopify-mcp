@@ -51,7 +51,9 @@ export function buildCatalogSearchHintMessage(userMessage) {
       (isLengthFollowUp && category === "home_filter"
         ? " Reminder: length is NEVER the first number in the size query."
         : "") +
-      " Do NOT call search_catalog. Do NOT call get_fitment_next_step unless they clearly need a cabin filter for a vehicle."
+      " Do NOT call search_catalog. Do NOT call get_fitment_next_step unless they clearly need a cabin filter for a vehicle. " +
+      "If SAVED SHOPPER SEARCHES includes a home filter size and this message has no new size, " +
+      "suggest that saved size in one sentence. Do NOT call search_store_products and do NOT ask Width × Length × Thickness until they confirm or give a new size."
   };
 }
 

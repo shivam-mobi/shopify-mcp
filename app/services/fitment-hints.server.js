@@ -35,9 +35,12 @@ export function buildCabinFitmentHintMessage(userMessage = "") {
   return {
     role: "system",
     content:
-      "The customer wants a vehicle cabin air filter. Call get_fitment_next_step first (no year/make/model yet). " +
+      "The customer wants a vehicle cabin air filter. " +
+      "If SAVED SHOPPER SEARCHES includes a cabin vehicle and they did not give a new year or vehicle, " +
+      "suggest continuing with that saved vehicle in one sentence. Do NOT call get_fitment_next_step and do NOT ask year, make, and model until they decline or give a different vehicle. " +
+      "Only when there is no saved cabin search: call get_fitment_next_step first. " +
       FITMENT_REPLY_RULE +
-      ' Example: "What year, make, and model is your vehicle?"'
+      ' Then you may ask: "What year, make, and model is your vehicle?"'
   };
 }
 

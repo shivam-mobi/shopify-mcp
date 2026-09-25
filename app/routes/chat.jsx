@@ -77,12 +77,9 @@ import {
   extractAssistantText
 } from "../services/customer-context.server.js";
 import {
-  loadMemoriesForUserMessage,
-  buildShopperSearchMemoryHintMessage,
-  buildWelcomeSearchMemoryLines,
-  recordSearchMemoryFromTool,
-  listShopperSearchMemory,
-  getRecentSearchOffers
+  loadShopperMemoriesForTurn,
+  buildShopperSearchMemoryContextMessage,
+  recordSearchMemoryFromTool
 } from "../services/shopper-search-memory.server.js";
 
 async function resolveShopperIdForChat(conversationId, body = {}) {
@@ -256,12 +253,9 @@ async function handleWelcomeSession({
 
     const customerProfile = await syncCustomerContextFromRequest(conversationId, body);
     const shopperId = await resolveShopperIdForChat(conversationId, body);
-    const welcomeMemories = shopperId
-      ? await listShopperSearchMemory(shopperId, { limit: 5 })
-      : [];
     const welcomeMessages = buildWelcomePromptMessages(customerProfile, {
       welcomeTemplate: body.welcome_template,
-      searchMemoryLines: buildWelcomeSearchMemoryLines(welcomeMemories)
+      searchMemoryLines: []
     });
     let welcomeText = "";
     try {
@@ -519,7 +513,7 @@ async function handleChatSession({
 
     let searchMemories = [];
     if (shopperId) {
-      searchMemories = await loadMemoriesForUserMessage(shopperId, userMessage);
+      searchMemories = await loadShopperMemoriesForTurn(shopperId);
     }
 
     const customerContextHint = buildCustomerContextHintMessage(customerProfile, {
@@ -529,20 +523,19 @@ async function handleChatSession({
       conversationHistory.unshift(customerContextHint);
     }
 
-    const greetingHint = buildGreetingHintMessage(userMessage, customerProfile, {
-      pastSearchOffers: getRecentSearchOffers(searchMemories)
-    });
+    const greetingHint = buildGreetingHintMessage(userMessage, customerProfile);
     if (greetingHint) {
       conversationHistory.unshift(greetingHint);
     }
 
-    if (shopperId && searchMemories.length) {
-      const searchMemoryHint = buildShopperSearchMemoryHintMessage(
-        userMessage,
-        searchMemories
-      );
-      if (searchMemoryHint) {
-        conversationHistory.unshift(searchMemoryHint);
+    const searchMemoryContext = buildShopperSearchMemoryContextMessage(searchMemories);
+    if (searchMemoryContext) {
+      const lastIndex = conversationHistory.length - 1;
+      const last = conversationHistory[lastIndex];
+      if (last?.role === "user") {
+        conversationHistory.splice(lastIndex, 0, searchMemoryContext);
+      } else {
+        conversationHistory.push(searchMemoryContext);
       }
     }
 
