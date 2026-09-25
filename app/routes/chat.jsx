@@ -43,6 +43,7 @@ import {
   buildInstallMediaHintMessage
 } from "../services/install-media.server.js";
 import { buildCatalogSearchHintMessage } from "../services/catalog-search-hints.server.js";
+import { buildCabinFitmentHintMessage } from "../services/fitment-hints.server.js";
 import {
   getStorePolicyTools,
   isStorePolicyTool,
@@ -511,6 +512,11 @@ async function handleChatSession({
     const catalogSearchHint = buildCatalogSearchHintMessage(userMessage);
     if (catalogSearchHint) {
       conversationHistory.unshift(catalogSearchHint);
+    }
+
+    const cabinFitmentHint = buildCabinFitmentHintMessage(userMessage);
+    if (cabinFitmentHint) {
+      conversationHistory.unshift(cabinFitmentHint);
     }
 
     let searchMemories = [];

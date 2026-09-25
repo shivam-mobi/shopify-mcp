@@ -6,6 +6,7 @@ import { saveMessage } from "../db.server";
 import AppConfig from "./config.server";
 import { enrichProductsWithComparison, buildCompareAttributes, buildLlmProductSummary, buildProductListingMetadata, resolveProductVariantId, isFreshenerProduct, resolveProductDescriptionHtml } from "./product-compare.server.js";
 import { resolveStorefrontHostUrl } from "./storefront-config.server.js";
+import { buildFitmentToolHistoryContent } from "./fitment-hints.server.js";
 
 /**
  * Creates a tool service instance
@@ -44,6 +45,17 @@ export function createToolService() {
 
   const handleToolSuccess = async (toolUseResponse, toolName, toolUseId, conversationHistory, productsToDisplay, conversationId) => {
     let historyContent = toolUseResponse.content;
+
+    const isFitmentStep =
+      toolName === "get_fitment_next_step" || toolName === "find_fitment_products";
+
+    if (isFitmentStep) {
+      const data = extractToolResponseData(toolUseResponse);
+      const status = String(data?.status || "");
+      if (status && status !== "success") {
+        historyContent = buildFitmentToolHistoryContent(toolUseResponse);
+      }
+    }
 
     if (AppConfig.tools.productSearchNames.includes(toolName)) {
       const ranked = processProductSearchResult(toolUseResponse);
