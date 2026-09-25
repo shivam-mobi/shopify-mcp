@@ -1,14 +1,14 @@
-<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=theme-cart-clear-add-1">
+<link rel="stylesheet" href="{{ 'chat.css' | asset_url }}?v=pgi-brand-1">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
 {% assign brand_color = block.settings.chat_bubble_color | default: '#00BCF2' %}
 {% if brand_color == '#5046e4' or brand_color == '#5046E4' %}
   {% assign brand_color = '#00BCF2' %}
 {% endif %}
-{% assign assistant_name = block.settings.assistant_name | default: 'AIRA' %}
-{% assign assistant_display = assistant_name | downcase | capitalize %}
+{% assign assistant_name = block.settings.assistant_name | default: 'PGI' %}
+{% assign assistant_display = assistant_name %}
 {% if assistant_display == blank %}
-  {% assign assistant_display = 'Aira' %}
+  {% assign assistant_display = 'PGI' %}
 {% endif %}
 
 <div
@@ -165,7 +165,7 @@
   </div>
 </div>
 
-<script src="{{ 'chat.js' | asset_url }}?v=theme-cart-clear-add-1" defer></script>
+<script src="{{ 'chat.js' | asset_url }}?v=pgi-brand-1" defer></script>
 <script>
   window.shopChatConfig = {
     apiUrl: "https://struggle-throwing-recycled.ngrok-free.dev",
@@ -225,7 +225,7 @@
 
 {% schema %}
 {
-  "name": "AIRA",
+  "name": "PGI",
   "target": "body",
   "settings": [
     {
@@ -238,7 +238,7 @@
       "type": "text",
       "id": "assistant_name",
       "label": "Assistant Name",
-      "default": "AIRA"
+      "default": "PGI"
     },
     {
       "type": "text",

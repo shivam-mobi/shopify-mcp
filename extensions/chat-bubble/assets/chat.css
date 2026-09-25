@@ -1154,7 +1154,7 @@
   gap: 12px;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 5px 28px;
+  padding: 5px 12px;
   scrollbar-width: thin;
   width: 100%;
   min-height: 0;
@@ -1201,6 +1201,14 @@
   opacity: 0.35;
   cursor: default;
   box-shadow: none;
+}
+
+.shop-ai-product-carousel.can-scroll-prev .shop-ai-product-grid {
+  padding-left: 28px;
+}
+
+.shop-ai-product-carousel.can-scroll-next .shop-ai-product-grid {
+  padding-right: 28px;
 }
 
 .shop-ai-product-scroll--prev { left: 0; }

@@ -373,14 +373,18 @@
   }
 
   function getAssistantName() {
-    return String(window.shopChatConfig?.assistantName || 'AIRA').trim() || 'AIRA';
+    return String(window.shopChatConfig?.assistantName || 'PGI').trim() || 'PGI';
   }
 
-  /** Display name: "AIRA" / "aira" → "Aira" */
+  /** Display name: keep acronyms like PGI uppercase; otherwise Title-case. */
   function getAssistantDisplayName() {
     const raw = getAssistantName();
-    if (!raw) return 'Aira';
-    return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+    if (!raw) return 'PGI';
+    const trimmed = raw.trim();
+    if (/^[A-Za-z0-9]{2,8}$/.test(trimmed) && trimmed === trimmed.toUpperCase()) {
+      return trimmed;
+    }
+    return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
   }
 
   function escapeHtml(text) {
@@ -406,7 +410,7 @@
   }
 
   /**
-   * Home greeting: "Hi Ayush, I'm Aira!" when named, else "Hi, I'm Aira!"
+   * Home greeting: "Hi Ayush, I'm PGI!" when named, else "Hi, I'm PGI!"
    * Returns safe HTML with assistant name bolded.
    */
   function getHomeGreetingHtml() {
@@ -1019,7 +1023,7 @@
       },
 
       /**
-       * Launcher tip on each page load: "Hi Shivam, I'm Aira!" with wave.
+       * Launcher tip on each page load: "Hi Shivam, I'm PGI!" with wave.
        * Hides after dismiss or opening chat (this page visit only).
        */
       setupBubbleCallout: function() {
@@ -1690,6 +1694,13 @@
 
           refresh();
           setTimeout(refresh, 120);
+          setTimeout(refresh, 400);
+          productsContainer.querySelectorAll('img').forEach((img) => {
+            if (!img.complete) {
+              img.addEventListener('load', refresh, { once: true });
+              img.addEventListener('error', refresh, { once: true });
+            }
+          });
 
           if (list.length > 1) {
             productSection.appendChild(ShopAIChat.Product.createComparisonTable(list));
@@ -2351,10 +2362,6 @@
             break;
 
           case 'fitment_options':
-            ShopAIChat.UI.displayFitmentOptions(data);
-            break;
-
-          case 'shopper_search_suggestions':
             ShopAIChat.UI.displayFitmentOptions(data);
             break;
 
@@ -4062,24 +4069,42 @@
           '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>';
 
         const refresh = function() {
-          const maxScroll = scroller.scrollWidth - scroller.clientWidth;
-          const canScroll = maxScroll > 4;
+          const epsilon = 3;
+          const cardSelector = options.stepSelector || '.shop-ai-product-card';
+          const cards = scroller.querySelectorAll(cardSelector);
+          const scrollerRect = scroller.getBoundingClientRect();
+
+          if (!cards.length) {
+            prevBtn.hidden = true;
+            nextBtn.hidden = true;
+            carousel.classList.remove('has-overflow', 'can-scroll-prev', 'can-scroll-next');
+            return;
+          }
+
+          const firstRect = cards[0].getBoundingClientRect();
+          const lastRect = cards[cards.length - 1].getBoundingClientRect();
+
+          const hasHiddenLeft = firstRect.left < scrollerRect.left - epsilon;
+          const hasHiddenRight = lastRect.right > scrollerRect.right + epsilon;
+          const canScroll = hasHiddenLeft || hasHiddenRight;
+
           carousel.classList.toggle('has-overflow', canScroll);
+
           if (!canScroll) {
             prevBtn.hidden = true;
             nextBtn.hidden = true;
+            carousel.classList.remove('can-scroll-prev', 'can-scroll-next');
             return;
           }
-          // Keep both visible on small screens so users notice scrolling is possible;
-          // only dim/disable at the edges.
-          prevBtn.hidden = false;
-          nextBtn.hidden = false;
-          const atStart = scroller.scrollLeft <= 4;
-          const atEnd = scroller.scrollLeft >= maxScroll - 4;
-          prevBtn.disabled = atStart;
-          nextBtn.disabled = atEnd;
-          prevBtn.classList.toggle('is-disabled', atStart);
-          nextBtn.classList.toggle('is-disabled', atEnd);
+
+          prevBtn.hidden = !hasHiddenLeft;
+          nextBtn.hidden = !hasHiddenRight;
+          prevBtn.disabled = !hasHiddenLeft;
+          nextBtn.disabled = !hasHiddenRight;
+          prevBtn.classList.remove('is-disabled');
+          nextBtn.classList.remove('is-disabled');
+          carousel.classList.toggle('can-scroll-prev', hasHiddenLeft);
+          carousel.classList.toggle('can-scroll-next', hasHiddenRight);
         };
 
         const scrollByStep = function(direction) {
@@ -4091,6 +4116,7 @@
             amount = options.step;
           }
           scroller.scrollBy({ left: direction * amount, behavior: 'smooth' });
+          window.setTimeout(refresh, 350);
         };
 
         prevBtn.addEventListener('click', function(event) {
@@ -4104,10 +4130,16 @@
           if (!nextBtn.disabled) scrollByStep(1);
         });
         scroller.addEventListener('scroll', refresh, { passive: true });
+        if ('onscrollend' in scroller) {
+          scroller.addEventListener('scrollend', refresh, { passive: true });
+        }
         if (typeof ResizeObserver !== 'undefined') {
           const observer = new ResizeObserver(refresh);
           observer.observe(scroller);
           observer.observe(carousel);
+        }
+        if (typeof window !== 'undefined' && window.requestAnimationFrame) {
+          requestAnimationFrame(() => requestAnimationFrame(refresh));
         }
 
         return { prevBtn, nextBtn, refresh };

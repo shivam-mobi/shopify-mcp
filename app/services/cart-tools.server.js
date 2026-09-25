@@ -34,6 +34,12 @@ import {
   withAiraAttribution
 } from "./aira-attribution.server.js";
 import AppConfig from "./config.server.js";
+import {
+  findCartLineForVariant,
+  setPendingDuplicateAdd,
+  clearPendingDuplicateAdd,
+  shouldConfirmDuplicateAdd
+} from "./cart-duplicate-confirm.server.js";
 
 const TOOL_FAILURE_USER_MESSAGE = AppConfig.errorMessages.toolFailure;
 
@@ -87,6 +93,8 @@ export function getCartWrapperTools() {
         "Pass variant_id from the latest fitment/catalog products[] (gid://shopify/ProductVariant/...). " +
         "If the customer message includes variant_id: gid://..., use that EXACT id — do not swap to a different scent or product. " +
         "When they name a product/scent (e.g. Black Rock), match products[].title and use that row's variant_id. " +
+        "If the tool returns duplicate_in_cart / needs_confirmation, ask the customer in ONE short sentence if they want another — do NOT add until they confirm. " +
+        "After they confirm, call add_to_cart again with the SAME variant_id and confirm_duplicate: true. " +
         "For changing MULTIPLE products at once (increase each qty, set several qtys, remove several items), " +
         "call update_cart_items ONCE — do NOT call add_to_cart repeatedly. " +
         "Server handles merge — never call create_cart or update_cart directly.",
@@ -100,6 +108,11 @@ export function getCartWrapperTools() {
           quantity: {
             type: "integer",
             description: "Quantity to add (default 1)"
+          },
+          confirm_duplicate: {
+            type: "boolean",
+            description:
+              "Set true only after the customer confirmed adding more of a variant already in the cart (same variant_id as the pending duplicate prompt)."
           }
         },
         required: ["variant_id"]
@@ -324,7 +337,7 @@ export async function callCartWrapperTool(
 ) {
   switch (toolName) {
     case "add_to_cart":
-      return addToCart(mcpClient, conversationId, toolArgs);
+      return addToCart(mcpClient, conversationId, toolArgs, context);
     case "remove_from_cart":
       return removeFromCart(mcpClient, conversationId, toolArgs, context);
     case "update_cart_items":
@@ -433,11 +446,17 @@ export function buildActiveCartWrapperContextMessage(cartId) {
       "clear_my_cart to remove all products / empty cart, " +
       "get_my_cart to show contents, set_cart_shipping to save address, remove_cart_shipping to clear address, " +
       "apply_discount_code when they give a promo/coupon code. " +
+      "If add_to_cart returns duplicate_in_cart, ask for confirmation before adding the same variant again; then use confirm_duplicate: true. " +
       "Do NOT call create_cart, update_cart, or get_cart directly."
   };
 }
 
-async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }) {
+async function addToCart(
+  mcpClient,
+  conversationId,
+  { variant_id, quantity = 1, confirm_duplicate = false } = {},
+  context = {}
+) {
   const variantId = normalizeVariantId(variant_id);
   if (!variantId) {
     return toolError("variant_id is required (gid://shopify/ProductVariant/...)");
@@ -446,6 +465,47 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
   const qty = Math.max(1, Number(quantity) || 1);
   const newItem = { quantity: qty, item: { id: variantId } };
   const live = await fetchLiveCart(mcpClient, conversationId);
+
+  if (live) {
+    const existingLine = findCartLineForVariant(live.cart?.line_items || [], variantId);
+    const needsConfirm = shouldConfirmDuplicateAdd(conversationId, variantId, {
+      confirmDuplicate: confirm_duplicate === true,
+      userMessage: context?.userMessage || ""
+    });
+
+    if (existingLine && needsConfirm) {
+      const title = existingLine.item?.title || "This product";
+      const currentQty = Math.max(1, Number(existingLine.quantity) || 1);
+      setPendingDuplicateAdd(conversationId, {
+        variantId,
+        quantity: qty,
+        title,
+        currentQuantity: currentQty
+      });
+
+      const cartItems = (live.cart?.line_items || []).map((line) => ({
+        title: line.item?.title || "Product",
+        quantity: line.quantity || 1,
+        variant_id: line.item?.id
+      }));
+
+      return toolResult({
+        success: false,
+        duplicate_in_cart: true,
+        needs_confirmation: true,
+        variant_id: variantId,
+        title,
+        current_quantity: currentQty,
+        quantity_to_add: qty,
+        items: cartItems,
+        empty: !cartItems.length,
+        instruction:
+          `The customer already has ${currentQty} of "${title}" in the cart. ` +
+          "Reply in ONE short sentence asking if they want to add another (do NOT say it was added). " +
+          "When they confirm, call add_to_cart with the same variant_id and confirm_duplicate: true."
+      });
+    }
+  }
 
   if (!live) {
     const response = await mcpClient.callTool("create_cart", {
@@ -515,6 +575,8 @@ async function addToCart(mcpClient, conversationId, { variant_id, quantity = 1 }
         "Do NOT claim it is in the cart. Base any cart list ONLY on items[]."
     });
   }
+
+  clearPendingDuplicateAdd(conversationId);
 
   return toolResult(
     await summarizeCartWithShipping(
@@ -1093,6 +1155,16 @@ function extractToolResultData(toolResponse) {
   } catch {
     return null;
   }
+}
+
+/** True when a cart tool actually changed cart state (not duplicate-confirm prompts). */
+export function isCartMutationCommitted(toolResponse) {
+  if (toolResponse?.error) return false;
+  const data = extractToolResultData(toolResponse);
+  if (!data) return true;
+  if (data.duplicate_in_cart || data.needs_confirmation) return false;
+  if (data.success === false) return false;
+  return true;
 }
 
 async function getMyCart(mcpClient, conversationId) {
@@ -2909,6 +2981,7 @@ async function removeCartShipping(mcpClient, conversationId) {
 }
 
 async function clearMyCart(mcpClient, conversationId) {
+  clearPendingDuplicateAdd(conversationId);
   const cartId = await getConversationCartId(conversationId);
   const checkoutId = await getConversationCheckoutId(conversationId);
 

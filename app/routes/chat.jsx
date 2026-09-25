@@ -24,11 +24,13 @@ import {
   isCartMutationTool,
   callCartWrapperTool,
   appendFinalCartSnapshot,
+  isCartMutationCommitted,
   mergeThemeCartIntoConversation,
   filterCartToolsForLlm,
   buildShippingAddressHintMessage,
   buildShippingEmailHintMessage
 } from "../services/cart-tools.server";
+import { buildDuplicateCartHintMessage } from "../services/cart-duplicate-confirm.server.js";
 import { isFitmentConfigured } from "../fitment/database.server.js";
 import {
   callFitmentTool,
@@ -80,7 +82,6 @@ import {
   buildWelcomeSearchMemoryLines,
   recordSearchMemoryFromTool,
   listShopperSearchMemory,
-  memoriesToSuggestionPayload,
   getRecentSearchOffers
 } from "../services/shopper-search-memory.server.js";
 
@@ -262,14 +263,6 @@ async function handleWelcomeSession({
       welcomeTemplate: body.welcome_template,
       searchMemoryLines: buildWelcomeSearchMemoryLines(welcomeMemories)
     });
-    const welcomeSuggestions = memoriesToSuggestionPayload(welcomeMemories);
-    if (welcomeSuggestions) {
-      stream.sendMessage({
-        type: "shopper_search_suggestions",
-        ...welcomeSuggestions
-      });
-    }
-
     let welcomeText = "";
     try {
       const finalMessage = await llmService.streamConversation(
@@ -519,6 +512,11 @@ async function handleChatSession({
       conversationHistory.unshift(cabinFitmentHint);
     }
 
+    const duplicateCartHint = buildDuplicateCartHintMessage(conversationId, userMessage);
+    if (duplicateCartHint) {
+      conversationHistory.unshift(duplicateCartHint);
+    }
+
     let searchMemories = [];
     if (shopperId) {
       searchMemories = await loadMemoriesForUserMessage(shopperId, userMessage);
@@ -545,13 +543,6 @@ async function handleChatSession({
       );
       if (searchMemoryHint) {
         conversationHistory.unshift(searchMemoryHint);
-      }
-      const turnSuggestions = memoriesToSuggestionPayload(searchMemories);
-      if (turnSuggestions) {
-        stream.sendMessage({
-          type: "shopper_search_suggestions",
-          ...turnSuggestions
-        });
       }
     }
 
@@ -756,7 +747,10 @@ async function handleChatSession({
                   conversationId
                 );
 
-                if (isCartMutationTool(toolName) && !toolUseResponse?.error) {
+                if (
+                  isCartMutationTool(toolName) &&
+                  isCartMutationCommitted(toolUseResponse)
+                ) {
                   cartMutatedThisTurn = true;
                   lastCartMutationResponse = toolUseResponse;
                 }
