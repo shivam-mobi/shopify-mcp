@@ -269,22 +269,21 @@ async function handleWelcomeSession({
         },
         {
           onText: (textDelta) => {
-            welcomeText += textDelta;
-            stream.sendMessage({
-              type: "chunk",
-              chunk: textDelta
-            });
+            // Typing effect disabled: chunks are not sent individually
           }
         }
       );
 
-      welcomeText = extractAssistantText(finalMessage) || welcomeText.trim();
+      welcomeText = extractAssistantText(finalMessage) || "";
     } catch (error) {
       console.error("[chat] welcome LLM failed, using fallback:", error.message);
     }
 
     if (!welcomeText) {
       welcomeText = getFallbackWelcomeMessage(customerProfile);
+    }
+
+    if (welcomeText) {
       stream.sendMessage({
         type: "chunk",
         chunk: welcomeText
@@ -578,10 +577,7 @@ async function handleChatSession({
         {
           // Handle text chunks
           onText: (textDelta) => {
-            stream.sendMessage({
-              type: 'chunk',
-              chunk: textDelta
-            });
+            // Typing effect disabled: chunks are not sent individually
           },
 
           // Handle complete messages
@@ -595,6 +591,15 @@ async function handleChatSession({
               .catch((error) => {
                 console.error("Error saving message to database:", error);
               });
+
+            // Send the full text in one go to bypass the typewriter effect on the frontend
+            const fullText = extractAssistantText(message);
+            if (fullText) {
+              stream.sendMessage({
+                type: 'chunk',
+                chunk: fullText
+              });
+            }
 
             // Send a completion message
             stream.sendMessage({ type: 'message_complete' });
