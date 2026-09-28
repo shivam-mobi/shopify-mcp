@@ -320,10 +320,36 @@ export async function loadShopperMemoriesForTurn(shopperId) {
 }
 
 /**
+ * Returns true only for rows that have enough data to actually re-run as a search.
+ * Rows that fail this check are not shown to the model as past searches.
+ */
+function isActionableRow(row) {
+  if (row.intent === SEARCH_INTENT.HOME) return Boolean(row.homeFilterSize);
+  if (row.intent === SEARCH_INTENT.FRESHENER) return true;
+  // CABIN: must have year + make + model
+  return Boolean(row.vehicleYear && row.vehicleMake && row.vehicleModel);
+}
+
+/**
+ * Guard message injected when the shopper has NO saved searches.
+ * Prevents the model from hallucinating past-search offers.
+ */
+export function buildNoSavedSearchContextMessage() {
+  return {
+    role: "system",
+    content:
+      "This shopper has NO saved past searches. " +
+      "Do NOT mention, offer, or refer to any past searches or saved searches. " +
+      "Use the default store assistant behavior only."
+  };
+}
+
+/**
  * Facts for the model. Does not decide when to speak them — the system prompt does.
  */
 export function buildShopperSearchMemoryContextMessage(rows = []) {
-  const lines = (Array.isArray(rows) ? rows : []).map(formatMemoryLine).filter(Boolean);
+  const actionable = (Array.isArray(rows) ? rows : []).filter(isActionableRow);
+  const lines = actionable.map(formatMemoryLine).filter(Boolean);
   if (!lines.length) return null;
 
   return {
@@ -333,11 +359,13 @@ export function buildShopperSearchMemoryContextMessage(rows = []) {
       `${lines.join("; ")}. ` +
       "This overrides the default blank size question and the default year/make/model question. " +
       "If the latest customer message is trying to buy or find a filter and does not already give a new size or a new vehicle, " +
-      "you MUST suggest from this list in one short sentence and wait. " +
-      "If they named home or cabin, offer only that type, in the same style as: \"You can consider the saved search for the home filter size of 20x20.\" " +
-      "If they did not say home or cabin (for example \"want to purchase filter\"), ask one question and list the saved searches. " +
-      "Shape: \"Would you like to continue with a past search: a cabin filter for your 2020 Honda Civic 1.5L, a cabin filter for your 2008 Ford Focus 2.0L, or a home filter 20x20 or 10x10?\" " +
-      "Use only their real saved items. Do NOT say \"You can purchase\". " +
+      "you MUST suggest relevant items from this list using a short question and then wait. " +
+      "Always phrase the suggestion as a question: 'Would you like to continue with a past search: [items]?' " +
+      "Never use a flat declarative sentence such as 'You can consider...' or 'You can purchase...'. " +
+      "If the customer message refers to home filters, include only home-type items from this list in the question. " +
+      "If the customer message refers to cabin filters, include only cabin-type items from this list in the question. " +
+      "If the message is ambiguous (no clear home or cabin intent), include all saved searches in the question. " +
+      "Use only the real items from this list — never invent or paraphrase them. " +
       "Do NOT ask Width × Length × Thickness. Do NOT ask year, make, and model. " +
       "Do NOT call search_store_products or get_fitment_next_step until they confirm a saved search or give new details. " +
       "A plain hi/hello must NOT mention this list. " +

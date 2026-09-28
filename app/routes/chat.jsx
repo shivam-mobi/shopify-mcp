@@ -79,6 +79,7 @@ import {
 import {
   loadShopperMemoriesForTurn,
   buildShopperSearchMemoryContextMessage,
+  buildNoSavedSearchContextMessage,
   recordSearchMemoryFromTool
 } from "../services/shopper-search-memory.server.js";
 
@@ -536,6 +537,17 @@ async function handleChatSession({
         conversationHistory.splice(lastIndex, 0, searchMemoryContext);
       } else {
         conversationHistory.push(searchMemoryContext);
+      }
+    } else {
+      // No actionable saved searches — inject an explicit guard so the model
+      // does not hallucinate past-search offers.
+      const noMemoryGuard = buildNoSavedSearchContextMessage();
+      const lastIndex = conversationHistory.length - 1;
+      const last = conversationHistory[lastIndex];
+      if (last?.role === "user") {
+        conversationHistory.splice(lastIndex, 0, noMemoryGuard);
+      } else {
+        conversationHistory.push(noMemoryGuard);
       }
     }
 
