@@ -410,6 +410,17 @@ export async function getFitmentNextStep({
   }
 
   const makes = await fetchMakes(matchedYear);
+
+  // Year exists as a number but has no makes in the fitment DB
+  // (e.g. a future year like 2027). Tell the model clearly.
+  if (!makes.length) {
+    return {
+      status: "not_found",
+      message: `We don't have fitment data for ${matchedYear} vehicles yet. Ask the customer to double-check their vehicle year.`,
+      known
+    };
+  }
+
   const matchedMake = matchMakeName(make, makes);
   if (!matchedMake) {
     const suggestions = makes

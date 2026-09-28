@@ -2,11 +2,8 @@
  * Short, direct customer replies for vehicle cabin fitment flows.
  */
 
-const CABIN_FITMENT_USER_PATTERN =
-  /\b(cabin\s*air\s*filter|cabin\s*filter|filter\s+for\s+my\s+(car|truck|vehicle)|fits?\s+my\s+(car|truck|vehicle)|vehicle\s+filter|what\s+filter\s+fits)\b/i;
-
-const HAS_YMM_PATTERN =
-  /\b(19|20)\d{2}\b|\b(vin|year|make|model)\b/i;
+const HOME_OR_FRESHENER_EXCLUSION =
+  /\b(home|furnace|merv|freshener|fresheners|scent|width|height|length|depth|thickness|\d{1,2}\s*[x×]\s*\d{1,2})\b/i;
 
 const FITMENT_NEED_STATUSES = new Set([
   "need_filters",
@@ -23,24 +20,22 @@ const FITMENT_REPLY_RULE =
 export function isCabinFitmentUserMessage(userMessage = "") {
   const text = String(userMessage || "").trim();
   if (!text) return false;
-  if (!CABIN_FITMENT_USER_PATTERN.test(text)) return false;
-  if (/\b(home|furnace|merv|\d{1,2}\s*[x×]\s*\d{1,2})\b/i.test(text)) return false;
+  // Skip only messages clearly about home filters or fresheners
+  if (HOME_OR_FRESHENER_EXCLUSION.test(text)) return false;
   return true;
 }
 
 export function buildCabinFitmentHintMessage(userMessage = "") {
   if (!isCabinFitmentUserMessage(userMessage)) return null;
-  if (HAS_YMM_PATTERN.test(userMessage)) return null;
 
   return {
     role: "system",
     content:
-      "The customer wants a vehicle cabin air filter. " +
-      "If SAVED SHOPPER SEARCHES includes a cabin vehicle and they did not give a new year or vehicle, " +
-      "suggest continuing with that saved vehicle in one sentence. Do NOT call get_fitment_next_step and do NOT ask year, make, and model until they decline or give a different vehicle. " +
-      "Only when there is no saved cabin search: call get_fitment_next_step first. " +
-      FITMENT_REPLY_RULE +
-      ' Then you may ask: "What year, make, and model is your vehicle?"'
+      "The customer may want a vehicle cabin air filter. " +
+      "If they already provided vehicle details (year, make, model, or VIN) in their current message, call get_fitment_next_step immediately with those details. " +
+      "If SAVED SHOPPER SEARCHES includes a cabin vehicle and they did NOT provide ANY vehicle details in their current message: suggest continuing with that saved vehicle in one sentence, and do NOT call get_fitment_next_step until they confirm or give details. " +
+      "Only when there is no saved cabin search AND no vehicle details in the message: ask for year, make, and model. " +
+      FITMENT_REPLY_RULE
   };
 }
 

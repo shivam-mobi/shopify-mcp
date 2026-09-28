@@ -503,13 +503,17 @@ async function handleChatSession({
     }
 
     const cabinFitmentHint = buildCabinFitmentHintMessage(userMessage);
-    if (cabinFitmentHint) {
-      conversationHistory.unshift(cabinFitmentHint);
-    }
-
     const duplicateCartHint = buildDuplicateCartHintMessage(conversationId, userMessage);
     if (duplicateCartHint) {
       conversationHistory.unshift(duplicateCartHint);
+    }
+
+    // When a duplicate-cart confirmation is pending (user said "yup"/"yes"),
+    // skip fitment/memory hints — they conflict with the add_to_cart instruction.
+    if (!duplicateCartHint) {
+      if (cabinFitmentHint) {
+        conversationHistory.unshift(cabinFitmentHint);
+      }
     }
 
     let searchMemories = [];
@@ -529,25 +533,28 @@ async function handleChatSession({
       conversationHistory.unshift(greetingHint);
     }
 
-    const searchMemoryContext = buildShopperSearchMemoryContextMessage(searchMemories);
-    if (searchMemoryContext) {
-      const lastIndex = conversationHistory.length - 1;
-      const last = conversationHistory[lastIndex];
-      if (last?.role === "user") {
-        conversationHistory.splice(lastIndex, 0, searchMemoryContext);
+    // Skip saved-search injection when a duplicate-confirm is active
+    if (!duplicateCartHint) {
+      const searchMemoryContext = buildShopperSearchMemoryContextMessage(searchMemories);
+      if (searchMemoryContext) {
+        const lastIndex = conversationHistory.length - 1;
+        const last = conversationHistory[lastIndex];
+        if (last?.role === "user") {
+          conversationHistory.splice(lastIndex, 0, searchMemoryContext);
+        } else {
+          conversationHistory.push(searchMemoryContext);
+        }
       } else {
-        conversationHistory.push(searchMemoryContext);
-      }
-    } else {
-      // No actionable saved searches — inject an explicit guard so the model
-      // does not hallucinate past-search offers.
-      const noMemoryGuard = buildNoSavedSearchContextMessage();
-      const lastIndex = conversationHistory.length - 1;
-      const last = conversationHistory[lastIndex];
-      if (last?.role === "user") {
-        conversationHistory.splice(lastIndex, 0, noMemoryGuard);
-      } else {
-        conversationHistory.push(noMemoryGuard);
+        // No actionable saved searches — inject an explicit guard so the model
+        // does not hallucinate past-search offers.
+        const noMemoryGuard = buildNoSavedSearchContextMessage();
+        const lastIndex = conversationHistory.length - 1;
+        const last = conversationHistory[lastIndex];
+        if (last?.role === "user") {
+          conversationHistory.splice(lastIndex, 0, noMemoryGuard);
+        } else {
+          conversationHistory.push(noMemoryGuard);
+        }
       }
     }
 

@@ -358,7 +358,7 @@ export function buildShopperSearchMemoryContextMessage(rows = []) {
       "SAVED SHOPPER SEARCHES (newest first; this is the full set for this shopper): " +
       `${lines.join("; ")}. ` +
       "This overrides the default blank size question and the default year/make/model question. " +
-      "If the latest customer message is trying to buy or find a filter and does not already give a new size or a new vehicle, " +
+      "If the latest customer message is trying to buy or find a filter and does NOT provide ANY specific vehicle details or filter sizes in their current message, " +
       "you MUST suggest relevant items from this list using a short question and then wait. " +
       "Always phrase the suggestion as a question: 'Would you like to continue with a past search: [items]?' " +
       "Never use a flat declarative sentence such as 'You can consider...' or 'You can purchase...'. " +
@@ -367,7 +367,8 @@ export function buildShopperSearchMemoryContextMessage(rows = []) {
       "If the message is ambiguous (no clear home or cabin intent), include all saved searches in the question. " +
       "Use only the real items from this list — never invent or paraphrase them. " +
       "Do NOT ask Width × Length × Thickness. Do NOT ask year, make, and model. " +
-      "Do NOT call search_store_products or get_fitment_next_step until they confirm a saved search or give new details. " +
+      "If the customer already provided specific details (year, make, model, VIN, or a filter size), call the appropriate tool immediately with those details — do NOT suggest past searches and do NOT block on saved-search confirmation. " +
+      "Only when they asked for a filter WITHOUT giving specific details: suggest from saved searches and wait for confirmation before calling tools. " +
       "A plain hi/hello must NOT mention this list. " +
       "Do not invent past searches that are not in this list."
   };

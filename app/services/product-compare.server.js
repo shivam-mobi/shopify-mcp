@@ -363,14 +363,17 @@ function pickBestProduct(products = []) {
 
 function sortProductsForDisplay(products = []) {
   return [...products].sort((a, b) => {
+    // 1. In-stock items always come before out-of-stock items
+    const stockDiff = Number(b.inStock === true) - Number(a.inStock === true);
+    if (stockDiff !== 0) return stockDiff;
+
+    // 2. Preferred vendors (e.g., Febreze) come before others
     const displayFirstDiff =
       Number(isPreferredDisplayFirstVendor(b.vendor)) -
       Number(isPreferredDisplayFirstVendor(a.vendor));
     if (displayFirstDiff !== 0) return displayFirstDiff;
 
-    const stockDiff = Number(b.inStock === true) - Number(a.inStock === true);
-    if (stockDiff !== 0) return stockDiff;
-
+    // 3. Sort by highest compare score
     return (b.compareScore || 0) - (a.compareScore || 0);
   });
 }
