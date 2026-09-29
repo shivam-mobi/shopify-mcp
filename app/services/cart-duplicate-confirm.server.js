@@ -64,24 +64,10 @@ export function clearPendingDuplicateAdd(conversationId) {
   if (key) pendingByConversation.delete(key);
 }
 
-const AFFIRMATIVE_PATTERN =
-  /^(yes|yeah|yep|yup|sure|ok|okay|confirm|add\s+(it|another|one|more)|one\s+more|add\s+one\s+more|please\s+add|go\s+ahead|do\s+it)[!.?\s]*$/i;
-
-const NEGATIVE_PATTERN =
-  /^(no|nope|nah|don't|do not|cancel|never\s*mind|skip)[!.?\s]*$/i;
-
-export function isDuplicateAddConfirmation(userMessage = "") {
-  const text = String(userMessage || "").trim();
-  if (!text) return false;
-  if (NEGATIVE_PATTERN.test(text)) return false;
-  if (AFFIRMATIVE_PATTERN.test(text)) return true;
-  return /\b(add\s+another|one\s+more|yes\s+add|add\s+one\s+more)\b/i.test(text);
-}
-
 export function shouldConfirmDuplicateAdd(
   conversationId,
   variantId,
-  { confirmDuplicate = false, userMessage = "" } = {}
+  { confirmDuplicate = false } = {}
 ) {
   if (confirmDuplicate === true) return false;
 
@@ -92,36 +78,25 @@ export function shouldConfirmDuplicateAdd(
     normalizeVariantKey(pending.variantId) === normalizeVariantKey(variantId);
   if (!sameVariant) return true;
 
-  if (isDuplicateAddConfirmation(userMessage)) {
-    return false;
-  }
-
+  // Since we removed regex, we require the LLM to explicitly pass confirmDuplicate: true
   return true;
 }
 
-export function buildDuplicateCartHintMessage(conversationId, userMessage = "") {
+export function buildDuplicateCartHintMessage(conversationId) {
   const pending = getPendingDuplicateAdd(conversationId);
   if (!pending) return null;
 
-  const text = String(userMessage || "").trim();
-  if (isDuplicateAddConfirmation(text)) {
-    return {
-      role: "system",
-      content:
-        `The customer confirmed adding another of the pending product (variant ${pending.variantId}). ` +
-        `Call add_to_cart with variant_id="${pending.variantId}" and quantity ${pending.quantity}, ` +
-        "and set confirm_duplicate: true. Do not ask again."
-    };
-  }
+  // Clear the pending state so it only applies to this single turn.
+  // The LLM will read the user's message and make a final decision now.
+  clearPendingDuplicateAdd(conversationId);
 
-  if (NEGATIVE_PATTERN.test(text)) {
-    clearPendingDuplicateAdd(conversationId);
-    return {
-      role: "system",
-      content:
-        "The customer declined adding another of the same product. Do not call add_to_cart for that duplicate. Ask what else they need."
-    };
-  }
-
-  return null;
+  return {
+    role: "system",
+    content:
+      `A duplicate cart confirmation is pending for variant ${pending.variantId} (quantity ${pending.quantity}). ` +
+      `If the customer's latest message confirms they want to add it (e.g. 'yes', 'add it', 'yup', 'please add'), ` +
+      `call add_to_cart with variant_id="${pending.variantId}" and confirm_duplicate: true. ` +
+      `If they decline, do not call add_to_cart. ` +
+      `Once this decision is made, do not ask again.`
+  };
 }

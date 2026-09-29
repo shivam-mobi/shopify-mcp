@@ -2395,7 +2395,7 @@ async function updateExistingCheckout(
     // object — they often live on the tool response, not nested under checkout.
     checkout = {
       ...checkout,
-      messages: collectCheckoutMessages(updateResponse, checkout, existing)
+      messages: collectCheckoutMessages(updateResponse, checkout)
     };
 
     // New cart lines get checkout ids only after the first update — re-attach
@@ -2438,7 +2438,7 @@ async function updateExistingCheckout(
         return {
           checkout: {
             ...retried,
-            messages: collectCheckoutMessages(retryResponse, updateResponse, retried, checkout)
+            messages: collectCheckoutMessages(retryResponse, updateResponse, retried)
           },
           checkoutUrl: appendAiraUtmParams(
             extractContinueUrl(retryResponse) || retried.continue_url,
@@ -3174,43 +3174,7 @@ function extractNamePartsFromText(text) {
  * message — never overwrite values the model already passed.
  */
 function sanitizeShippingFromContext(address = {}, userMessage = "") {
-  const merged = { ...address };
-  const text = extractAddressText(userMessage);
-
-  const addressFromLine = parseAddressLineOnly(text);
-  if (addressFromLine) {
-    for (const [key, value] of Object.entries(addressFromLine)) {
-      if (value && isBlank(merged[key])) {
-        merged[key] = value;
-      }
-    }
-  }
-
-  const nameFromText = extractNamePartsFromText(text);
-  if (nameFromText) {
-    if (isBlank(merged.first_name)) {
-      merged.first_name = nameFromText.first_name;
-    }
-    if (isBlank(merged.last_name)) {
-      merged.last_name = nameFromText.last_name;
-    }
-  }
-
-  if (isBlank(merged.phone_number)) {
-    const phoneInText = extractPhoneFromText(text);
-    if (phoneInText) {
-      merged.phone_number = phoneInText;
-    }
-  }
-
-  if (isBlank(merged.email)) {
-    const emailInText = extractEmailFromText(text);
-    if (emailInText) {
-      merged.email = emailInText;
-    }
-  }
-
-  return merged;
+  return { ...address };
 }
 
 function applySavedShippingDefaults(address = {}, savedShipping = null) {
@@ -3401,21 +3365,7 @@ function shippingValidationFailure(validation, address = {}) {
 }
 
 function extractAddressText(text) {
-  const raw = String(text || "").trim();
-  if (!raw) {
-    return raw;
-  }
-
-  let cleaned = raw.replace(
-    /^(?:please\s+)?(?:could you\s+(?:pls\s+)?|pls\s+)?(?:add|set|update|change)(?:\s+this)?\s+(?:the\s+)?(?:shipping\s+)?address\s*:+\s*/i,
-    ""
-  ).trim();
-  cleaned = cleaned.replace(
-    /^(?:please\s+|could you\s+(?:pls\s+)?|pls\s+)?(?:update|change|set)\s+/i,
-    ""
-  ).trim();
-
-  return cleaned || raw;
+  return String(text || "").trim();
 }
 
 /** Street/city/state/ZIP/country lines without a person name or phone. */
@@ -3600,7 +3550,7 @@ function normalizeShippingAddress(input = {}, { userMessage, existingCart, saved
   const merged = { ...input };
   delete merged.address_text;
 
-  const textSources = [input.address_text, userMessage].filter(Boolean);
+  const textSources = [input.address_text].filter(Boolean);
   let parsedFromText = false;
 
   for (const text of textSources) {

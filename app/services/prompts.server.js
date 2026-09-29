@@ -27,7 +27,9 @@ export const SHOPPER_MEMORY_RULE =
   "This overrides the default 'What size' question and the default 'What year, make, and model' question. " +
   "Do that BEFORE calling get_fitment_next_step or search_store_products. " +
   "If they already gave a specific vehicle or size, search that instead of pushing an older search. " +
-  "After they confirm a saved search, use the normal tool for it.";
+  "After they confirm a saved search, use the normal tool for it. " +
+  "If you offer multiple saved searches and the customer's reply does not clearly identify which exact one they want, " +
+  "DO NOT call any tools. You MUST ask them to choose exactly one.";
 
 export function getSystemPrompt(promptType = AppConfig.api.defaultPromptType) {
   const base =
