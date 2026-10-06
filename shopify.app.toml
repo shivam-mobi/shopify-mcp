@@ -1,21 +1,19 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "b936c283a228bcb177d0e3c2dc07e688"
-name = "manishclothes-chatbot"
-handle = "pureflowair-chatbot"
+client_id = "1b5b66e9139a4df9777e6a41b8eb60b4"
+name = "Test-chatbot"
 application_url = "https://struggle-throwing-recycled.ngrok-free.dev"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
 
-
 [webhooks]
-api_version = "unstable"
+api_version = "2026-10"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_products,read_discounts,unauthenticated_read_product_listings"
+scopes = "read_discounts,read_products,unauthenticated_read_product_listings,customer_read_customers,customer_read_orders,customer_read_store_credit_accounts,customer_write_customers"
 
 [auth]
 redirect_urls = [
@@ -28,5 +26,5 @@ embedded = false
 
 [customer_authentication]
 redirect_uris = [
-  "https://struggle-throwing-recycled.ngrok-free.dev/callback"
+  "https://struggle-throwing-recycled.ngrok-free.dev/auth/callback"
 ]
