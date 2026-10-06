@@ -54,22 +54,22 @@ export async function searchStorePolicies({ query = "", topic = null } = {}) {
       {
         topic: "digest",
         title: row?.title || DEFAULT_STORE_POLICY_DIGEST.title,
-        heading: "manishclothes store policy digest",
+        heading: "Perfumania store policy digest",
         body: digest,
         content_date: row?.contentDate || DEFAULT_STORE_POLICY_DIGEST.contentDate
       }
     ],
     contact: {
-      store_url: "https://manishclothes.myshopify.com/",
-      email: null,
-      phone: null
+      store_url: "https://perfumania.com/",
+      email: "customer.service@perfumania.com",
+      phone: "1 (866) 557-2368"
     },
     instruction:
       "Shopify policy search returned no useful results (or this tool was called directly). " +
       "Answer ONLY from policy_digest. Do NOT invent policy details, shipping countries, return windows, or contact info. " +
-      "This store is manishclothes (https://manishclothes.myshopify.com/). " +
-      "No public email/phone is published — do not invent contact details. " +
-      "If asked about shipping destinations, say cost and availability are shown at checkout."
+      "This store is Perfumania (https://perfumania.com/). " +
+      "Use only the published contact details in the digest. " +
+      "U.S. shipping only; no international shipping per shipping-and-returns."
   };
 }
 
@@ -78,7 +78,7 @@ export function getStorePolicyTools() {
     {
       name: STORE_POLICY_TOOL_NAME,
       description:
-        "Local manishclothes store policy digest from the database. " +
+        "Local Perfumania store policy digest from the database. " +
         "Prefer search_shop_policies_and_faqs first. Use this if Shopify returned nothing useful " +
         "(the server also auto-falls back here when Shopify is empty).",
       input_schema: {
@@ -240,19 +240,19 @@ export async function callStorePolicyTool(toolName, toolArgs = {}) {
         {
           topic: "digest",
           title: DEFAULT_STORE_POLICY_DIGEST.title,
-          heading: "manishclothes store policy digest",
+          heading: "Perfumania store policy digest",
           body: DEFAULT_STORE_POLICY_DIGEST.digest,
           content_date: DEFAULT_STORE_POLICY_DIGEST.contentDate
         }
       ],
       contact: {
-        store_url: "https://manishclothes.myshopify.com/",
-        email: null,
-        phone: null
+        store_url: "https://perfumania.com/",
+        email: "customer.service@perfumania.com",
+        phone: "1 (866) 557-2368"
       },
       instruction:
         "Answer ONLY from policy_digest. Do NOT invent policy details. " +
-        "This store is manishclothes. No public email/phone is published."
+        "This store is Perfumania (https://perfumania.com/)."
     });
   }
 }
