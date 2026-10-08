@@ -1066,13 +1066,13 @@ export async function appendFinalCartSnapshot(
 ) {
   const data = extractToolResultData(lastMutationResponse);
 
-  const cleared =
+  const clearedFromTool =
     Boolean(data?.empty) ||
     (typeof data?.message === "string" && /cleared|no active cart/i.test(data.message));
 
-  const snapshot = {
+  let snapshot = {
     final_cart_snapshot: true,
-    empty: cleared,
+    empty: clearedFromTool,
     items: Array.isArray(data?.items) ? data.items : [],
     checkout_url: data?.checkout_url || null,
     checkout_url_changed: Boolean(data?.checkout_url_changed),
@@ -1080,6 +1080,27 @@ export async function appendFinalCartSnapshot(
     subtotal: data?.subtotal || null,
     currency: data?.currency || null
   };
+
+  // Theme sync must mirror the live UCP cart (e.g. after theme-cart-import merged 3 lines),
+  // not only the last mutation tool payload (can be stale or a single added_items row).
+  const live = await fetchLiveCart(mcpClient, conversationId);
+  if (live?.cart) {
+    const summary = formatCartSummary(live.cart, live.raw, { conversationId });
+    snapshot = {
+      ...snapshot,
+      empty: !Array.isArray(summary.items) || summary.items.length === 0,
+      items: Array.isArray(summary.items) ? summary.items : [],
+      checkout_url: summary.checkout_url || snapshot.checkout_url,
+      checkout_url_changed:
+        Boolean(summary.checkout_url_changed) || snapshot.checkout_url_changed,
+      total: summary.total ?? snapshot.total,
+      subtotal: summary.subtotal ?? snapshot.subtotal,
+      currency: summary.currency ?? snapshot.currency
+    };
+  } else if (clearedFromTool) {
+    snapshot.empty = true;
+    snapshot.items = [];
+  }
 
   const content =
     "FINAL CART SNAPSHOT after cart updates in this turn. " +
@@ -1497,7 +1518,8 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
   );
 
   const destination = buildShippingDestination(resolved);
-  const cartLineItems = toWritableLineItems(live.cart.line_items);
+  // BOGO / promos can split one variant across multiple CartLines — coalesce before update_cart.
+  const cartLineItems = mergeLineItems([], live.cart.line_items || []);
   const buyer = buildCheckoutBuyer(resolved, live.cart?.buyer);
 
   try {
@@ -1517,7 +1539,41 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
       conversationId
     }));
 
-    const synced = await syncCheckoutWithCart(mcpClient, conversationId, live.cart, {
+    let cartForCheckout = live.cart;
+    const refreshedAfterCartUpdate = await fetchLiveCart(mcpClient, conversationId);
+    if (refreshedAfterCartUpdate?.cart) {
+      cartForCheckout = refreshedAfterCartUpdate.cart;
+    }
+
+    const expectedUnits = cartLineItems.reduce(
+      (sum, line) => sum + Math.max(1, Number(line.quantity) || 1),
+      0
+    );
+    const actualUnits = (cartForCheckout.line_items || []).reduce(
+      (sum, line) => sum + Math.max(1, Number(line.quantity) || 1),
+      0
+    );
+    if (expectedUnits > 0 && actualUnits < expectedUnits && refreshedAfterCartUpdate?.cartId) {
+      console.warn("[cart-wrapper] set_cart_shipping cart lost lines after update_cart — repairing", {
+        conversationId,
+        expectedUnits,
+        actualUnits,
+        mergedVariants: cartLineItems.length
+      });
+      await updateCartLineItems(
+        mcpClient,
+        conversationId,
+        refreshedAfterCartUpdate.cartId,
+        cartForCheckout,
+        cartLineItems
+      );
+      const repaired = await fetchLiveCart(mcpClient, conversationId);
+      if (repaired?.cart) {
+        cartForCheckout = repaired.cart;
+      }
+    }
+
+    const synced = await syncCheckoutWithCart(mcpClient, conversationId, cartForCheckout, {
       shipping: destination,
       force: true,
       allowCreate: true
@@ -1679,9 +1735,14 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
     persisted.changed || synced.checkoutUrlChanged
   );
 
+  const finalLive = await fetchLiveCart(mcpClient, conversationId);
+  const summaryCart = finalLive?.cart || cartForCheckout || live.cart;
+  const summaryRaw = finalLive?.raw || live.raw;
+
   console.log("[cart-wrapper] set_cart_shipping verified", {
     conversationId,
-    itemCount: cartLineItems.length,
+    mergedVariantLines: cartLineItems.length,
+    cartLineCount: summaryCart?.line_items?.length || 0,
     checkoutId: synced.checkoutId,
     savedStreet: verifiedAddress.street_address,
     savedPhone: verifiedAddress.phone_number || verification?.buyerPhone || null,
@@ -1690,7 +1751,7 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
   });
 
   return toolResult(
-    formatCartSummary(live.cart, live.raw, {
+    formatCartSummary(summaryCart, summaryRaw, {
       checkoutUrl: persisted.checkoutUrl || checkoutUrl,
       checkoutUrlChanged,
       shippingAddress: {
@@ -1727,7 +1788,7 @@ async function setCartShipping(mcpClient, conversationId, address, context = {})
 
 /** Shopify MCP marks checkout as required even when cart_id is provided. */
 function buildCreateCheckoutArgs(cartId, cart, overrides = {}, conversationId = null) {
-  const lineItems = toWritableLineItems(cart?.line_items || []);
+  const lineItems = mergeLineItems([], cart?.line_items || []);
   const buyer = overrides.buyer || cart?.buyer || null;
 
   // Intentionally omit currency — let Shopify/UCP choose store default.
@@ -2926,24 +2987,31 @@ function buildCartSummaryWithCheckoutIssue(cart, rawResponse, synced, savedShipp
 }
 
 function buildUpdateCheckoutLineItems(cartLines = [], checkoutLines = []) {
-  const byVariant = new Map();
+  const mergedCart = mergeLineItems([], cartLines);
+
+  const checkoutLineIdByVariant = new Map();
   for (const line of checkoutLines) {
-    const variantId = line?.item?.id;
-    if (variantId && line?.id) {
-      byVariant.set(variantId, line.id);
+    const variantId = normalizeVariantId(line?.item?.id);
+    if (!variantId || !line?.id) continue;
+    if (!checkoutLineIdByVariant.has(variantId)) {
+      checkoutLineIdByVariant.set(variantId, line.id);
     }
   }
 
-  return toWritableLineItems(cartLines).map((item) => {
-    const existingId = byVariant.get(item.item.id);
+  return mergedCart.map((item) => {
+    const variantId = normalizeVariantId(item.item.id);
+    const existingId = checkoutLineIdByVariant.get(variantId);
     if (existingId) {
       return {
         id: existingId,
         quantity: item.quantity,
-        item: { id: item.item.id }
+        item: { id: variantId }
       };
     }
-    return item;
+    return {
+      quantity: item.quantity,
+      item: { id: variantId }
+    };
   });
 }
 

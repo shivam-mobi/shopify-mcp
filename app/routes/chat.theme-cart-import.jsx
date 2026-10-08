@@ -31,22 +31,63 @@ function json(request, body, status = 200) {
   });
 }
 
+function normalizeStorefrontOrigin(raw) {
+  if (raw == null || raw === "") return null;
+  const value = String(raw).trim().replace(/\/+$/, "");
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      return new URL(value).origin;
+    } catch {
+      return null;
+    }
+  }
+  return `https://${value.replace(/^https?:\/\//, "")}`;
+}
+
+function isMyshopifyOrigin(origin) {
+  try {
+    const { hostname } = new URL(origin);
+    return hostname.endsWith(".myshopify.com");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * UCP MCP lives on the storefront host. Prefer *.myshopify.com from the theme
+ * (header/body) over Origin — browser Origin is often a custom domain while
+ * the chat API may run on ngrok; server-side MCP must still hit the shop host.
+ */
 function resolveMcpHostUrl(request, body = {}) {
-  const origin = request.headers.get("Origin");
-  if (origin && /^https?:\/\//i.test(origin)) {
-    return origin.replace(/\/+$/, "");
+  const shopCandidates = [
+    request.headers.get("X-Shopify-Shop-Domain"),
+    body?.shop,
+    body?.shop_domain
+  ];
+
+  for (const raw of shopCandidates) {
+    const origin = normalizeStorefrontOrigin(raw);
+    if (origin && isMyshopifyOrigin(origin)) {
+      return origin;
+    }
   }
 
-  const raw =
-    request.headers.get("X-Shopify-Shop-Domain") ||
-    body?.shop_domain ||
-    body?.shop ||
-    null;
-  if (!raw) return null;
+  const fromOrigin = normalizeStorefrontOrigin(request.headers.get("Origin"));
+  if (fromOrigin) {
+    return fromOrigin;
+  }
 
-  const value = String(raw).trim().replace(/\/+$/, "");
-  if (/^https?:\/\//i.test(value)) return value;
-  return `https://${value}`;
+  for (const raw of shopCandidates) {
+    const origin = normalizeStorefrontOrigin(raw);
+    if (origin) return origin;
+  }
+
+  return normalizeStorefrontOrigin(
+    process.env.SHOPIFY_SHOP ||
+      process.env.STOREFRONT_URL ||
+      process.env.SHOPIFY_STOREFRONT_URL
+  );
 }
 
 function getBuyerIpFromRequest(request) {

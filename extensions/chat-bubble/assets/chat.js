@@ -3503,6 +3503,8 @@
       syncing: false,
       importing: false,
       suppressImportUntil: 0,
+      /** Block chat→theme clear+add while theme→chat import is in flight or just finished. */
+      suppressThemeSyncUntil: 0,
       _listenersBound: false,
       _importTimer: null,
       _importQueued: null,
@@ -3618,6 +3620,7 @@
         if (!conversationId) return null;
 
         this.importing = true;
+        this.suppressThemeSyncUntil = Date.now() + 12000;
         try {
           let items = [];
           try {
@@ -3652,6 +3655,8 @@
           }
 
           const result = await response.json();
+          this.suppressThemeSyncUntil = Date.now() + 12000;
+          this.suppressImportUntil = Date.now() + 3000;
           console.log('[ShopAIChat] theme→chat import', {
             reason: options.reason || null,
             merged: result?.merged,
@@ -3680,7 +3685,11 @@
        * @param {{ empty?: boolean, items?: Array<{ variant_id?: string, quantity?: number }> }} payload
        */
       syncFromChatCart: async function(payload) {
-        if (this.syncing) return;
+        if (this.syncing || this.importing) return;
+        if (Date.now() < (this.suppressThemeSyncUntil || 0)) {
+          console.log('[ShopAIChat] theme cart sync skipped (theme import in progress or just finished)');
+          return;
+        }
         this.syncing = true;
         // Keep theme→chat import suppressed long enough that a stale theme snapshot
         // cannot overwrite a qty increase we just wrote from chat.
