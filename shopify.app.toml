@@ -1,6 +1,6 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "b936c283a228bcb177d0e3c2dc07e688"
+client_id = "60103ebc43235135f4eabaeaffd72669"
 name = "manishclothes-chatbot"
 handle = "pureflowair-chatbot"
 application_url = "https://struggle-throwing-recycled.ngrok-free.dev"

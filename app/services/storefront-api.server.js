@@ -600,3 +600,4 @@ export async function fetchStorefrontProductDetails(ids = []) {
   const productIds = await resolveProductIdsFromMixedIds(ids);
   return fetchStorefrontProductsByIds(productIds);
 }
+

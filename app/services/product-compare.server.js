@@ -353,9 +353,16 @@ export function enrichProductsWithComparison(products = []) {
           product_type: product.product_type || product.productType || ""
         });
 
+    const brand = resolveProductBrand({
+      ...product,
+      vendor: product.vendor || attrs.vendor || ""
+    });
+
     return {
       ...product,
       ...attrs,
+      vendor: product.vendor || attrs.vendor || brand || "",
+      brand,
       priceAmount:
         typeof product.priceAmount === "number"
           ? product.priceAmount
@@ -558,6 +565,31 @@ export function filterProductsByCatalogGender(products, genderFilter) {
 }
 
 /**
+ * Resolve display brand for product cards / LLM summary.
+ * Prefers explicit brand/vendor, then BRAND_* tags, then attribute "brand".
+ */
+export function resolveProductBrand(product = {}) {
+  const direct = String(product.brand || product.vendor || "").trim();
+  if (direct) return direct;
+
+  const tagList = normalizeTagList(product.tags);
+  const fromTags = buildFragranceProfileFromTags(tagList).brand;
+  if (fromTags) return fromTags;
+
+  const attrs = Array.isArray(product.attributes) ? product.attributes : [];
+  for (const attr of attrs) {
+    const name = String(attr?.name || "").trim().toLowerCase();
+    if (name !== "brand" && name !== "vendor") continue;
+    const value = Array.isArray(attr.values)
+      ? attr.values.map((v) => String(v?.label || v || "").trim()).find(Boolean)
+      : String(attr.value || attr.label || "").trim();
+    if (value) return value;
+  }
+
+  return "";
+}
+
+/**
  * Pull preference signals from Perfumania-style tags (GENDER_*, TYPE_*, *note_*, BRAND_*).
  */
 function buildFragranceProfileFromTags(tagList = []) {
@@ -700,6 +732,7 @@ export default {
   isFreshenerProduct,
   resolveProductDescriptionHtml,
   enrichProductsWithComparison,
+  resolveProductBrand,
   resolveProductVariantId,
   annotateRankedProductsForLlm,
   buildLlmProductSummary,

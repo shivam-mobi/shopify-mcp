@@ -820,6 +820,7 @@ async function handleChatSession({
         "[chat] product_results to client:",
         productsToDisplay.map((p) => ({
           title: p.title,
+          brand: p.brand || p.vendor || null,
           inStock: p.inStock
         }))
       );

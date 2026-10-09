@@ -1503,7 +1503,7 @@
 }
 
 .shop-ai-product-title-brand {
-  font-weight: 600;
+  font-weight: 700;
   color: var(--shop-ai-brand-text, #b8004d);
 }
 
@@ -1518,10 +1518,11 @@
   text-decoration: underline;
 }
 
-.shop-ai-product-vendor {
+.shop-ai-product-vendor,
+.shop-ai-product-brand {
   margin: 0 0 4px;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 700;
   color: var(--shop-ai-brand-text, #b8004d);
 }
 

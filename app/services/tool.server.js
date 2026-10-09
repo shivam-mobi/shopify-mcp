@@ -13,6 +13,7 @@ import {
   buildCompareAttributes,
   buildLlmProductSummary,
   buildProductListingMetadata,
+  resolveProductBrand,
   resolveProductVariantId,
   resolveProductDescriptionHtml,
   extractCatalogGenderFilter,
@@ -79,6 +80,16 @@ export function createToolService() {
             showDetailProfile: true
           }));
         }
+        // Same brand the LLM history already computes (BRAND_* tags / vendor) — copy onto UI cards
+        ranked = ranked.map((product) => {
+          const brand = resolveProductBrand(product);
+          if (!brand) return product;
+          return {
+            ...product,
+            brand,
+            vendor: product.vendor || brand
+          };
+        });
         ranked = await applyBuyNowUrlsToProducts(ranked, conversationId);
 
         if (toolName === "get_product_details") {
@@ -650,11 +661,13 @@ export function createToolService() {
       productUrl = `${storefrontBase}${productUrl}`;
     }
 
-    const vendor =
-      product.vendor ||
-      product.brand ||
-      variant?.product?.vendor ||
-      "";
+    const brand = resolveProductBrand({
+      brand: product.brand,
+      vendor: product.vendor || variant?.product?.vendor || "",
+      tags: product.tags || variant?.tags,
+      attributes: product.attributes
+    });
+    const vendor = brand || product.vendor || variant?.product?.vendor || "";
 
     const normalizedVariantId = resolveProductVariantId({ variantId, variant_id: product.variant_id, id: variantId });
 
@@ -706,6 +719,7 @@ export function createToolService() {
       inventoryQuantity: availability.inventoryQuantity,
       variants: variantsForClient,
       vendor,
+      brand,
       sku: product.sku || product.partNumber || selectedVariant?.sku || "",
       productType: product.productType || product.product_type || "",
       product_type: product.product_type || product.productType || "",

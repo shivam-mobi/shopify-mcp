@@ -4353,16 +4353,16 @@
         const title = document.createElement('h3');
         title.classList.add('shop-ai-product-title');
         const productTitle = String(product.title || '').trim();
-        const productVendor = String(product.vendor || '').trim();
+        const productBrand = String(product.brand || product.vendor || '').trim();
         const isDetailCard = ShopAIChat.Product.shouldShowDetailProfile(product);
         title.setAttribute(
           'aria-label',
-          isDetailCard && productVendor
-            ? `${productTitle} · ${productVendor}`
+          isDetailCard && productBrand
+            ? `${productTitle} · ${productBrand}`
             : productTitle || 'Product title'
         );
 
-        if (isDetailCard && productVendor) {
+        if (isDetailCard && productBrand) {
           const titleText = document.createElement('span');
           titleText.classList.add('shop-ai-product-title-text');
           titleText.textContent = productTitle;
@@ -4372,7 +4372,7 @@
           sep.textContent = ' · ';
           const brand = document.createElement('span');
           brand.classList.add('shop-ai-product-title-brand');
-          brand.textContent = productVendor;
+          brand.textContent = productBrand;
           title.appendChild(titleText);
           title.appendChild(sep);
           title.appendChild(brand);
@@ -4405,15 +4405,15 @@
           });
         }
 
-        info.appendChild(title);
-
-        // Listing cards keep brand on its own line; detail cards use Title · Brand
-        if (productVendor && !isDetailCard) {
-          const vendorEl = document.createElement('p');
-          vendorEl.classList.add('shop-ai-product-vendor');
-          vendorEl.textContent = productVendor;
-          info.appendChild(vendorEl);
+        // Listing cards: brand above title (bold); detail cards use Title · Brand
+        if (productBrand && !isDetailCard) {
+          const brandEl = document.createElement('p');
+          brandEl.classList.add('shop-ai-product-vendor', 'shop-ai-product-brand');
+          brandEl.textContent = productBrand;
+          info.appendChild(brandEl);
         }
+
+        info.appendChild(title);
 
         if (
           ShopAIChat.Product.shouldShowDetailProfile(product) &&
