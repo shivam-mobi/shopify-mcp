@@ -1764,3 +1764,39 @@ export async function listStoreCustomerAddresses(shopifyCustomerId, { shopDomain
     return [];
   }
 }
+
+/**
+ * Persist incoming Shopify event payload and status to shopifyEventLogs.
+ */
+export async function storeShopifyEventLog({
+  topic,
+  eventId = null,
+  webhookId = null,
+  apiVersion = null,
+  payload,
+  status = "processed",
+  errorMessage = null,
+}) {
+  try {
+    const payloadStr =
+      typeof payload === "string" ? payload : JSON.stringify(payload ?? {});
+
+    return await prisma.shopifyEventLog.create({
+      data: {
+        topic: String(topic || "unknown"),
+        eventId: (eventId || webhookId) ? String(eventId || webhookId) : null,
+        apiVersion: apiVersion ? String(apiVersion) : null,
+        payload: payloadStr,
+        status: String(status || "processed"),
+        errorMessage: errorMessage ? String(errorMessage) : null,
+      },
+    });
+  } catch (error) {
+    console.error("[ShopifyEventLog] Error storing event log:", error);
+    return null;
+  }
+}
+
+export const storeShopifyLog = storeShopifyEventLog;
+export const storeShopifyWebhookLog = storeShopifyEventLog;
+

@@ -9,8 +9,8 @@ generator client {
 // enough when changing adapters.
 // See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = "mysql"
+  url      = env("DATABASE_URL")
 }
 
 model Session {
@@ -18,7 +18,7 @@ model Session {
   shop          String
   state         String
   isOnline      Boolean   @default(false)
-  scope         String?
+  scope         String?   @db.Text
   expires       DateTime?
   accessToken   String
   userId        BigInt?
@@ -34,8 +34,8 @@ model Session {
 model CustomerToken {
   id              String    @id
   conversationId  String
-  accessToken     String
-  refreshToken    String?
+  accessToken     String    @db.Text
+  refreshToken    String?   @db.Text
   expiresAt       DateTime
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -75,8 +75,8 @@ model ShopperCart {
   activeConversationId String? // current chat thread for this shopper
   activeCartId         String?
   activeCheckoutId     String?
-  checkoutUrl          String?
-  shippingAddress      String? // JSON string of last saved shipping destination
+  checkoutUrl          String? @db.Text
+  shippingAddress      String? @db.Text // JSON string of last saved shipping destination
   createdAt            Int // unix epoch seconds
   updatedAt            Int // unix epoch seconds
 
@@ -89,8 +89,10 @@ model Message {
   conversationId String
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   role           String       // "user" or "assistant"
-  content        String
+  content        String       @db.LongText
   createdAt      DateTime     @default(now())
+
+  searchResults  KnowledgeSearchResult[]
 
   @@index([conversationId])
 }
@@ -108,8 +110,8 @@ model CustomerAccountUrls {
 model LlmRequestLog {
   id             String   @id @default(cuid())
   conversationId String?
-  request        String
-  response       String
+  request        String   @db.LongText
+  response       String   @db.LongText
   statusCode     Int
   provider       String
   createdAt      DateTime @default(now())
@@ -125,8 +127,8 @@ model McpCallLog {
   method         String   // tools/call | tools/list | graphql
   toolName       String?
   endpoint       String
-  request        String
-  response       String
+  request        String   @db.LongText
+  response       String   @db.LongText
   statusCode     Int
   durationMs     Int?
   createdAt      DateTime @default(now())
@@ -141,8 +143,8 @@ model McpCallLog {
 model StorePolicyDigest {
   id          String   @id @default("default")
   title       String
-  note        String?
-  digest      String
+  note        String?  @db.Text
+  digest      String   @db.LongText
   contentDate String   // e.g. 2026-09-04 — source content date
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -153,10 +155,10 @@ model ToolEmptyResultLog {
   id             String   @id @default(cuid())
   conversationId String?
   shop           String?
-  userQuery      String
+  userQuery      String   @db.Text
   toolName       String
-  toolArgs       String?  // JSON
-  response       String   // JSON or text of tool response
+  toolArgs       String?  @db.Text // JSON
+  response       String   @db.Text // JSON or text of tool response
   reason         String   // empty | error | no_results
   createdAt      DateTime @default(now())
 
@@ -190,9 +192,9 @@ model StoreCustomerAddress {
   firstName        String?
   lastName         String?
   company          String?
-  streetAddress    String
-  extendedAddress  String?
-  addressLocality  String?
+  streetAddress    String   @db.Text
+  extendedAddress  String?  @db.Text
+  addressLocality  String?  @db.Text
   addressRegion    String?
   postalCode       String?
   addressCountry   String?
@@ -204,3 +206,152 @@ model StoreCustomerAddress {
   @@index([customerId])
   @@index([shopifyAddressId])
 }
+
+/// Recent search memory for shoppers
+model ShopperSearchMemory {
+  id             String   @id @default(cuid())
+  shopperId      String
+  intent         String
+  vehicleYear    Int?
+  vehicleMake    String?
+  vehicleModel   String?
+  vehicleEngine  String?
+  homeFilterSize String?
+  homeMerv       String?
+  useCount       Int      @default(1)
+  lastUsedAt     DateTime
+  createdAt      DateTime @default(now())
+
+  @@index([shopperId, intent, lastUsedAt])
+}
+
+model KnowledgeSource {
+  id           String    @id @default(uuid())
+  code         String    @unique
+  name         String
+  sourceType   String    @map("source_type")
+  baseUrl      String?   @map("base_url")
+  lastSyncedAt DateTime? @map("last_synced_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  documents    KnowledgeDocument[]
+
+  @@map("knowledgeSources")
+}
+
+model KnowledgeDocument {
+  id                String   @id @default(uuid())
+  shopifyGraphqlId  String?  @unique @map("shopify_graphql_id")
+  sourceId          String   @map("source_id")
+  source            KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  title             String
+  baseUrl           String?  @map("base_url")
+  filePath          String?  @map("file_path")
+  version           Int      @default(1)
+  content           String   @db.LongText
+  chunkCount        Int      @default(0) @map("chunk_count")
+  tokenCount        Int      @default(0) @map("token_count")
+  embeddingTokens   Int      @default(0) @map("embedding_tokens")
+  embeddingCostUsd  Float    @default(0) @map("embedding_cost_usd")
+  processingMs      Int?     @map("processing_ms")
+  errorMessage      String?  @map("error_message")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+
+  chunks            KnowledgeChunk[]
+
+  @@map("knowledgeDocuments")
+}
+
+model KnowledgeChunk {
+  id               String   @id @default(uuid())
+  documentId       String   @map("document_id")
+  document         KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  chunkIndex       Int      @map("chunk_index")
+  content          String   @db.Text
+  embeddingContent String?  @map("embedding_content") @db.Text
+  tokenCount       Int      @default(0) @map("token_count")
+  
+  // MySQL 9 vector type using Prisma's Unsupported
+  embedding        Unsupported("VECTOR(1536)")?
+  metadata         Json?
+
+  llmCost          Float?   @map("llm_cost")
+  llmPricingId     String?  @map("llm_pricing_id")
+
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
+
+  logs             KnowledgeProcessingLog[]
+  searchResults    KnowledgeSearchResult[]
+
+  @@map("knowledgeChunks")
+}
+
+model KnowledgeSearchResult {
+  id              String   @id @default(uuid())
+  conversationId  String?  @map("conversation_id")
+  messageId       String?  @map("message_id")
+  chunkId         String?  @map("chunk_id")
+  similarity      Float?
+  queryText       String   @db.LongText @map("query_text")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  message         Message?        @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  chunk           KnowledgeChunk? @relation(fields: [chunkId], references: [id], onDelete: SetNull)
+
+  @@index([messageId])
+  @@index([conversationId])
+  @@map("knowledgeSearchResults")
+}
+
+model KnowledgeProcessingLog {
+  id               String   @id @default(uuid())
+  knowledgeChunkId String?  @map("knowledge_chunk_id")
+  chunk            KnowledgeChunk? @relation(fields: [knowledgeChunkId], references: [id], onDelete: Cascade)
+  request          String   @db.LongText
+  response         String   @db.LongText
+  headers          String?  @db.LongText
+  statusCode       Int      @map("status_code")
+  durationMs       Int      @map("duration_ms")
+  tokensUsed       Int      @default(0) @map("tokens_used")
+  costUsd          Float    @default(0) @map("cost_usd")
+  llmPricingId     String?  @map("llm_pricing_id")
+  errorMessage     String?  @db.LongText @map("error_message")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@map("knowledgeProcessingLogs")
+}
+
+/// Raw Shopify event logs to persist incoming payload and metadata.
+model ShopifyEventLog {
+  id           String   @id @default(cuid())
+  topic        String
+  eventId      String?  @map("event_id")
+  apiVersion   String?  @map("api_version")
+  payload      String   @db.LongText
+  status       String   @default("processed") // processed | error | unhandled
+  errorMessage String?  @map("error_message") @db.LongText
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([topic])
+  @@index([status])
+  @@index([createdAt])
+  @@map("shopifyEventLogs")
+}
+
+/// Admin users for the separate /admin dashboard
+model AdminUser {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String?
+  role         String   @default("admin")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("adminUsers")
+}
+
+

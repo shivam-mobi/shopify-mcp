@@ -552,7 +552,7 @@ export function productMatchesCatalogGender(product, genderFilter) {
     return hasWomen || hasUnisex;
   }
   if (genderFilter === "unisex") {
-    return hasUnisex;
+    return hasUnisex || (hasMen && hasWomen);
   }
   return true;
 }

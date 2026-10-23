@@ -687,6 +687,17 @@
         // Toggle chat window visibility
         chatBubble.addEventListener('click', () => this.toggleChatWindow());
 
+        messagesContainer.addEventListener('click', (event) => {
+          const btn = event.target.closest('.shop-ai-inline-suggestion-btn');
+          if (btn && !this.isResponding) {
+            const suggestion = btn.dataset.suggestion || btn.textContent.trim();
+            if (suggestion) {
+              this.showChatView();
+              ShopAIChat.Message.sendText(suggestion, messagesContainer);
+            }
+          }
+        });
+
         if (homeButton) {
           homeButton.addEventListener('click', () => this.showHomeView());
         }
@@ -1708,6 +1719,10 @@
           messagesContainer.appendChild(messageElement);
           ShopAIChat.Formatting.formatMessageContent(messageElement);
         } else {
+          // Hide all existing suggestions when the user sends a message
+          const existingSuggestions = messagesContainer.querySelectorAll('.shop-ai-inline-suggestions');
+          existingSuggestions.forEach(el => el.remove());
+
           // Still send full text (with variant_id) to the API; hide GIDs in the bubble.
           messageElement.textContent = stripVariantIdForDisplay(text);
           messagesContainer.appendChild(messageElement);
@@ -1829,12 +1844,51 @@
         // Process Markdown links (including LLM typos that omit the closing ")").
         processedText = this.replaceMarkdownLinks(processedText);
 
+        // Extract [BUTTON: label] tags to suggestion buttons
+        let suggestionsHtml = '';
+        processedText = processedText.replace(/\[BUTTON:\s*(.*?)\]/gi, (match, btnText) => {
+          const safeText = this.escapeHtmlAttr(btnText.trim());
+          suggestionsHtml += `<button type="button" class="shop-ai-inline-suggestion-btn" data-suggestion="${safeText}">${btnText.trim()}</button>`;
+          return ''; // Remove from the text block
+        });
+
+        // Clean up any trailing newlines or whitespace left over after removing buttons
+        processedText = processedText.replace(/\s+$/g, '');
+
         // Convert text to HTML with proper list handling
         processedText = this.convertMarkdownToHtml(processedText);
 
         // Apply the formatted HTML
         element.innerHTML = processedText;
+        
+        // Remove old suggestions container if it exists next to element
+        let nextNode = element.nextElementSibling;
+        while (nextNode) {
+          if (nextNode.classList.contains('shop-ai-inline-suggestions')) {
+            nextNode.remove();
+            break;
+          }
+          if (!nextNode.classList.contains('shop-ai-message-actions')) {
+            break;
+          }
+          nextNode = nextNode.nextElementSibling;
+        }
+
+        // Attach speaker/copy buttons first (they go immediately after element)
         ShopAIChat.Speak.attachButton(element);
+
+        // Insert suggestions after the message bubble and actions
+        if (suggestionsHtml) {
+          const suggestionsDiv = document.createElement('div');
+          suggestionsDiv.className = 'shop-ai-inline-suggestions';
+          suggestionsDiv.innerHTML = suggestionsHtml;
+          
+          // Place it after the message actions (if they exist) or the element
+          const actionsRow = element.parentNode.querySelector('.shop-ai-message-actions');
+          const targetNode = (actionsRow && actionsRow.previousElementSibling === element) ? actionsRow : element;
+          
+          element.parentNode.insertBefore(suggestionsDiv, targetNode.nextSibling);
+        }
       },
 
       /**

@@ -11,11 +11,38 @@ automatically_update_urls_on_dev = true
 
 
 [webhooks]
-api_version = "unstable"
+api_version = "2026-10"
+
+[events]
+api_version = "2026-10"
+
+[[events.subscription]]
+handle = "article-event"
+topic = "Article"
+actions = ["create", "update", "delete"]
+triggers = ["article.*"]
+uri = "https://struggle-throwing-recycled.ngrok-free.dev/events"
+query = """
+query article_details($articleId: ID!) {
+  article(id: $articleId) { id title handle }
+}
+"""
+
+# [[events.subscription]]
+# handle = "page-event"
+# topic = "Page"
+# actions = ["create", "update", "delete"]
+# triggers = ["page.*"]
+# uri = "https://struggle-throwing-recycled.ngrok-free.dev/events"
+# query = """
+# query page_details($pageId: ID!) {
+#   page(id: $pageId) { id title handle }
+# }
+# """
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_products,read_discounts,unauthenticated_read_product_listings"
+scopes = "read_products,read_discounts,unauthenticated_read_product_listings,read_content,read_legal_policies,read_online_store_pages"
 
 [auth]
 redirect_urls = [

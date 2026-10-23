@@ -34,14 +34,14 @@ import {
   buildShippingEmailHintMessage
 } from "../services/cart-tools.server";
 import { enrichProductsWithComparison } from "../services/product-compare.server.js";
-import { buildStoreHelpHintMessage } from "../services/store-help-hints.server.js";
 import {
   getStorePolicyTools,
   isStorePolicyTool,
   isShopifyPolicyTool,
   isEmptyShopifyPolicyResult,
   callStorePolicyTool,
-  withLocalPolicyFallback
+  withLocalPolicyFallback,
+  filterShopifyPolicyToolsForLlm
 } from "../services/store-policies.server.js";
 import {
   getCustomerAddressTools,
@@ -391,8 +391,10 @@ async function handleChatSession({
     // Saved-address tool only for storefront-logged-in customers
     const customerAddressTools =
       customerLoggedIn && loggedInCustomerId ? getCustomerAddressTools() : [];
-    const mcpToolsForLlm = filterLookupCatalogForLlm(
-      filterCatalogSearchToolsForLlm(filterCartToolsForLlm(mcpClient.tools))
+    const mcpToolsForLlm = filterShopifyPolicyToolsForLlm(
+      filterLookupCatalogForLlm(
+        filterCatalogSearchToolsForLlm(filterCartToolsForLlm(mcpClient.tools))
+      )
     );
     const allTools = [
       ...mcpToolsForLlm,
@@ -423,7 +425,8 @@ async function handleChatSession({
     const customerProfile = await syncCustomerContextFromRequest(conversationId, body);
 
     // Save user message to the database
-    await saveMessage(conversationId, 'user', userMessage);
+    const userDbMessage = await saveMessage(conversationId, 'user', userMessage);
+    const currentMessageId = userDbMessage?.id || null;
 
     // Fetch all messages from the database for this conversation
     const dbMessages = await getConversationHistory(conversationId);
@@ -458,11 +461,6 @@ async function handleChatSession({
     const shippingEmailHint = buildShippingEmailHintMessage(userMessage);
     if (shippingEmailHint) {
       conversationHistory.unshift(shippingEmailHint);
-    }
-
-    const storeHelpHint = buildStoreHelpHintMessage(userMessage);
-    if (storeHelpHint) {
-      conversationHistory.unshift(storeHelpHint);
     }
 
     const customerContextHint = buildCustomerContextHintMessage(customerProfile);
@@ -574,9 +572,13 @@ async function handleChatSession({
             let toolUseResponse;
             try {
               if (isStorePolicyTool(toolName)) {
-                console.log("[chat] store policy tool invoke", { toolName, toolArgs });
-                toolUseResponse = await callStorePolicyTool(toolName, toolArgs);
-                console.log("[chat] store policy tool success", { toolName });
+                console.log("[chat] knowledge/policy tool invoke", { toolName, toolArgs });
+                toolUseResponse = await callStorePolicyTool(toolName, toolArgs, {
+                  conversationId,
+                  messageId: currentMessageId,
+                  userMessage
+                });
+                console.log("[chat] knowledge/policy tool success", { toolName });
               } else if (isCustomerAddressesTool(toolName)) {
                 console.log("[chat] customer addresses tool invoke", { toolName });
                 toolUseResponse = await callCustomerAddressesTool(toolName, toolArgs, {
@@ -614,7 +616,9 @@ async function handleChatSession({
                 toolUseResponse = await withLocalPolicyFallback(
                   shopifyRaw,
                   toolArgs,
-                  userMessage
+                  userMessage,
+                  conversationId,
+                  currentMessageId
                 );
                 console.log("[chat] Shopify policy tool done", {
                   toolName,

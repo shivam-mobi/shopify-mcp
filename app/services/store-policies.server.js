@@ -1,27 +1,46 @@
 /**
- * Local store policy digest tool.
- * Loaded from StorePolicyDigest DB table; used when Shopify
- * search_shop_policies_and_faqs returns empty / fails.
+ * Local store policy digest and Vector Knowledge Base search tool.
+ * Searches knowledgeChunks (articles, blog posts, pages, policies, FAQs)
+ * using OpenAI vector embeddings and cosine similarity.
+ * Falls back to StorePolicyDigest DB table if no strong vector match.
  */
-import {
+import prisma, {
   getStorePolicyDigest,
-  DEFAULT_STORE_POLICY_DIGEST
+  DEFAULT_STORE_POLICY_DIGEST,
 } from "../db.server.js";
+import { generateEmbedding, dotProduct } from "./embeddings.server.js";
 
-export const STORE_POLICY_TOOL_NAME = "search_store_policies";
+export const STORE_POLICY_TOOL_NAME = "search_articles_faqs_about_contact_and_policies";
+export const STORE_POLICY_TOOL_NAME_ALT = "search_articles_faqs_about_contact_and_policie";
 export const SHOPIFY_POLICY_TOOL_NAME = "search_shop_policies_and_faqs";
+export const LEGACY_STORE_POLICY_TOOL_NAME = "search_store_policies";
+
+const KNOWLEDGE_TOOL_NAMES = new Set([
+  STORE_POLICY_TOOL_NAME,
+  STORE_POLICY_TOOL_NAME_ALT,
+  LEGACY_STORE_POLICY_TOOL_NAME,
+  SHOPIFY_POLICY_TOOL_NAME,
+]);
 
 const SHOPIFY_POLICY_TOOL_NAMES = new Set([SHOPIFY_POLICY_TOOL_NAME]);
+
+/** Drop knowledge heading/body below this score. */
+const MIN_KB_SIMILARITY_FOR_LLM = 0.5;
+
+const VECTOR_KB_INSTRUCTION =
+  "Answer from the provided knowledge base search results above. Do NOT invent details. " +
+  "Perfumania products are 100% authentic designer fragrances. " +
+  "For additional support, share our Perfumania Customer Care team ([customer.service@perfumania.com](mailto:customer.service@perfumania.com) or [1 (866) 557-2368](tel:18665572368)).";
 
 function toolResult(data) {
   return {
     content: [
       {
         type: "text",
-        text: typeof data === "string" ? data : JSON.stringify(data)
-      }
+        text: typeof data === "string" ? data : JSON.stringify(data),
+      },
     ],
-    structuredContent: typeof data === "object" ? data : undefined
+    structuredContent: typeof data === "object" ? data : undefined,
   };
 }
 
@@ -29,14 +48,156 @@ function toolError(message) {
   return toolResult({
     success: false,
     error: true,
-    message: String(message || "Store policy search failed.")
+    message: String(message || "Store policy search failed."),
   });
 }
 
 /**
- * Return the local policy digest from DB (or in-code default).
+ * Search the vector knowledge base first, then fallback to local policy digest.
  */
-export async function searchStorePolicies({ query = "", topic = null } = {}) {
+export async function searchStorePolicies(
+  { query = "", topic = null } = {},
+  conversationIdOrOptions = null,
+  optionalMessageId = null
+) {
+  let conversationId = null;
+  let messageId = null;
+  let userMessage = null;
+  if (typeof conversationIdOrOptions === "object" && conversationIdOrOptions !== null) {
+    conversationId = conversationIdOrOptions.conversationId || null;
+    messageId = conversationIdOrOptions.messageId || null;
+    userMessage = conversationIdOrOptions.userMessage || null;
+  } else {
+    conversationId = conversationIdOrOptions;
+    messageId = optionalMessageId;
+  }
+
+  let matchedChunks = [];
+
+  const effectiveQuery = String(
+    userMessage && query && !userMessage.toLowerCase().includes(query.toLowerCase())
+      ? `${query} ${userMessage}`
+      : query || userMessage || ""
+  ).trim();
+
+  if (effectiveQuery) {
+    try {
+      const queryEmbedding = await generateEmbedding(effectiveQuery);
+
+      if (queryEmbedding) {
+        const chunks = await prisma.$queryRawUnsafe(`
+          SELECT c.id, c.content, VECTOR_TO_STRING(c.embedding) AS embeddingStr, d.title
+          FROM knowledgeChunks c
+          LEFT JOIN knowledgeDocuments d ON c.document_id = d.id
+          WHERE c.embedding IS NOT NULL
+        `);
+
+        const queryWords = effectiveQuery
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .filter((w) => w.length > 2);
+
+        const scoredChunks = [];
+        for (const chunk of chunks) {
+          try {
+            if (chunk.embeddingStr) {
+              const chunkVector = JSON.parse(chunk.embeddingStr);
+              if (Array.isArray(chunkVector)) {
+                let score = dotProduct(queryEmbedding, chunkVector);
+                const contentLower = (chunk.content || "").toLowerCase();
+                const titleLower = (chunk.title || "").toLowerCase();
+
+                // Keyword matching boost for key terms (e.g. 'authenti', 'refund', 'return', 'ship')
+                for (const w of queryWords) {
+                  const stem = w.length > 5 ? w.substring(0, 5) : w;
+                  if (contentLower.includes(stem) || titleLower.includes(stem)) {
+                    score += 0.10;
+                  }
+                }
+
+                scoredChunks.push({ id: chunk.id, content: chunk.content, score });
+              }
+            }
+          } catch {
+            // Ignore parse errors on malformed embeddings
+          }
+        }
+
+        scoredChunks.sort((a, b) => b.score - a.score);
+
+        if (scoredChunks.length > 0) {
+          const topScore = scoredChunks[0].score;
+          const seen = new Set();
+          matchedChunks = [];
+
+          // Collect top 2 to 3 chunks:
+          // Always take the top chunk if it meets minimum threshold. Include 2nd and 3rd if close.
+          for (const c of scoredChunks) {
+            if (matchedChunks.length >= 3) break;
+            const text = (c.content || "").trim();
+            if (seen.has(text)) continue;
+            seen.add(text);
+
+            if (matchedChunks.length === 0) {
+              matchedChunks.push(c);
+            } else if (c.score >= MIN_KB_SIMILARITY_FOR_LLM && c.score >= topScore - 0.15) {
+              matchedChunks.push(c);
+            } else {
+              break;
+            }
+          }
+
+          if (conversationId && matchedChunks.length > 0) {
+            await Promise.all(
+              matchedChunks.map((chunk) =>
+                prisma.knowledgeSearchResult
+                  .create({
+                    data: {
+                      conversationId,
+                      messageId: messageId || null,
+                      chunkId: chunk.id,
+                      similarity: chunk.score,
+                      queryText: effectiveQuery,
+                    },
+                  })
+                  .catch((err) => console.error("Error logging knowledgeSearchResult:", err))
+              )
+            );
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Vector search failed in policy fallback:", err);
+    }
+  }
+
+  if (matchedChunks.length > 0) {
+    const strongChunks = matchedChunks.filter(
+      (chunk) => Number(chunk.score) >= MIN_KB_SIMILARITY_FOR_LLM
+    );
+
+    if (strongChunks.length > 0) {
+      return {
+        success: true,
+        found: true,
+        source: "vector_knowledge_base",
+        query: String(query || "").trim(),
+        topic: topic || null,
+        results: strongChunks.map((chunk, index) => ({
+          topic: "Search Result",
+          heading:
+            index === 0
+              ? "Most Relevant Knowledge Base Info"
+              : `Related Knowledge Base Info (Part ${index + 1})`,
+          body: chunk.content,
+          similarity: chunk.score,
+        })),
+        instruction: VECTOR_KB_INSTRUCTION,
+      };
+    }
+  }
+
+  // Fallback: Local policy digest from DB / in-code default
   const row = await getStorePolicyDigest("default");
   const digest = row?.digest || DEFAULT_STORE_POLICY_DIGEST.digest;
 
@@ -56,20 +217,20 @@ export async function searchStorePolicies({ query = "", topic = null } = {}) {
         title: row?.title || DEFAULT_STORE_POLICY_DIGEST.title,
         heading: "Perfumania store policy digest",
         body: digest,
-        content_date: row?.contentDate || DEFAULT_STORE_POLICY_DIGEST.contentDate
-      }
+        content_date: row?.contentDate || DEFAULT_STORE_POLICY_DIGEST.contentDate,
+      },
     ],
     contact: {
       store_url: "https://perfumania.com/",
       email: "customer.service@perfumania.com",
-      phone: "1 (866) 557-2368"
+      phone: "1 (866) 557-2368",
     },
     instruction:
       "Shopify policy search returned no useful results (or this tool was called directly). " +
       "Answer ONLY from policy_digest. Do NOT invent policy details, shipping countries, return windows, or contact info. " +
       "This store is Perfumania (https://perfumania.com/). " +
       "Use only the published contact details in the digest. " +
-      "U.S. shipping only; no international shipping per shipping-and-returns."
+      "U.S. shipping only; no international shipping per shipping-and-returns.",
   };
 }
 
@@ -78,29 +239,28 @@ export function getStorePolicyTools() {
     {
       name: STORE_POLICY_TOOL_NAME,
       description:
-        "Local Perfumania store policy digest from the database. " +
-        "Prefer search_shop_policies_and_faqs first. Use this if Shopify returned nothing useful " +
-        "(the server also auto-falls back here when Shopify is empty).",
+        "Searches store knowledge base, articles, blog posts, fragrance guides, authenticity guarantees, FAQs, About Us / company info, Contact info, and store policies (shipping, returns, warranty, terms). Call this for ANY informational question, perfume guide, fragrance care advice, or store information.",
       input_schema: {
         type: "object",
         properties: {
           query: {
             type: "string",
-            description: "Customer question or keywords"
+            description:
+              "Customer question, keywords, or search topic using their full phrasing (e.g., 'are your fragrances authentic', 'how to choose perfume', 'shipping policy', 'return policy', 'contact'). Do NOT shorten to a single word.",
           },
           topic: {
             type: "string",
-            description: "Optional topic hint (ignored; full digest is returned)"
-          }
+            description: "Optional topic hint",
+          },
         },
-        required: ["query"]
-      }
-    }
+        required: ["query"],
+      },
+    },
   ];
 }
 
 export function isStorePolicyTool(toolName) {
-  return toolName === STORE_POLICY_TOOL_NAME;
+  return KNOWLEDGE_TOOL_NAMES.has(toolName);
 }
 
 export function isShopifyPolicyTool(toolName) {
@@ -181,20 +341,27 @@ function policyQueryFromArgs(toolArgs = {}, fallbackQuery = "") {
 }
 
 /**
- * If Shopify policy search is empty/failed, return local DB digest.
+ * If Shopify policy search is empty/failed, return local DB digest / vector knowledge search.
  */
-export async function withLocalPolicyFallback(shopifyResponse, toolArgs = {}, fallbackQuery = "") {
-  if (!isEmptyShopifyPolicyResult(shopifyResponse)) {
-    return shopifyResponse;
-  }
-
+export async function withLocalPolicyFallback(
+  shopifyResponse,
+  toolArgs = {},
+  fallbackQuery = "",
+  conversationIdOrOptions = null,
+  optionalMessageId = null
+) {
   const query = policyQueryFromArgs(toolArgs, fallbackQuery);
-  console.log("[store-policies] Shopify empty/error — DB digest fallback", { query });
+  console.log("[store-policies] Shopify empty/error — DB digest/vector fallback", { query });
 
-  const local = await callStorePolicyTool(STORE_POLICY_TOOL_NAME, {
-    query,
-    topic: toolArgs.topic || null
-  });
+  const local = await callStorePolicyTool(
+    STORE_POLICY_TOOL_NAME,
+    {
+      query,
+      topic: toolArgs.topic || null,
+    },
+    conversationIdOrOptions,
+    optionalMessageId
+  );
 
   try {
     const data = JSON.parse(local.content?.[0]?.text || "{}");
@@ -202,7 +369,7 @@ export async function withLocalPolicyFallback(shopifyResponse, toolArgs = {}, fa
     data.shopify_empty = true;
     data.instruction =
       (data.instruction ? `${data.instruction} ` : "") +
-      "Shopify search_shop_policies_and_faqs returned no useful results; answer from this local policy digest.";
+      "Answer from this local policy digest/knowledge search. If the answer is not in the text, provide the support contact info instead of failing.";
     local.content = [{ type: "text", text: JSON.stringify(data) }];
     local.structuredContent = data;
   } catch {
@@ -212,18 +379,37 @@ export async function withLocalPolicyFallback(shopifyResponse, toolArgs = {}, fa
   return local;
 }
 
-/** @deprecated Pass-through — Shopify policy tool stays visible to the LLM. */
+/** Filter raw Shopify policy tool from LLM so only the unified knowledge tool is visible. */
 export function filterShopifyPolicyToolsForLlm(tools = []) {
-  return tools;
+  return tools.filter((tool) => tool?.name !== SHOPIFY_POLICY_TOOL_NAME);
 }
 
-export async function callStorePolicyTool(toolName, toolArgs = {}) {
-  if (toolName !== STORE_POLICY_TOOL_NAME) {
+export async function callStorePolicyTool(
+  toolName,
+  toolArgs = {},
+  conversationIdOrOptions = null,
+  optionalMessageId = null
+) {
+  if (!isStorePolicyTool(toolName)) {
     return toolError(`Unknown store policy tool: ${toolName}`);
   }
 
+  let conversationId = null;
+  let messageId = null;
+  let userMessage = null;
+  if (typeof conversationIdOrOptions === "object" && conversationIdOrOptions !== null) {
+    conversationId = conversationIdOrOptions.conversationId || null;
+    messageId = conversationIdOrOptions.messageId || null;
+    userMessage = conversationIdOrOptions.userMessage || null;
+  } else {
+    conversationId = conversationIdOrOptions;
+    messageId = optionalMessageId;
+  }
+
   try {
-    return toolResult(await searchStorePolicies(toolArgs));
+    return toolResult(
+      await searchStorePolicies(toolArgs, { conversationId, messageId, userMessage })
+    );
   } catch (error) {
     console.error("[store-policies] digest load failed", error);
     // Last resort: in-code default digest JSON
@@ -242,17 +428,17 @@ export async function callStorePolicyTool(toolName, toolArgs = {}) {
           title: DEFAULT_STORE_POLICY_DIGEST.title,
           heading: "Perfumania store policy digest",
           body: DEFAULT_STORE_POLICY_DIGEST.digest,
-          content_date: DEFAULT_STORE_POLICY_DIGEST.contentDate
-        }
+          content_date: DEFAULT_STORE_POLICY_DIGEST.contentDate,
+        },
       ],
       contact: {
         store_url: "https://perfumania.com/",
         email: "customer.service@perfumania.com",
-        phone: "1 (866) 557-2368"
+        phone: "1 (866) 557-2368",
       },
       instruction:
         "Answer ONLY from policy_digest. Do NOT invent policy details. " +
-        "This store is Perfumania (https://perfumania.com/)."
+        "This store is Perfumania (https://perfumania.com/).",
     });
   }
 }
@@ -265,5 +451,5 @@ export default {
   withLocalPolicyFallback,
   callStorePolicyTool,
   filterShopifyPolicyToolsForLlm,
-  searchStorePolicies
+  searchStorePolicies,
 };
