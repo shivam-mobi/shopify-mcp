@@ -223,7 +223,6 @@ Injected as system/context messages before the LLM call:
 
 | Service | Role |
 |---------|------|
-| `store-help-hints.server.js` | Steer FAQ/shipping questions toward policy tools |
 | `customer-context.server.js` | Welcome, greeting, customer-name sync |
 | `product-compare.server.js` | Format catalog products for Top Matching Products cards |
 
@@ -333,7 +332,6 @@ There is **no** in-app merchant conversation browser, prompt editor, or LLM dash
 | `openai.server.js` | OpenAI provider |
 | `product-compare.server.js` | Catalog product formatting for product cards |
 | `prompts.server.js` | Load system prompt by `promptType` |
-| `store-help-hints.server.js` | Force policy-tool use for help questions |
 | `store-policies.server.js` | Local policy tool + Shopify empty fallback |
 | `streaming.server.js` | SSE stream manager |
 | `tool-empty-log.server.js` | Persist empty/failed tool results |

@@ -22,6 +22,8 @@ shopify.*.toml
 !shopify.web.toml
 
 /extensions/*/dist
+/uploads/shopify-graphql/
+/uploads/search-product-logs/
 
 # Ignore shopify files created during app dev
 .shopify/*

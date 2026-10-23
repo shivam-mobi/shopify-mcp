@@ -31,7 +31,7 @@ function resolveMcpCatalogSearchToolName(mcpClient) {
 }
 
 /**
- * Infer gender from tool-call query/intent only (not free-form chat text).
+ * Infer gender from tool-call query only (not free-form chat text).
  */
 function inferGenderFromCatalogText(text) {
   const s = String(text || "").toLowerCase();
@@ -55,7 +55,7 @@ function inferGenderFromCatalogText(text) {
 }
 
 /**
- * Set catalog.filters.gender when missing but query/intent imply recipient.
+ * Set catalog.filters.gender when missing but query implies recipient.
  */
 export function ensureCatalogGenderFilter(toolArgs = {}) {
   const normalized = normalizeCatalogSearchArgs(toolArgs);
@@ -76,9 +76,7 @@ export function ensureCatalogGenderFilter(toolArgs = {}) {
     return normalized;
   }
 
-  const inferred =
-    inferGenderFromCatalogText(catalog.query) ||
-    inferGenderFromCatalogText(catalog.context?.intent);
+  const inferred = inferGenderFromCatalogText(catalog.query);
 
   if (!inferred) {
     return normalized;
@@ -86,7 +84,7 @@ export function ensureCatalogGenderFilter(toolArgs = {}) {
 
   filters.gender = inferred;
   catalog.filters = filters;
-  console.log("[catalog-wrapper] inferred catalog.filters.gender from query/intent", {
+  console.log("[catalog-wrapper] inferred catalog.filters.gender from query", {
     gender: inferred
   });
   return { ...normalized, catalog };
@@ -109,90 +107,7 @@ export function buildMcpCatalogSearchArgs(toolArgs = {}) {
 }
 
 export function getCatalogSearchWrapperTools() {
-  return [
-    {
-      name: WRAPPER_TOOL_NAME,
-      description:
-        "Search Perfumania products. Required shape: catalog.query + catalog.context.intent + catalog.filters (available, optional gender & price) + catalog.pagination. " +
-        "All fields live under catalog only. Price min/max in cents ($25 → 2500). " +
-        "Set catalog.filters.gender (men|women|unisex) when recipient is known, including show-more. " +
-        "Show more: same query, intent, filters, plus pagination.cursor from the last result.",
-      input_schema: {
-        type: "object",
-        required: ["catalog"],
-        properties: {
-          catalog: {
-            type: "object",
-            description: "Catalog search parameters.",
-            properties: {
-              query: {
-                type: "string",
-                description:
-                  "Fragrance keywords: brand, scent, type (perfume, cologne, edt, gift set). Include men/women in query when relevant."
-              },
-              context: {
-                type: "object",
-                description: "Required on almost every search.",
-                properties: {
-                  intent: {
-                    type: "string",
-                    description:
-                      "Short phrase: gift, floral, office, for him/her, budget, etc."
-                  }
-                },
-                required: ["intent"]
-              },
-              filters: {
-                type: "object",
-                description: "Hard filters applied server-side after Shopify search.",
-                properties: {
-                  available: {
-                    type: "boolean",
-                    description: "In-stock only. Default true.",
-                    default: true
-                  },
-                  gender: {
-                    type: "string",
-                    enum: ["men", "women", "unisex"],
-                    description:
-                      "Recipient when known from the conversation. Omit only when unknown. Required on show-more with same filters."
-                  },
-                  price: {
-                    type: "object",
-                    properties: {
-                      min: {
-                        type: "integer",
-                        description: "Minimum price in cents."
-                      },
-                      max: {
-                        type: "integer",
-                        description: "Maximum price in cents."
-                      }
-                    }
-                  }
-                }
-              },
-              pagination: {
-                type: "object",
-                properties: {
-                  cursor: {
-                    type: "string",
-                    description: "Next-page cursor from the previous search_catalog result."
-                  },
-                  limit: {
-                    type: "integer",
-                    description: "Results per page.",
-                    default: 10,
-                    minimum: 1
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  ];
+  return [];
 }
 
 export async function callCatalogSearchWrapperTool(mcpClient, toolArgs = {}) {

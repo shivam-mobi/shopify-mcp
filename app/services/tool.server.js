@@ -387,7 +387,7 @@ export function createToolService() {
             "Say cards are shown below (NEVER say above). " +
             "FOLLOW-UP on shown cards (reviews, scent/notes, compare, cheapest, which one, EDP/EDT, differences, gift fit, or any product question): call get_product_details ONCE with ids:[every variant_id needed from this products[]]; use display_ids only for the product(s) your answer highlights. " +
             "CHEAPEST / MOST EXPENSIVE (mandatory when asked): Use ONLY cheapest_title, cheapest_price, cheapest_position (or most_expensive_*) from THIS tool result — or read cheapest_answer / most_expensive_answer verbatim. " +
-            "Compare every products[].price_amount_cents across ALL cards; the lowest wins even if another card shares the same brand name (e.g. first 'Sauvage' is NOT automatically cheapest). Do NOT guess from memory or an older search_catalog result. " +
+            "Compare every products[].price_amount_cents across ALL cards; the lowest wins even if another card shares the same brand name (e.g. first 'Sauvage' is NOT automatically cheapest). Do NOT guess from memory or an older search result. " +
             "Price-only cheapest/most expensive questions: answer in one short sentence from cheapest_* / most_expensive_* without calling get_product_details. " +
             "FOLLOW-UP — best / recommend / suggest: NEVER invent a universal best. If the customer gave a preference (floral, fresh, woody, daytime, evening, gift, EDP, women/men, budget), " +
             "pick ONE product from products[] using gender, fragrance_type, scent_notes, tags, description, and price; say why in one short sentence; offer to add it. " +
@@ -395,7 +395,7 @@ export function createToolService() {
             "Never dump the full catalog list in chat. " +
             matchInstruction +
             (pagination
-              ? " If the customer asks for more products/results/next page and pagination.has_next_page is true, call search_catalog again with the same query/filters and pagination.cursor from THIS tool result. " +
+              ? ` If the customer asks for more products/results/next page and pagination.has_next_page is true, call ${toolName} again with the same query/filters and pagination.cursor from THIS tool result. ` +
                 "CRITICAL: copy pagination.cursor EXACTLY as the full string value — do not truncate, rewrite, re-encode, shorten, or change any character. A single wrong character causes Malformed cursor and zero products."
               : "")
     };

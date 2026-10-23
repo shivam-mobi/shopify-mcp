@@ -63,8 +63,19 @@ function shouldCompress(req, res) {
 }
 
 async function run() {
-  const port =
-    parseNumber(process.env.PORT) ?? (await getPort({ port: 3000 }));
+  // Storefront / ngrok target localhost:3000. Never silently bind another port —
+  // that leaves an old process serving chat while `npm run start` looks successful.
+  const requestedPort = parseNumber(process.env.PORT) ?? 3000;
+  const port = await getPort({ port: requestedPort });
+  if (port !== requestedPort) {
+    console.error(
+      `[production-serve] port ${requestedPort} is already in use. ` +
+        `Chat/ngrok still hit that old process, so this start would not be used. ` +
+        `Stop the other Node server (lsof -nP -iTCP:${requestedPort} -sTCP:LISTEN) ` +
+        `or set PORT to a free port and point ngrok at it.`
+    );
+    process.exit(1);
+  }
   const buildPathArg = process.argv[2] || "./build/server/index.js";
   const buildPath = path.resolve(buildPathArg);
 

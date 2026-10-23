@@ -5,7 +5,8 @@
 
 const CATALOG_SEARCH_TOOL_NAMES = new Set([
   "search_catalog",
-  "search_shop_catalog"
+  "search_shop_catalog",
+  "search_product"
 ]);
 
 export function isCatalogSearchToolName(toolName) {

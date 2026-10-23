@@ -56,12 +56,14 @@ import {
   filterLookupCatalogForLlm
 } from "../services/storefront-catalog-tools.server.js";
 import {
-  getCatalogSearchWrapperTools,
   filterCatalogSearchToolsForLlm,
-  isCatalogSearchWrapperTool,
-  callCatalogSearchWrapperTool,
-  ensureCatalogGenderFilter
+  isCatalogSearchWrapperTool
 } from "../services/catalog-search-tools.server.js";
+import {
+  getLocalCatalogSearchTools,
+  isLocalCatalogSearchTool,
+  callLocalCatalogSearchTool
+} from "../services/local-catalog-search-tools.server.js";
 import { logEmptyToolResultIfNeeded } from "../services/tool-empty-log.server.js";
 import { storeToolEmptyResultLog } from "../db.server.js";
 import {
@@ -73,6 +75,29 @@ import {
   extractAssistantText
 } from "../services/customer-context.server.js";
 
+function recentShopperSearchText(conversationHistory = [], currentMessage = "") {
+  const texts = [];
+  for (const msg of conversationHistory) {
+    if (msg?.role !== "user") continue;
+    let text = "";
+    if (typeof msg.content === "string") {
+      text = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      text = msg.content
+        .map((part) => {
+          if (typeof part === "string") return part;
+          if (part?.type === "text") return part.text || "";
+          return "";
+        })
+        .join(" ");
+    }
+    text = String(text || "").trim();
+    if (text && text.length <= 500) texts.push(text);
+  }
+  const current = String(currentMessage || "").trim();
+  if (current && texts[texts.length - 1] !== current) texts.push(current);
+  return texts.slice(-4).join("\n");
+}
 
 /**
  * Rract Router loader function for handling GET requests
@@ -380,7 +405,7 @@ async function handleChatSession({
     }
 
     const cartWrapperTools = getCartWrapperTools();
-    const catalogSearchWrapperTools = getCatalogSearchWrapperTools();
+    const localCatalogSearchTools = getLocalCatalogSearchTools();
     const storePolicyTools = getStorePolicyTools();
     const storefrontCatalogTools = getStorefrontCatalogTools();
     const loggedInCustomerId = String(
@@ -398,7 +423,7 @@ async function handleChatSession({
     );
     const allTools = [
       ...mcpToolsForLlm,
-      ...catalogSearchWrapperTools,
+      ...localCatalogSearchTools,
       ...cartWrapperTools,
       ...storePolicyTools,
       ...storefrontCatalogTools,
@@ -406,7 +431,7 @@ async function handleChatSession({
     ];
 
     console.log(`Total MCP tools available to LLM: ${mcpClient.tools.length} (${mcpToolsForLlm.length} after cart/catalog/lookup filter)`);
-    console.log(`Catalog search wrapper tools: ${catalogSearchWrapperTools.length}`);
+    console.log(`Local catalog search tools: ${localCatalogSearchTools.length}`);
     console.log(`Cart wrapper tools: ${cartWrapperTools.length}`);
     console.log(`Store policy tools: ${storePolicyTools.length} (local fallback if Shopify policy empty)`);
     console.log(`Storefront catalog tools: ${storefrontCatalogTools.length} (get_product_details only)`);
@@ -517,17 +542,18 @@ async function handleChatSession({
 
           // Handle tool use requests
           onToolUse: async (content) => {
-            const toolName = content.name;
+            let toolName = content.name;
             let toolArgs = content.input;
             const toolUseId = content.id;
 
-            // LLMs sometimes nest filters under context — hoist before MCP / price post-filter
-            if (AppConfig.tools.productSearchNames.includes(toolName)) {
-              toolArgs = normalizeCatalogSearchArgs(toolArgs);
+            if (toolName === "search_catalog" || toolName === "search_shop_catalog") {
+              console.log("[chat] aliasing Shopify catalog tool to search_product", { from: toolName });
+              toolName = "search_product";
             }
 
-            if (isCatalogSearchWrapperTool(toolName)) {
-              toolArgs = ensureCatalogGenderFilter(toolArgs);
+            if (AppConfig.tools.productSearchNames.includes(toolName)) {
+              toolArgs = normalizeCatalogSearchArgs(toolArgs);
+              content.input = toolArgs;
             }
 
             if (isCatalogSearchToolName(toolName)) {
@@ -629,13 +655,16 @@ async function handleChatSession({
                 console.log("[chat] storefront catalog tool invoke", { toolName, toolArgs });
                 toolUseResponse = await callStorefrontCatalogTool(toolName, toolArgs);
                 console.log("[chat] storefront catalog tool done", { toolName });
-              } else if (isCatalogSearchWrapperTool(toolName)) {
-                console.log("[chat] catalog search wrapper invoke", { toolName, toolArgs });
-                toolUseResponse = await callCatalogSearchWrapperTool(
-                  mcpClient,
-                  toolArgs
-                );
-                console.log("[chat] catalog search wrapper done", { toolName });
+              } else if (
+                isLocalCatalogSearchTool(toolName) ||
+                isCatalogSearchWrapperTool(toolName) ||
+                toolName === "search_shop_catalog"
+              ) {
+                console.log("[chat] local catalog search invoke", { toolName, toolArgs });
+                toolUseResponse = await callLocalCatalogSearchTool(toolArgs, {
+                  shopperText: recentShopperSearchText(conversationHistory, userMessage)
+                });
+                console.log("[chat] local catalog search done", { toolName });
               } else if (isCartWrapperTool(toolName)) {
                 console.log("[chat] cart wrapper invoke", { toolName, toolArgs });
                 toolUseResponse = await callCartWrapperTool(

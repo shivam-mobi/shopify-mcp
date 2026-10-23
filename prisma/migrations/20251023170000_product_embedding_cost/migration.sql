@@ -1,0 +1,2 @@
+ALTER TABLE `products` ADD COLUMN `token_count` INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE `products` ADD COLUMN `llm_cost` DOUBLE NULL;

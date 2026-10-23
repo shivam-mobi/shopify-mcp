@@ -1,5 +1,5 @@
 /**
- * Normalize LLM search_catalog args before MCP / post-filters.
+ * Normalize LLM catalog search args (hoist nested filters/pagination).
  */
 export function normalizeCatalogSearchArgs(toolArgs = {}) {
   if (!toolArgs || typeof toolArgs !== "object") {

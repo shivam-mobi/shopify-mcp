@@ -324,6 +324,24 @@ model KnowledgeProcessingLog {
   @@map("knowledgeProcessingLogs")
 }
 
+/// Shopify Admin GraphQL request/response log for product sync comparison.
+model ShopifyGraphqlLog {
+  id           String   @id @default(uuid())
+  baseUrl      String   @map("base_url") @db.Text
+  operation    String?
+  request      String   @db.LongText
+  response     String   @db.LongText
+  statusCode   Int      @map("status_code")
+  durationMs   Int      @map("duration_ms")
+  errorMessage String?  @map("error_message") @db.LongText
+  filePath     String?  @map("file_path") @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([operation])
+  @@index([createdAt])
+  @@map("shopifyGraphqlLogs")
+}
+
 /// Raw Shopify event logs to persist incoming payload and metadata.
 model ShopifyEventLog {
   id           String   @id @default(cuid())
@@ -352,6 +370,303 @@ model AdminUser {
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@map("adminUsers")
+}
+
+/// Brand lookup from Shopify vendor (e.g. "YZY Perfume", "Ariaz", "Coach").
+model Brand {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  products  Product[]
+
+  @@map("brands")
+}
+
+/// Gender lookup from product tags (e.g. "Women", "Men", "Unisex").
+model ProductGender {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  products  Product[]
+
+  @@map("product_genders")
+}
+
+/// Shopify native product type lookup (e.g. "Beauty").
+model ProductType {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  products  Product[]
+
+  @@map("product_types")
+}
+
+/// Fragrance family lookup from custom.fragrance_family_new (e.g. "Fresh", "Floral").
+model FragranceFamily {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  products  Product[]
+
+  @@map("fragrance_families")
+}
+
+/// Scent type lookup from custom.scent_type_new (e.g. "Fruity Florals").
+model ScentType {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  products  Product[]
+
+  @@map("scent_types")
+}
+
+/// Fixed Shopify collection categories. Seed rows from these handles:
+/// Women: womens-perfume, womens-perfume-new-arrivals, bundle-deals-for-women,
+///        best-selling-perfumes-for-women, clearance-for-women-perfume, only-at-perfumania
+/// Men:   mens-cologne-new-arrivals, bundle-deals-for-men,
+///        best-selling-colognes-for-men, clearance-for-mens-cologne
+/// Other: beauty, gift-set
+model ProductCategory {
+  id        String    @id @default(uuid())
+  name      String
+  handle    String    @unique
+  url       String?   @db.Text
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  products  ProductCategoryProduct[]
+
+  @@map("product_categories")
+}
+
+/// Product-to-category link. A product can belong to more than one collection.
+model ProductCategoryProduct {
+  id         String          @id @default(uuid())
+  productId  String          @map("product_id")
+  product    Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  categoryId String          @map("category_id")
+  category   ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  createdAt  DateTime        @default(now()) @map("created_at")
+  updatedAt  DateTime        @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([productId, categoryId])
+  @@index([categoryId])
+  @@map("product_category_products")
+}
+
+/// Offer label from custom.applicable_offer (e.g. "3 For $99", "BOGO 50").
+model ApplicableOffer {
+  id         String    @id @default(uuid())
+  name       String    @unique
+  offerText  String?   @map("offer_text") @db.Text
+  offerRules String?   @map("offer_rules") @db.Text
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  products   Product[]
+
+  @@map("applicable_offers")
+}
+
+/// Synced Shopify product used for catalog search (SQL filters + vector rank).
+model Product {
+  id                  String    @id @default(uuid())
+  shopifyProductId    String    @unique @map("shopify_product_id")
+  handle              String    @unique
+  title               String
+  description         String?   @db.LongText
+  brandId             String?   @map("brand_id")
+  brand               Brand?    @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  genderId            String?   @map("gender_id")
+  gender              ProductGender? @relation(fields: [genderId], references: [id], onDelete: SetNull)
+  productTypeId       String?   @map("product_type_id")
+  productType         ProductType? @relation(fields: [productTypeId], references: [id], onDelete: SetNull)
+  applicableOfferId   String?   @map("applicable_offer_id")
+  applicableOffer     ApplicableOffer? @relation(fields: [applicableOfferId], references: [id], onDelete: SetNull)
+  fragranceFamilyId   String?   @map("fragrance_family_id")
+  fragranceFamily     FragranceFamily? @relation(fields: [fragranceFamilyId], references: [id], onDelete: SetNull)
+  scentTypeId         String?   @map("scent_type_id")
+  scentType           ScentType? @relation(fields: [scentTypeId], references: [id], onDelete: SetNull)
+  status              String    @default("active")
+  embeddingContent    String?   @map("embedding_content") @db.LongText
+  embedding           Unsupported("VECTOR(1536)")?
+  tokenCount          Int       @default(0) @map("token_count")
+  llmCost             Float?    @map("llm_cost")
+  shopifyUpdatedAt    DateTime? @map("shopify_updated_at")
+  lastSyncedAt        DateTime? @map("last_synced_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  variants            ProductVariant[]
+  faqs                ProductFaqProduct[]
+  notes               ProductNote[]
+  images              ProductImage[]
+  review              ProductReview?
+  categories          ProductCategoryProduct[]
+
+  @@index([brandId])
+  @@index([genderId])
+  @@index([status])
+  @@index([productTypeId])
+  @@index([applicableOfferId])
+  @@index([fragranceFamilyId])
+  @@index([scentTypeId])
+  @@index([shopifyUpdatedAt])
+  @@map("products")
+}
+
+/// Fixed note pyramid slots: key, top, middle, base.
+model NoteType {
+  id        String        @id @default(uuid())
+  code      String        @unique // key | top | middle | base
+  name      String
+  position  Int           @default(0)
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @default(now()) @updatedAt @map("updated_at")
+
+  notes     ProductNote[]
+
+  @@map("note_types")
+}
+
+/// Unique fragrance note names (e.g. "Freesia", "Nectarine Blossom", "Crisp Apple").
+model Note {
+  id        String        @id @default(uuid())
+  name      String        @unique
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @default(now()) @updatedAt @map("updated_at")
+
+  products  ProductNote[]
+
+  @@map("notes")
+}
+
+/// Product-to-note many-to-many with note type (top/middle/base/key).
+model ProductNote {
+  id        String   @id @default(uuid())
+  productId String   @map("product_id")
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  noteId    String   @map("note_id")
+  note      Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  typeId    String   @map("type_id")
+  type      NoteType @relation(fields: [typeId], references: [id], onDelete: Restrict)
+  position  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([productId, noteId, typeId])
+  @@index([productId, typeId])
+  @@index([noteId])
+  @@index([typeId])
+  @@map("product_notes")
+}
+
+/// Product variants for SKU, price, size, and stock filters.
+model ProductVariant {
+  id                 String   @id @default(uuid())
+  shopifyVariantId   String   @unique @map("shopify_variant_id")
+  shopifyProductId   String   @map("shopify_product_id")
+  product            Product  @relation(fields: [shopifyProductId], references: [shopifyProductId], onDelete: Cascade)
+  title              String?
+  option1            String?
+  sku                String?
+  barcode            String?
+  price              Decimal  @db.Decimal(10, 2)
+  compareAtPrice     Decimal? @map("compare_at_price") @db.Decimal(10, 2)
+  availableForSale   Boolean  @default(false) @map("available_for_sale")
+  inventoryQuantity  Int      @default(0) @map("inventory_quantity")
+  position           Int      @default(1)
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
+
+  images             ProductImage[]
+
+  @@index([shopifyProductId])
+  @@index([sku])
+  @@index([barcode])
+  @@map("product_variants")
+}
+
+/// Product images. Belong to the product; optional variant_id when Shopify assigns the image to a variant.
+model ProductImage {
+  id             String          @id @default(uuid())
+  productId      String          @map("product_id")
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId      String?         @map("variant_id")
+  variant        ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  shopifyImageId String?         @unique @map("shopify_image_id")
+  url            String          @db.Text
+  alt            String?         @db.Text
+  position       Int             @default(1)
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @default(now()) @updatedAt @map("updated_at")
+
+  @@index([productId, position])
+  @@index([variantId])
+  @@map("product_images")
+}
+
+/// Product review summary from custom.product_review_summary (one row per product).
+model ProductReview {
+  id            String   @id @default(uuid())
+  productId     String   @unique @map("product_id")
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  averageRating Decimal  @map("average_rating") @db.Decimal(3, 2)
+  totalReviews  Int      @default(0) @map("total_reviews")
+  oneStar       Int      @default(0) @map("one_star")
+  twoStar       Int      @default(0) @map("two_star")
+  threeStar     Int      @default(0) @map("three_star")
+  fourStar      Int      @default(0) @map("four_star")
+  fiveStar      Int      @default(0) @map("five_star")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("product_reviews")
+}
+
+/// Shared product FAQ. The same question/answer can belong to many products.
+model ProductFaq {
+  id                   String   @id @default(uuid())
+  shopifyMetaobjectId  String?  @map("shopify_metaobject_id")
+  question             String   @db.Text
+  answer               String   @db.Text
+  embeddingContent     String?  @map("embedding_content") @db.Text
+  embedding            Unsupported("VECTOR(1536)")?
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @default(now()) @updatedAt @map("updated_at")
+
+  products             ProductFaqProduct[]
+
+  @@index([shopifyMetaobjectId])
+  @@map("product_faqs")
+}
+
+/// Product-to-FAQ many-to-many. Position is the order of this FAQ on that product.
+model ProductFaqProduct {
+  id        String     @id @default(uuid())
+  productId String     @map("product_id")
+  product   Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  faqId     String     @map("product_faq_id")
+  faq       ProductFaq @relation(fields: [faqId], references: [id], onDelete: Cascade)
+  position  Int        @default(0)
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([productId, faqId])
+  @@index([faqId])
+  @@map("product_faq_products")
 }
 
 

@@ -1,8 +1,8 @@
 /**
- * get_product_details — Storefront private API replacement for lookup_catalog.
+ * get_product_details — local catalog details for products shown by search_product.
  */
 
-import { fetchStorefrontProductDetails } from "./storefront-api.server.js";
+import { getLocalProductDetails } from "./local-catalog-search.server.js";
 
 const LOOKUP_CATALOG_NAME = "lookup_catalog";
 const GET_PRODUCT_DETAILS = "get_product_details";
@@ -28,17 +28,15 @@ export function getStorefrontCatalogTools() {
     {
       name: GET_PRODUCT_DETAILS,
       description:
-        "Get rich product details from the Storefront API (replaces lookup_catalog). " +
+        "Get rich product details from the local catalog. " +
         "Use for ANY follow-up about products already shown in search cards: reviews, ratings, scent/notes, " +
         "fragrance family, concentration/sizes, compare, which one, differences, longevity, gift fit, etc. " +
-        "Pass variant GIDs from the latest search_catalog products[]. " +
+        "Pass variant GIDs from the latest search_product products[]. " +
         "BATCH (CRITICAL): ids[] accepts MANY GIDs in ONE call — fetch everything you need to answer once. " +
         "NEVER emit multiple get_product_details tool calls with one id each. " +
         "display_ids[] (optional): variant GIDs for Product Details CARDS in the UI when your reply focuses on " +
         "specific product(s). ids[] = data; display_ids[] = cards. Copy GIDs exactly from ids[]. " +
-        "Omit display_ids to show detail cards for all products in ids[]. Listing cards stay visible above. " +
-        "Returns metafields for YOUR understanding — cards show notes/reviews to the customer; do not paste field lists in chat. " +
-        "Never use lookup_catalog.",
+        "Omit display_ids to show detail cards for all products in ids[]. Listing cards stay visible above.",
       input_schema: {
         type: "object",
         properties: {
@@ -100,7 +98,7 @@ export async function callStorefrontCatalogTool(toolName, toolArgs = {}) {
       );
     }
 
-    const products = await fetchStorefrontProductDetails(ids);
+    const products = await getLocalProductDetails(ids);
     return toolResult({
       status: "success",
       source: GET_PRODUCT_DETAILS,
