@@ -99,7 +99,8 @@ export function buildMcpCatalogSearchArgs(toolArgs = {}) {
 
   const catalog = { ...normalized.catalog };
   if (catalog.filters != null && typeof catalog.filters === "object") {
-    const { gender: _gender, ...restFilters } = catalog.filters;
+    const { gender: _gender, must_match: _mustMatch, mustMatch: _mustMatchCamel, ...restFilters } =
+      catalog.filters;
     catalog.filters = restFilters;
   }
 

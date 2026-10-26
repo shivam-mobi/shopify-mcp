@@ -854,7 +854,9 @@ async function handleChatSession({
         productsToDisplay.map((p) => ({
           title: p.title,
           brand: p.brand || p.vendor || null,
-          inStock: p.inStock
+          inStock: p.inStock,
+          similarity:
+            typeof p.similarity === "number" ? Number(p.similarity.toFixed(4)) : p.similarity ?? null
         }))
       );
       stream.sendMessage({

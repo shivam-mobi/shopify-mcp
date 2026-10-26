@@ -1,7 +1,7 @@
 /**
  * Local product catalog search (MySQL products + vector rank).
  * Accepts the same catalog.query / filters / pagination shape as Shopify search_catalog,
- * plus Perfumania filters (brand, product_type, fragrance_family, scent_type, notes, category).
+ * plus Perfumania filters (brand, product_type, fragrance_family, scent_type, notes, category, must_match).
  */
 import prisma from "../db.server.js";
 import { generateEmbedding, getEmbeddingModel, dotProduct } from "./embeddings.server.js";
@@ -87,6 +87,7 @@ export function parseLocalCatalogSearchArgs(input = {}) {
     scentType: String(filters.scent_type || filters.scentType || input.scent_type || "").trim(),
     notes: asList(filters.notes || input.notes),
     category: String(filters.category || filters.collection || input.category || "").trim(),
+    mustMatch: asList(filters.must_match || filters.mustMatch || input.must_match),
     minCents: toCents(price.min ?? input.price_min),
     maxCents: toCents(price.max ?? input.price_max),
     limit,
@@ -207,9 +208,9 @@ function buildFilterSql(args) {
 
   if (args.gender) {
     if (args.gender === "unisex") {
-      where.push(`LOWER(g.name) = 'unisex'`);
+      where.push(`(LOWER(g.name) = 'unisex' OR p.gender_id IS NULL)`);
     } else {
-      where.push(`(LOWER(g.name) = ? OR LOWER(g.name) = 'unisex')`);
+      where.push(`(LOWER(g.name) = ? OR LOWER(g.name) = 'unisex' OR p.gender_id IS NULL)`);
       params.push(args.gender);
     }
   }
@@ -254,6 +255,12 @@ function buildFilterSql(args) {
         AND LOWER(n.name) IN (${placeholders})
     )`);
     params.push(...args.notes.map((note) => note.toLowerCase()));
+  }
+
+  if (args.mustMatch?.length) {
+    const clause = args.mustMatch.map(() => "p.embedding_content LIKE ?").join(" OR ");
+    where.push(`(${clause})`);
+    params.push(...args.mustMatch.map((term) => `%${term}%`));
   }
 
   const variantClauses = [`(v.available_for_sale = 1 OR v.inventory_quantity > 0)`];

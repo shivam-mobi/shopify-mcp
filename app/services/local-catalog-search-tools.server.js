@@ -109,6 +109,9 @@ export function getLocalCatalogSearchTools() {
         "catalog.query must include season, occasion, and mood from the shopper (summer, winter, office, date, gift), not only gender or scent family. " +
         "Example: wife + summer + fresh → query 'fresh summer perfume', filters.gender 'women'. " +
         "Price min/max in cents ($25 → 2500). Set catalog.filters.gender (men|women|unisex) when the recipient is known. " +
+        "Always set catalog.filters.must_match from the current shopper ask. " +
+        "Use short root words that can appear in product text, not inflected forms (rainy → rain, citrusy → citrus). " +
+        "Skip filler (season, perfume, fragrance, for). " +
         "Show more: same query/filters plus pagination.cursor from the last result.",
       input_schema: {
         type: "object",
@@ -119,7 +122,7 @@ export function getLocalCatalogSearchTools() {
             type: "object",
             additionalProperties: false,
             description: "Local catalog search parameters.",
-            required: ["query"],
+            required: ["query", "filters"],
             properties: {
               query: {
                 type: "string",
@@ -129,6 +132,7 @@ export function getLocalCatalogSearchTools() {
               filters: {
                 type: "object",
                 additionalProperties: false,
+                required: ["must_match"],
                 properties: {
                   gender: {
                     type: "string",
@@ -145,7 +149,8 @@ export function getLocalCatalogSearchTools() {
                   },
                   fragrance_family: {
                     type: "string",
-                    description: "Fragrance family, e.g. Floral, Fresh, Woody Earthy."
+                    description:
+                      "One fragrance family name as a string, not an array, e.g. Floral, Fresh, Woody Earthy."
                   },
                   scent_type: {
                     type: "string",
@@ -155,6 +160,17 @@ export function getLocalCatalogSearchTools() {
                     type: "array",
                     items: { type: "string" },
                     description: "Note names to match, e.g. vanilla, rose, oud."
+                  },
+                  must_match: {
+                    type: "array",
+                    items: { type: "string" },
+                    description:
+                      "Required on every search. Words that must appear in product text (embedding_content). " +
+                      "Use the short root form so LIKE matches more text: rainy → rain, citrusy → citrus, woody → wood. " +
+                      "Skip filler words (season, perfume, fragrance, for, the). " +
+                      "Add related product words for this ask only — any case, not a fixed list. " +
+                      "Examples of the pattern: rainy season → [\"rain\", \"aquatic\", \"monsoon\"]; " +
+                      "kids → [\"kids\", \"children\", \"girls\", \"boys\", \"baby\"]; vanilla → [\"vanilla\"]."
                   },
                   category: {
                     type: "string",

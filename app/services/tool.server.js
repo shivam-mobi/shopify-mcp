@@ -735,6 +735,14 @@ export function createToolService() {
       yGroup: product.yGroup || "",
       features: Array.isArray(product.features) ? product.features : undefined,
       tags: Array.isArray(product.tags) ? product.tags : product.tags,
+      similarity:
+        typeof product.similarity === "number" && Number.isFinite(product.similarity)
+          ? product.similarity
+          : Number.isFinite(Number(product.similarity))
+            ? Number(product.similarity)
+            : Number.isFinite(Number(product.score))
+              ? Number(product.score)
+              : null,
       fragrance_family: product.fragrance_family || null,
       scent_type: product.scent_type || null,
       key_notes: product.key_notes || null,
