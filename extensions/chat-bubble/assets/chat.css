@@ -1473,6 +1473,82 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
+}
+
+.shop-ai-product-offer {
+  position: absolute;
+  top: 10px;
+  right: 0;
+  left: auto;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  width: auto;
+  max-width: none;
+  padding: 4px 6px 4px 5px;
+  border-radius: 8px 0 0 8px;
+  background: var(--shop-ai-brand);
+  color: #fff;
+  font-weight: 800;
+  letter-spacing: 0;
+  box-shadow: 0 2px 8px rgba(230, 0, 96, 0.35);
+  pointer-events: none;
+}
+
+.shop-ai-product-offer-icon {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 7px;
+  font-weight: 800;
+}
+
+.shop-ai-product-offer-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.15;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.shop-ai-product-offer-deal {
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.shop-ai-product-offer-mix {
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.shop-ai-product-card--detail .shop-ai-product-offer {
+  top: 12px;
+  right: 0;
+  left: auto;
+  padding: 5px 8px 5px 6px;
+  gap: 4px;
+}
+
+.shop-ai-product-card--detail .shop-ai-product-offer-icon {
+  width: 15px;
+  height: 15px;
+  font-size: 8px;
+}
+
+.shop-ai-product-card--detail .shop-ai-product-offer-deal {
+  font-size: 11px;
+}
+
+.shop-ai-product-card--detail .shop-ai-product-offer-mix {
+  font-size: 9px;
 }
 
 .shop-ai-product-image img {

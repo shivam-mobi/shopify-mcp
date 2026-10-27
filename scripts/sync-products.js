@@ -387,16 +387,18 @@ function firstLabelFromMetafield(mf, gidMap = {}) {
 function buildEmbeddingContent(product, extras) {
   const lines = [
     product.title,
-    extras.brandName,
-    extras.productTypeName,
-    extras.genderName,
+    extras.brandName ? `Brand: ${extras.brandName}` : "",
+    extras.productTypeName ? `Product type: ${extras.productTypeName}` : "",
+    extras.genderName ? `Gender: ${extras.genderName}` : "",
     extras.familyName ? `Fragrance family: ${extras.familyName}` : "",
     extras.scentName ? `Scent type: ${extras.scentName}` : "",
     extras.offerName ? `Offer: ${extras.offerName}` : "",
-    extras.keyNotes.length ? `Key notes: ${extras.keyNotes.join(", ")}` : "",
-    extras.topNotes.length ? `Top notes: ${extras.topNotes.join(", ")}` : "",
-    extras.middleNotes.length ? `Middle notes: ${extras.middleNotes.join(", ")}` : "",
-    extras.baseNotes.length ? `Base notes: ${extras.baseNotes.join(", ")}` : "",
+    extras.keyNotes?.length ? `Key notes: ${extras.keyNotes.join(", ")}` : "",
+    extras.topNotes?.length ? `Top notes: ${extras.topNotes.join(", ")}` : "",
+    extras.middleNotes?.length ? `Middle notes: ${extras.middleNotes.join(", ")}` : "",
+    extras.baseNotes?.length ? `Base notes: ${extras.baseNotes.join(", ")}` : "",
+    extras.collections?.length ? `Collections: ${extras.collections.join(", ")}` : "",
+    extras.tags?.length ? `Tags: ${extras.tags.join(", ")}` : "",
     extras.description || ""
   ];
   return lines.filter(Boolean).join("\n");
@@ -978,6 +980,9 @@ async function upsertProduct(product, membership) {
     ? await upsertNamed("scent", prisma.scentType, scentFallback)
     : null;
 
+  const collections = (product.collections?.nodes || []).map((c) => c.title).filter(Boolean);
+  const tags = (product.tags || []).map((t) => String(t).trim()).filter(Boolean);
+
   const extra = {
     brandName: product.vendor || "",
     productTypeName: productTypeName || "",
@@ -989,6 +994,8 @@ async function upsertProduct(product, membership) {
     topNotes,
     middleNotes,
     baseNotes,
+    collections,
+    tags,
     description: description || ""
   };
 

@@ -3557,11 +3557,8 @@
       syncing: false,
       importing: false,
       suppressImportUntil: 0,
-      /** Block chat→theme clear+add while theme→chat import is in flight or just finished. */
-      suppressThemeSyncUntil: 0,
       _listenersBound: false,
       _importTimer: null,
-      _importQueued: null,
       _lastSyncFingerprint: null,
       _lastSyncAt: 0,
 
@@ -3635,6 +3632,19 @@
         document.addEventListener('cart:updated', onThemeCartEvent);
         document.documentElement.addEventListener('cart:updated', onThemeCartEvent);
         document.addEventListener('cart:refresh', onThemeCartEvent);
+
+        try {
+          if (typeof window.subscribe === 'function' && window.PUB_SUB_EVENTS?.cartUpdate) {
+            window.subscribe(window.PUB_SUB_EVENTS.cartUpdate, (payload) => {
+              if (payload && typeof payload === 'object' && payload.source === 'shop-ai-chat') {
+                return;
+              }
+              this.scheduleImportFromTheme('theme-pubsub');
+            });
+          }
+        } catch (e) {
+          // ignore
+        }
       },
 
       scheduleImportFromTheme: function(reason) {
@@ -3643,8 +3653,6 @@
 
         clearTimeout(this._importTimer);
         this._importTimer = setTimeout(() => {
-          if (this.syncing || this.importing) return;
-          if (Date.now() < (this.suppressImportUntil || 0)) return;
           this.importThemeCartIntoChat({ reason: reason || 'scheduled' }).catch((error) => {
             console.warn('[ShopAIChat] theme→chat import failed', error?.message || error);
           });
@@ -3664,17 +3672,13 @@
        * Empty theme cart clears the chatbot cart. Chat→theme still uses syncFromChatCart.
        */
       importThemeCartIntoChat: async function(options = {}) {
-        if (this.importing || this.syncing) {
-          this._importQueued = options;
-          return null;
-        }
+        if (this.importing || this.syncing) return null;
         if (Date.now() < (this.suppressImportUntil || 0) && !options.force) return null;
 
         const conversationId = getConversationId();
         if (!conversationId) return null;
 
         this.importing = true;
-        this.suppressThemeSyncUntil = Date.now() + 12000;
         try {
           let items = [];
           try {
@@ -3709,8 +3713,6 @@
           }
 
           const result = await response.json();
-          this.suppressThemeSyncUntil = Date.now() + 12000;
-          this.suppressImportUntil = Date.now() + 3000;
           console.log('[ShopAIChat] theme→chat import', {
             reason: options.reason || null,
             merged: result?.merged,
@@ -3718,17 +3720,18 @@
             itemCount: result?.items?.length || 0
           });
 
+          // Theme is source of truth — do not bump theme from chat after import.
           return result;
         } finally {
           this.importing = false;
-          const queued = this._importQueued;
-          this._importQueued = null;
-          if (queued) {
-            this.importThemeCartIntoChat(queued).catch((error) => {
-              console.warn('[ShopAIChat] queued theme→chat import failed', error?.message || error);
-            });
-          }
         }
+      },
+
+      /**
+       * Raise theme qtys to match chat — same clear+add path as syncFromChatCart.
+       */
+      bumpThemeQuantitiesFromChat: async function(items) {
+        return this.syncFromChatCart({ items: Array.isArray(items) ? items : [] });
       },
 
       /**
@@ -3739,17 +3742,8 @@
        * @param {{ empty?: boolean, items?: Array<{ variant_id?: string, quantity?: number }> }} payload
        */
       syncFromChatCart: async function(payload) {
-        if (this.syncing || this.importing) return;
-        if (Date.now() < (this.suppressThemeSyncUntil || 0)) {
-          console.log('[ShopAIChat] theme cart sync skipped (theme import in progress or just finished)');
-          return;
-        }
+        if (this.syncing) return;
         this.syncing = true;
-        // Keep theme→chat import suppressed long enough that a stale theme snapshot
-        // cannot overwrite a qty increase we just wrote from chat.
-        clearTimeout(this._importTimer);
-        this._importTimer = null;
-        this.suppressImportUntil = Date.now() + 5000;
 
         try {
           const desired = new Map();
@@ -3766,79 +3760,100 @@
           }
 
           const desiredFp = this.variantQtyFingerprint(desired);
+          const now = Date.now();
           // Ignore duplicate sync of the same cart within a short window (double SSE).
           if (
-            desiredFp &&
             desiredFp === this._lastSyncFingerprint &&
-            Date.now() < (this._lastSyncAt || 0) + 2000
+            now - (this._lastSyncAt || 0) < 2000
           ) {
             console.log('[ShopAIChat] theme cart sync skipped (duplicate)');
             return;
           }
 
-          // Empty chat cart → clear theme cart (no-op if already empty).
+          let present = new Map();
+          try {
+            const currentCart = await this.fetchThemeCart();
+            present = this.themeVariantQtyMap(currentCart);
+          } catch (error) {
+            console.warn('[ShopAIChat] theme cart read failed', error?.message || error);
+          }
+
+          if (this.variantQtyMapsEqual(desired, present)) {
+            this._lastSyncFingerprint = desiredFp;
+            this._lastSyncAt = now;
+            console.log('[ShopAIChat] theme cart sync skipped (already matched)');
+            return;
+          }
+
+          // Suppress theme→chat so a stale theme echo cannot overwrite chat.
+          clearTimeout(this._importTimer);
+          this._importTimer = null;
+          this.suppressImportUntil = Date.now() + 3500;
+
           if (!desired.size) {
-            const emptyCart = await this.fetchThemeCart().catch(() => ({ items: [] }));
-            if (!(emptyCart.items || []).length) {
-              this._lastSyncFingerprint = '';
-              this._lastSyncAt = Date.now();
-              return;
-            }
             await this.clearThemeCart();
             await this.notifyThemeCartChanged();
-            this._lastSyncFingerprint = '';
+            this._lastSyncFingerprint = desiredFp;
             this._lastSyncAt = Date.now();
             console.log('[ShopAIChat] theme cart synced (cleared)');
             return;
           }
 
-          let cart = await this.fetchThemeCart();
-          const present = this.themeVariantQtyMap(cart);
-          if (this.variantQtyMapsEqual(desired, present)) {
-            this._lastSyncFingerprint = desiredFp;
-            this._lastSyncAt = Date.now();
-            console.log('[ShopAIChat] theme cart sync skipped (already matched)');
-            return;
-          }
-
-          // Clear then re-add exact chat quantities (BXGY-safe).
           await this.clearThemeCart();
           const toAdd = Array.from(desired.entries()).map(([vid, quantity]) => ({
             id: Number(vid),
             quantity
           }));
-          await this.addThemeItems(toAdd);
-          cart = await this.fetchThemeCart();
+          const addResult = await this.addThemeItems(toAdd);
+          let cart = null;
+          try {
+            cart = await this.fetchThemeCart();
+          } catch (e) {
+            cart = addResult || null;
+          }
+          if (cart && addResult?.sections) {
+            cart.sections = addResult.sections;
+          }
 
           await this.notifyThemeCartChanged(cart);
-          this.suppressImportUntil = Date.now() + 5000;
           this._lastSyncFingerprint = desiredFp;
           this._lastSyncAt = Date.now();
           console.log('[ShopAIChat] theme cart synced (clear+add)', {
             desired: Array.from(desired.entries()).map(([id, quantity]) => ({ id, quantity })),
-            themeCount: (cart.items || []).length,
-            themeUnits: (cart.item_count != null ? cart.item_count : null)
+            themeCount: (cart?.items || []).length,
+            themeUnits: (cart?.item_count != null ? cart.item_count : null)
           });
         } finally {
           this.syncing = false;
         }
       },
 
-      /** Bulk add with one-by-one fallback. */
+      /** Bulk add with one-by-one fallback. Request minicart HTML in the same add.js call. */
       addThemeItems: async function(items) {
         const list = Array.isArray(items) ? items.filter((i) => i && i.id && i.quantity > 0) : [];
-        if (!list.length) return;
+        if (!list.length) return null;
+        const body = {
+          items: list,
+          sections: 'gwp,minicart',
+          sections_url: window.location.pathname || '/'
+        };
         try {
-          await this.postJson(this.cartUrl('cart/add.js'), { items: list });
+          return await this.postJson(this.cartUrl('cart/add.js'), body);
         } catch (addError) {
           console.warn('[ShopAIChat] theme cart bulk add failed, trying one-by-one', addError?.message || addError);
+          let last = null;
           for (const item of list) {
             try {
-              await this.postJson(this.cartUrl('cart/add.js'), { items: [item] });
+              last = await this.postJson(this.cartUrl('cart/add.js'), {
+                items: [item],
+                sections: 'gwp,minicart',
+                sections_url: window.location.pathname || '/'
+              });
             } catch (oneError) {
               console.warn('[ShopAIChat] theme add skipped', item.id, oneError?.message || oneError);
             }
           }
+          return last;
         }
       },
 
@@ -3899,11 +3914,12 @@
       },
 
       notifyThemeCartChanged: async function(cart) {
-        this.suppressImportUntil = Date.now() + 2000;
+        this.suppressImportUntil = Date.now() + 3500;
 
         let latest = cart;
         try {
-          if (!latest || !Array.isArray(latest.items)) {
+          // add.js returns only the lines just added, not item_count for the whole cart.
+          if (!latest || typeof latest.item_count !== 'number') {
             latest = await this.fetchThemeCart();
           }
         } catch (e) {
@@ -3950,19 +3966,224 @@
           // ignore
         }
 
-        // Refresh cart count bubbles if present
+        // Refresh cart count + Perfumania #dropdown-cart (minicart section), not just the badge.
         try {
-          const count = latest?.item_count;
-          if (typeof count === 'number') {
-            document.querySelectorAll('[data-cart-count], .cart-count, .cart-count-bubble span').forEach((el) => {
-              if (el.childElementCount === 0 || el.matches('span')) {
-                el.textContent = String(count);
-              }
-            });
-          }
+          const count = typeof latest?.item_count === 'number'
+            ? latest.item_count
+            : (latest?.items || []).reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
+          await this.refreshThemeCartSections(latest);
+          this.paintThemeCartCount(count);
         } catch (e) {
           // ignore
         }
+      },
+
+      paintThemeCartCount: function(count) {
+        const text = String(count);
+        document.querySelectorAll(
+          '[data-cart-count], .cart-count, .cart_count, .cartCount, .cart-count-bubble span, #cart-icon-bubble .cart-count-bubble span, .header__cart-count, #CartCount'
+        ).forEach((el) => {
+          if (el.classList && el.classList.contains('visually-hidden')) return;
+          if (el.childElementCount === 0 || el.matches('span')) {
+            el.textContent = text;
+          }
+        });
+        document.querySelectorAll('.cart-count-bubble').forEach((bubble) => {
+          if (count > 0) {
+            bubble.removeAttribute('hidden');
+            bubble.classList.remove('hidden');
+          }
+        });
+      },
+
+      refreshThemeCartIconSection: async function() {
+        return this.refreshThemeCartSections();
+      },
+
+      collectCartSectionIds: function() {
+        const ids = new Set(['minicart', 'gwp']);
+
+        document.querySelectorAll('[id^="shopify-section-"]').forEach((el) => {
+          const id = String(el.id || '').replace(/^shopify-section-/, '');
+          if (!id || /^header(-new)?$/i.test(id) || /announcement/i.test(id)) return;
+          if (/cart|mini-?cart|ajax-?cart/i.test(id)) ids.add(id);
+        });
+
+        document.querySelectorAll(
+          'cart-drawer, cart-notification, cart-items, mini-cart, minicart-block, [data-cart-drawer], #CartDrawer, #cart-drawer, #CartNotification, #mini-cart, #dropdown-cart, #cart-icon-bubble'
+        ).forEach((el) => {
+          const section = el.closest('[id^="shopify-section-"]');
+          if (!section) return;
+          const id = String(section.id || '').replace(/^shopify-section-/, '');
+          if (id && !/^header(-new)?$/i.test(id)) ids.add(id);
+        });
+
+        ['cart-icon-bubble', 'cart-drawer', 'cart-notification', 'cart-items', 'main-cart-items', 'main-cart-footer'].forEach((id) => {
+          if (document.getElementById(`shopify-section-${id}`) || document.getElementById(id)) {
+            ids.add(id);
+          }
+        });
+        if (document.getElementById('CartDrawer') || document.querySelector('cart-drawer')) {
+          ids.add('cart-drawer');
+        }
+        if (document.getElementById('CartNotification') || document.querySelector('cart-notification')) {
+          ids.add('cart-notification');
+        }
+
+        return Array.from(ids);
+      },
+
+      fetchThemeSections: async function(sectionIds) {
+        const ids = (Array.isArray(sectionIds) ? sectionIds : []).filter(Boolean);
+        if (!ids.length) return {};
+        const root = (window.Shopify && window.Shopify.routes && window.Shopify.routes.root) || '/';
+        const headers = { Accept: 'application/json' };
+
+        try {
+          const response = await fetch(`${root}?sections=${ids.map(encodeURIComponent).join(',')}`, {
+            headers,
+            credentials: 'same-origin'
+          });
+          if (response.ok) {
+            const json = await response.json();
+            if (json && typeof json === 'object') return json;
+          }
+        } catch (e) {
+          // fall through to one-by-one
+        }
+
+        const sections = {};
+        for (const id of ids) {
+          try {
+            const response = await fetch(`${root}?sections=${encodeURIComponent(id)}`, {
+              headers,
+              credentials: 'same-origin'
+            });
+            if (!response.ok) continue;
+            const json = await response.json();
+            if (json && typeof json === 'object') Object.assign(sections, json);
+          } catch (e) {
+            // ignore missing sections
+          }
+        }
+        return sections;
+      },
+
+      applySectionHtml: function(sectionId, html) {
+        if (!sectionId || !html) return false;
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const incomingSection =
+          doc.getElementById(`shopify-section-${sectionId}`) ||
+          doc.querySelector('.shopify-section') ||
+          null;
+        const liveSection = document.getElementById(`shopify-section-${sectionId}`);
+
+        if (liveSection && incomingSection) {
+          liveSection.innerHTML = incomingSection.innerHTML;
+          this.dispatchSectionLoad(sectionId);
+          return true;
+        }
+
+        let replaced = false;
+        ['cart-icon-bubble', 'CartDrawer', 'cart-drawer', 'CartNotification', 'cart-notification', 'mini-cart', 'CartCount'].forEach((eid) => {
+          const next = doc.getElementById(eid);
+          const current = document.getElementById(eid);
+          if (!next || !current) return;
+          current.innerHTML = next.innerHTML;
+          replaced = true;
+        });
+        return replaced;
+      },
+
+      dispatchSectionLoad: function(sectionId) {
+        try {
+          document.dispatchEvent(new CustomEvent('shopify:section:load', {
+            bubbles: true,
+            detail: { sectionId }
+          }));
+        } catch (e) {
+          // ignore
+        }
+      },
+
+      applyPerfumaniaMinicart: async function(sections) {
+        if (!sections?.minicart) return false;
+
+        const cb = window._theme && window._theme.MiniCart && window._theme.MiniCart.lineItemChangeCallBack;
+        if (typeof cb === 'function') {
+          try {
+            await new Promise((resolve) => {
+              let done = false;
+              const finish = function() {
+                if (done) return;
+                done = true;
+                resolve(true);
+              };
+              cb({ sections, sections_url: window.location.pathname || '/' }, finish);
+              setTimeout(finish, 2000);
+            });
+            return true;
+          } catch (error) {
+            console.warn('[ShopAIChat] MiniCart.lineItemChangeCallBack failed', error?.message || error);
+          }
+        }
+
+        return this.applyMinicartHtmlFallback(sections.minicart);
+      },
+
+      applyMinicartHtmlFallback: function(html) {
+        const dropdown = document.getElementById('dropdown-cart');
+        if (!dropdown || !html) return false;
+
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const list =
+          doc.querySelector('minicart-block .mini-products-list') ||
+          doc.querySelector('.mini-products-list');
+        const summary =
+          doc.querySelector('minicart-block .summary') ||
+          doc.querySelector('.summary');
+        const productsMount = dropdown.querySelector('[data-minicart-products]');
+        const summaryMount = dropdown.querySelector('.summary');
+
+        if (list && productsMount) productsMount.innerHTML = list.innerHTML;
+        else if (list) {
+          const liveList = dropdown.querySelector('.mini-products-list');
+          if (liveList) liveList.innerHTML = list.innerHTML;
+        }
+        if (summary && summaryMount) summaryMount.innerHTML = summary.innerHTML;
+
+        let count = null;
+        const jsonEl = doc.querySelector('minicart-block [data-cart-json]');
+        if (jsonEl) {
+          try {
+            count = JSON.parse(jsonEl.textContent).item_count;
+          } catch (e) {
+            count = null;
+          }
+        }
+        if (typeof count === 'number') {
+          dropdown.classList.toggle('cart--empty', count === 0);
+          this.paintThemeCartCount(count);
+        }
+
+        return Boolean(list || summary);
+      },
+
+      refreshThemeCartSections: async function(cart) {
+        let sections = cart?.sections && typeof cart.sections === 'object' ? cart.sections : null;
+        if (!sections?.minicart) {
+          const ids = this.collectCartSectionIds();
+          sections = Object.assign({}, sections || {}, await this.fetchThemeSections(ids));
+        }
+
+        const applied = await this.applyPerfumaniaMinicart(sections);
+        if (applied) return;
+
+        Object.keys(sections || {}).forEach((id) => {
+          if (id === 'minicart' || id === 'gwp') return;
+          this.applySectionHtml(id, sections[id]);
+        });
       }
     },
 
@@ -4359,6 +4580,22 @@
         return wrap.children.length ? wrap : null;
       },
 
+      formatOfferLabel: function(product) {
+        const raw = String(
+          product?.applicable_offer ||
+            product?.applicableOffer ||
+            product?.offer ||
+            ''
+        ).trim();
+        if (!raw) return null;
+        const deal = raw
+          .replace(/\s*[-–—]?\s*mix\s*&\s*match\s*$/i, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (!deal) return null;
+        return { deal, mix: '-MIX & Match' };
+      },
+
       createCard: function(product) {
         const card = document.createElement('div');
         card.classList.add('shop-ai-product-card');
@@ -4396,6 +4633,30 @@
           this.src = 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png';
         };
         imageContainer.appendChild(image);
+
+        const offerLabel = ShopAIChat.Product.formatOfferLabel(product);
+        if (offerLabel) {
+          const badge = document.createElement('div');
+          badge.classList.add('shop-ai-product-offer');
+          badge.setAttribute('aria-label', `${offerLabel.deal} MIX & Match`);
+          const icon = document.createElement('span');
+          icon.classList.add('shop-ai-product-offer-icon');
+          icon.setAttribute('aria-hidden', 'true');
+          icon.textContent = '%';
+          const text = document.createElement('span');
+          text.classList.add('shop-ai-product-offer-text');
+          const deal = document.createElement('span');
+          deal.classList.add('shop-ai-product-offer-deal');
+          deal.textContent = offerLabel.deal;
+          const mix = document.createElement('span');
+          mix.classList.add('shop-ai-product-offer-mix');
+          mix.textContent = offerLabel.mix;
+          text.appendChild(deal);
+          text.appendChild(mix);
+          badge.appendChild(icon);
+          badge.appendChild(text);
+          imageContainer.appendChild(badge);
+        }
 
         card.appendChild(imageContainer);
 

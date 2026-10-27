@@ -1,7 +1,7 @@
 /**
  * Local product catalog search (MySQL products + vector rank).
  * Accepts the same catalog.query / filters / pagination shape as Shopify search_catalog,
- * plus Perfumania filters (brand, product_type, fragrance_family, scent_type, notes, category, must_match).
+ * plus Perfumania filters (brand, product_type, fragrance_family, scent_type, notes, category, applicable_offer, must_match).
  */
 import prisma from "../db.server.js";
 import { generateEmbedding, getEmbeddingModel, dotProduct } from "./embeddings.server.js";
@@ -10,6 +10,26 @@ import { normalizeCatalogSearchArgs } from "./catalog-search-args.server.js";
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
 const STOREFRONT_URL = (process.env.STOREFRONT_URL || "").replace(/\/+$/, "");
+const APPLICABLE_OFFERS = [
+  "3 For $20",
+  "2 For $25",
+  "BOGO 50",
+  "3 For $99",
+  "2 For $75",
+  "3 For $129"
+];
+
+function normalizeOfferKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizeApplicableOffer(value) {
+  const key = normalizeOfferKey(value);
+  if (!key) return "";
+  return APPLICABLE_OFFERS.find((name) => normalizeOfferKey(name) === key) || "";
+}
 
 const PRODUCT_INCLUDE = {
   brand: true,
@@ -51,6 +71,7 @@ function normalizeGender(value) {
   if (g === "men" || g === "man" || g === "mens") return "men";
   if (g === "women" || g === "woman" || g === "womens") return "women";
   if (g === "unisex") return "unisex";
+  if (g === "null" || g === "none" || g === "undefined") return null;
   return null;
 }
 
@@ -87,12 +108,237 @@ export function parseLocalCatalogSearchArgs(input = {}) {
     scentType: String(filters.scent_type || filters.scentType || input.scent_type || "").trim(),
     notes: asList(filters.notes || input.notes),
     category: String(filters.category || filters.collection || input.category || "").trim(),
+    applicableOffer: normalizeApplicableOffer(
+      filters.applicable_offer || filters.applicableOffer || input.applicable_offer
+    ),
     mustMatch: asList(filters.must_match || filters.mustMatch || input.must_match),
     minCents: toCents(price.min ?? input.price_min),
     maxCents: toCents(price.max ?? input.price_max),
     limit,
     offset
   };
+}
+
+const BRAND_CACHE_MS = 10 * 60 * 1000;
+const BRAND_MATCH_MIN = 0.8;
+const QUERY_FILLER = new Set([
+  "i",
+  "want",
+  "to",
+  "buy",
+  "bu",
+  "get",
+  "me",
+  "a",
+  "an",
+  "the",
+  "for",
+  "some",
+  "please",
+  "pls",
+  "need",
+  "looking",
+  "perfume",
+  "cologne",
+  "fragrance",
+  "fragrances",
+  "perfumes",
+  "colognes",
+  "of",
+  "my",
+  "and",
+  "have",
+  "show",
+  "more"
+]);
+
+let brandNameCache = null;
+let brandCacheAt = 0;
+
+function normalizeWords(text, dropFiller = false) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word && (!dropFiller || !QUERY_FILLER.has(word)));
+}
+
+async function getBrandNames() {
+  if (brandNameCache && Date.now() - brandCacheAt < BRAND_CACHE_MS) {
+    return brandNameCache;
+  }
+  const rows = await prisma.brand.findMany({ select: { name: true } });
+  brandNameCache = rows
+    .map((row) => {
+      const name = String(row.name || "").trim();
+      const tokens = normalizeWords(name);
+      if (!name || !tokens.length) return null;
+      return { name, tokens, compact: tokens.join("") };
+    })
+    .filter(Boolean);
+  brandCacheAt = Date.now();
+  return brandNameCache;
+}
+
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  const n = a.length;
+  const m = b.length;
+  if (!n) return m;
+  if (!m) return n;
+  const d = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = 0; i <= n; i++) d[i][0] = i;
+  for (let j = 0; j <= m; j++) d[0][j] = j;
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+      }
+    }
+  }
+  return d[n][m];
+}
+
+function tokenSimilarity(left, right) {
+  if (left === right) return 1;
+  if (!left || !right) return 0;
+  const maxLen = Math.max(left.length, right.length);
+  const minLen = Math.min(left.length, right.length);
+  if (!maxLen || minLen / maxLen < BRAND_MATCH_MIN) return 0;
+  return 1 - levenshtein(left, right) / maxLen;
+}
+
+function bestTokenScore(queryTokens, brandToken) {
+  let best = 0;
+  for (const queryToken of queryTokens) {
+    const score = tokenSimilarity(queryToken, brandToken);
+    if (score > best) best = score;
+    if (best === 1) return best;
+  }
+  return best;
+}
+
+function requiredBrandTokens(tokens) {
+  const required = tokens.filter((token) => !QUERY_FILLER.has(token));
+  return required.length ? required : tokens;
+}
+
+function pickBestBrand(hits) {
+  let best = null;
+  for (const hit of hits) {
+    if (
+      !best ||
+      hit.matchedWords > best.matchedWords ||
+      (hit.matchedWords === best.matchedWords && hit.score > best.score)
+    ) {
+      best = hit;
+    }
+  }
+  return best?.name || null;
+}
+
+function sequenceMatches(queryTokens, slice) {
+  if (slice.length > queryTokens.length) return false;
+  for (let i = 0; i <= queryTokens.length - slice.length; i++) {
+    let ok = true;
+    for (let k = 0; k < slice.length; k++) {
+      if (tokenSimilarity(queryTokens[i + k], slice[k]) < BRAND_MATCH_MIN) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return true;
+  }
+  return false;
+}
+
+function identityBrandHits(queryTokens, queryCompact, brands) {
+  const queryJoined = queryTokens.join(" ");
+  const hits = [];
+  for (const brand of brands) {
+    const brandJoined = brand.tokens.join(" ");
+    const sameTokens = brandJoined === queryJoined;
+    const sameCompact =
+      brand.compact === queryCompact && brand.tokens.length === queryTokens.length;
+    if (!sameTokens && !sameCompact) continue;
+    hits.push({ name: brand.name, matchedWords: brand.tokens.length, score: 1 });
+  }
+  return hits;
+}
+
+function exactBrandHits(queryTokens, queryCompact, brands) {
+  const queryJoined = ` ${queryTokens.join(" ")} `;
+  const hits = [];
+  for (const brand of brands) {
+    const required = requiredBrandTokens(brand.tokens);
+    const allExact = required.every((token) => queryTokens.includes(token));
+    const compactHit =
+      queryTokens.includes(brand.compact) || queryCompact === brand.compact;
+    const phraseHit = queryJoined.includes(` ${brand.tokens.join(" ")} `);
+    if (!allExact && !compactHit && !phraseHit) continue;
+    hits.push({ name: brand.name, matchedWords: required.length, score: 1 });
+  }
+  return hits;
+}
+
+function fuzzyBrandHits(queryTokens, brands) {
+  const hits = [];
+  for (const brand of brands) {
+    const required = requiredBrandTokens(brand.tokens);
+    let matchedWords = 0;
+    let total = 0;
+    for (const token of required) {
+      const best = bestTokenScore(queryTokens, token);
+      total += best;
+      if (best >= BRAND_MATCH_MIN) matchedWords += 1;
+    }
+    if (!required.length || matchedWords !== required.length) continue;
+    hits.push({
+      name: brand.name,
+      matchedWords,
+      score: total / required.length
+    });
+  }
+  return hits;
+}
+
+function partialBrandHits(queryTokens, brands) {
+  const hits = [];
+  for (const brand of brands) {
+    const required = requiredBrandTokens(brand.tokens);
+    if (required.length < 2) continue;
+    let bestRun = 0;
+    for (let start = 0; start < required.length; start++) {
+      for (let end = start + 2; end <= required.length; end++) {
+        const slice = required.slice(start, end);
+        if (sequenceMatches(queryTokens, slice)) {
+          bestRun = Math.max(bestRun, slice.length);
+        }
+      }
+    }
+    if (bestRun < 2) continue;
+    hits.push({
+      name: brand.name,
+      matchedWords: bestRun,
+      score: bestRun / required.length
+    });
+  }
+  return hits;
+}
+
+export async function detectBrandFromQuery(text) {
+  const queryTokens = normalizeWords(text, true);
+  if (!queryTokens.length) return null;
+  const brands = await getBrandNames();
+  const queryCompact = queryTokens.join("");
+  return (
+    pickBestBrand(identityBrandHits(queryTokens, queryCompact, brands)) ||
+    pickBestBrand(exactBrandHits(queryTokens, queryCompact, brands)) ||
+    pickBestBrand(fuzzyBrandHits(queryTokens, brands)) ||
+    pickBestBrand(partialBrandHits(queryTokens, brands))
+  );
 }
 
 function notesByType(notes = []) {
@@ -152,6 +398,7 @@ function formatLocalProduct(product, similarity = null) {
     product_type: product.productType?.name || "",
     fragrance_family: product.fragranceFamily?.name || null,
     scent_type: product.scentType?.name || null,
+    applicable_offer: product.applicableOffer?.name || null,
     key_notes: notes.key.join(", ") || null,
     top_notes: notes.top.join(", ") || null,
     middle_notes: notes.middle.join(", ") || null,
@@ -190,6 +437,7 @@ function compactDbProduct(product) {
     productType: product.productType?.name || null,
     fragranceFamily: product.fragranceFamily?.name || null,
     scentType: product.scentType?.name || null,
+    applicableOffer: product.applicableOffer?.name || null,
     variantCount: Array.isArray(product.variants) ? product.variants.length : 0,
     variants: (product.variants || []).map((variant) => ({
       id: variant.id,
@@ -233,6 +481,11 @@ function buildFilterSql(args) {
   if (args.scentType) {
     where.push(`LOWER(st.name) LIKE ?`);
     params.push(`%${args.scentType.toLowerCase()}%`);
+  }
+
+  if (args.applicableOffer) {
+    where.push(`LOWER(ao.name) = ?`);
+    params.push(args.applicableOffer.toLowerCase());
   }
 
   if (args.category) {
@@ -292,6 +545,7 @@ LEFT JOIN brands b ON b.id = p.brand_id
 LEFT JOIN product_types pt ON pt.id = p.product_type_id
 LEFT JOIN fragrance_families ff ON ff.id = p.fragrance_family_id
 LEFT JOIN scent_types st ON st.id = p.scent_type_id
+LEFT JOIN applicable_offers ao ON ao.id = p.applicable_offer_id
 WHERE ${whereSql}`;
   return {
     sql,
@@ -328,6 +582,16 @@ export async function searchLocalCatalog(input = {}, options = {}) {
     sql: [],
     dbResponse: {}
   };
+
+  if (!args.brand) {
+    const detected =
+      (await detectBrandFromQuery(args.query)) ||
+      (await detectBrandFromQuery(options.shopperText));
+    if (detected) {
+      args.brand = detected;
+      debug.parsed = args;
+    }
+  }
 
   let rows = [];
   try {

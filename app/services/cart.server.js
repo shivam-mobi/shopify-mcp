@@ -1132,26 +1132,60 @@ export function formatCartSummary(
   const currency = checkout?.currency || cart.currency || null;
 
   const items = (() => {
+    const discountByIndex = discountTitleByLineIndex(cart);
     const byVariant = new Map();
-    for (const line of cart.line_items || []) {
+    const lines = cart.line_items || [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       const variantId = normalizeProductVariantId(line?.item?.id || line?.variant_id);
       if (!variantId) continue;
       const qty = Math.max(1, Number(line.quantity) || 1);
       const title = line.item?.title || "Product";
-      const price = formatLinePrice(line, currency);
+      const chargedMinor = lineChargedAmount(line);
+      const originalMinor = lineOriginalAmount(line);
+      const discount =
+        discountByIndex.get(i) ||
+        (lineAmountOf(line, "items_discount") ? "Discount" : null);
       const existing = byVariant.get(variantId);
       if (existing) {
         existing.quantity += qty;
+        if (chargedMinor != null) {
+          existing.priceAmount = (existing.priceAmount || 0) + chargedMinor;
+          existing.price = formatMoney(existing.priceAmount, currency);
+        }
+        if (originalMinor != null) {
+          existing.originalAmount = (existing.originalAmount || 0) + originalMinor;
+        }
+        if (discount) existing.discount = existing.discount || discount;
       } else {
         byVariant.set(variantId, {
           title,
           quantity: qty,
           variant_id: variantId,
-          price
+          price: formatMoney(chargedMinor, currency),
+          priceAmount: chargedMinor,
+          originalAmount: originalMinor,
+          discount
         });
       }
     }
-    return Array.from(byVariant.values());
+    return Array.from(byVariant.values()).map((item) => {
+      const row = {
+        title: item.title,
+        quantity: item.quantity,
+        variant_id: item.variant_id,
+        price: item.price
+      };
+      if (
+        item.originalAmount != null &&
+        item.priceAmount != null &&
+        item.originalAmount > item.priceAmount
+      ) {
+        row.original_price = formatMoney(item.originalAmount, currency);
+      }
+      if (item.discount) row.discount = item.discount;
+      return row;
+    });
   })();
 
   const cartTotalEntry = cart.totals?.find((t) => t.type === "total");
@@ -1190,12 +1224,20 @@ export function formatCartSummary(
         : "")
   };
 
-  if (checkoutPricing?.order_discount) {
-    summary.order_discount = checkoutPricing.order_discount;
-    summary.discount_codes = checkoutPricing.codes;
+  const cartDiscount = cart.totals?.find((t) => t.type === "items_discount");
+  const cartDiscountMinor = Math.abs(Number(cartDiscount?.amount || 0));
+  const hasLineDiscount = items.some((item) => item.original_price);
+  if (checkoutPricing?.order_discount || cartDiscountMinor > 0 || hasLineDiscount) {
+    summary.order_discount =
+      checkoutPricing?.order_discount ||
+      (cartDiscountMinor > 0 ? formatMoney(cartDiscountMinor, currency) : null);
+    summary.discount_codes = checkoutPricing?.codes;
     summary.instruction =
       "Base your reply ONLY on this summary. " +
-      "CRITICAL: `total` is the amount AFTER discount. `subtotal` is BEFORE discount. " +
+      "CRITICAL: each item.price is the amount charged AFTER discounts. " +
+      "If item.discount is set, mention that deal (e.g. BOGO 50% Off). " +
+      "If item.original_price is present, that is the pre-discount amount — do not quote it as what they pay. " +
+      "`total` is AFTER discount. `subtotal` is BEFORE discount. " +
       "When a discount is applied, tell the customer the discounted `total` (and `order_discount` savings) — NEVER quote subtotal as the total due. " +
       "Do not claim items were added/removed unless they appear here.";
   }
@@ -1286,26 +1328,39 @@ function extractCheckoutPricing(checkout, fallbackCurrency = null) {
   };
 }
 
-function formatLinePrice(line, currency = null) {
-  const resolvedCurrency =
-    currency ||
-    line?.currency ||
-    line?.item?.currency ||
-    (typeof line?.item?.price === "object" ? line.item.price?.currency : null) ||
-    null;
-
-  const subtotal = line.totals?.find((t) => t.type === "subtotal");
-  if (subtotal?.amount != null) {
-    return formatMoney(subtotal.amount, resolvedCurrency || subtotal.currency || null);
+function discountTitleByLineIndex(cart) {
+  const map = new Map();
+  const applied = Array.isArray(cart?.discounts?.applied) ? cart.discounts.applied : [];
+  for (const offer of applied) {
+    const title = String(offer?.title || "").trim();
+    if (!title) continue;
+    for (const alloc of offer.allocations || []) {
+      const match = String(alloc?.path || "").match(/line_items\[(\d+)\]/);
+      if (match) map.set(Number(match[1]), title);
+    }
   }
+  return map;
+}
 
+function lineAmountOf(line, type) {
+  const entry = Array.isArray(line?.totals) ? line.totals.find((t) => t.type === type) : null;
+  return entry?.amount != null ? Number(entry.amount) : null;
+}
+
+function lineOriginalAmount(line) {
+  return lineAmountOf(line, "subtotal");
+}
+
+function lineChargedAmount(line) {
+  const total = lineAmountOf(line, "total");
+  if (total != null) return total;
+  const original = lineOriginalAmount(line);
+  if (original != null) return original;
   const unitPrice =
-    typeof line.item?.price === "object" ? line.item.price?.amount : line.item?.price;
-  if (unitPrice != null) {
-    return formatMoney(unitPrice, resolvedCurrency);
-  }
-
-  return null;
+    typeof line?.item?.price === "object" ? line.item.price?.amount : line?.item?.price;
+  if (unitPrice == null) return null;
+  const qty = Math.max(1, Number(line.quantity) || 1);
+  return Number(unitPrice) * qty;
 }
 
 function formatMoney(amountMinor, currency = null) {

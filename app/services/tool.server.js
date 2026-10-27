@@ -745,6 +745,7 @@ export function createToolService() {
               : null,
       fragrance_family: product.fragrance_family || null,
       scent_type: product.scent_type || null,
+      applicable_offer: product.applicable_offer || null,
       key_notes: product.key_notes || null,
       top_notes: product.top_notes || null,
       middle_notes: product.middle_notes || null,

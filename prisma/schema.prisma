@@ -437,7 +437,7 @@ model ScentType {
 ///        best-selling-perfumes-for-women, clearance-for-women-perfume, only-at-perfumania
 /// Men:   mens-cologne-new-arrivals, bundle-deals-for-men,
 ///        best-selling-colognes-for-men, clearance-for-mens-cologne
-/// Other: beauty, gift-set
+/// Other: beauty, gift-set, body-sprays, eau-de-parfum-edp-s, eau-de-toilette-edt-s
 model ProductCategory {
   id        String    @id @default(uuid())
   name      String

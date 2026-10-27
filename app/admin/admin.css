@@ -1881,6 +1881,57 @@ body.admin-body {
   border-bottom: 1px solid var(--border-subtle);
 }
 
+.storefront-product-offer-badge {
+  position: absolute;
+  top: 10px;
+  right: 0;
+  left: auto;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  width: auto;
+  max-width: none;
+  padding: 4px 6px 4px 5px;
+  border-radius: 8px 0 0 8px;
+  background: var(--pf-brand, #e60060);
+  color: #ffffff;
+  font-weight: 800;
+  letter-spacing: 0;
+  box-shadow: 0 2px 8px rgba(230, 0, 96, 0.35);
+}
+
+.storefront-product-offer-icon {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 7px;
+  font-weight: 800;
+}
+
+.storefront-product-offer-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.storefront-product-offer-deal {
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.storefront-product-offer-mix {
+  font-size: 8px;
+  font-weight: 700;
+}
+
 .storefront-product-image-wrap img {
   width: 100%;
   height: 100%;

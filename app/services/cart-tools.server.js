@@ -1102,10 +1102,14 @@ export async function appendFinalCartSnapshot(
     snapshot.items = [];
   }
 
+  const hasItemDiscount = (snapshot.items || []).some((item) => item?.discount);
   const content =
     "FINAL CART SNAPSHOT after cart updates in this turn. " +
     "When replying to the customer, state EVERY product quantity ONLY from snapshot.items[].quantity below. " +
     "Ignore items[] from earlier add_to_cart/remove_from_cart/update_cart_items tool results in this same turn. " +
+    (hasItemDiscount
+      ? "If an item has discount, mention that deal and use item.price (after discount), not original_price. "
+      : "") +
     (snapshot.checkout_url
       ? `CRITICAL: If you share a checkout link, use ONLY this exact snapshot.checkout_url: ${snapshot.checkout_url} ` +
         "as [click here to proceed to checkout](URL). " +

@@ -45,6 +45,7 @@ function logSearchProductCall({ request, parsed, result, debug, error }) {
               productType: product.productType,
               fragrance_family: product.fragrance_family,
               scent_type: product.scent_type,
+              applicable_offer: product.applicable_offer,
               key_notes: product.key_notes,
               top_notes: product.top_notes,
               middle_notes: product.middle_notes,
@@ -108,11 +109,18 @@ export function getLocalCatalogSearchTools() {
         "Example: filters.gender 'women' → query 'winter perfume', not 'winter perfume for wife' or 'winter perfume for her'. " +
         "catalog.query must include season, occasion, and mood from the shopper (summer, winter, office, date, gift), not only gender or scent family. " +
         "Example: wife + summer + fresh → query 'fresh summer perfume', filters.gender 'women'. " +
-        "Price min/max in cents ($25 → 2500). Set catalog.filters.gender (men|women|unisex) when the recipient is known. " +
+        "Price min/max in cents ($25 → 2500). " +
+        "Set catalog.filters.gender from intent: wife/girlfriend/her/mom/women → women; husband/boyfriend/him/dad/men → men; unisex → unisex. " +
+        "If none of these, do not pass catalog.filters.gender. " +
         "Always set catalog.filters.must_match from the current shopper ask. " +
         "Use short root words that can appear in product text, not inflected forms (rainy → rain, citrusy → citrus). " +
         "Skip filler (season, perfume, fragrance, for). " +
-        "Show more: same query/filters plus pagination.cursor from the last result.",
+        "Set catalog.filters.category to a collection handle when the shopper ask matches one. " +
+        "Set catalog.filters.applicable_offer to one fixed name when they ask for a deal: " +
+        "3 For $20, 2 For $25, BOGO 50, 3 For $99, 2 For $75, 3 For $129. " +
+        "Show more: same query/filters plus pagination.cursor from the last result. " +
+        "After this tool returns products, do not list titles, prices, sizes, or numbers in the reply. " +
+        "Cards are already on screen. Reply in 1 short sentence about the ask, then ask if they want to add one.",
       input_schema: {
         type: "object",
         additionalProperties: false,
@@ -137,11 +145,18 @@ export function getLocalCatalogSearchTools() {
                   gender: {
                     type: "string",
                     enum: ["men", "women", "unisex"],
-                    description: "Recipient when known."
+                    description:
+                      "From shopper intent, not only the words men/women/unisex. " +
+                      "women: she, her, wife, girlfriend, mom. men: he, him, husband, boyfriend, dad. unisex: they asked unisex. " +
+                      "If gender is unknown, do not pass this field. " +
+                      "men → men + unisex + no gender; women → women + unisex + no gender; unisex → unisex + no gender only."
                   },
                   brand: {
                     type: "string",
-                    description: "Brand name, e.g. Gucci, Lattafa, Versace."
+                    description:
+                      "Brand name copied from the shopper, as a free string — not an enum. " +
+                      "Any brand is valid. " +
+                      "Use the full name in one field."
                   },
                   product_type: {
                     type: "string",
@@ -161,6 +176,21 @@ export function getLocalCatalogSearchTools() {
                     items: { type: "string" },
                     description: "Note names to match, e.g. vanilla, rose, oud."
                   },
+                  applicable_offer: {
+                    type: "string",
+                    enum: [
+                      "3 For $20",
+                      "2 For $25",
+                      "BOGO 50",
+                      "3 For $99",
+                      "2 For $75",
+                      "3 For $129"
+                    ],
+                    description:
+                      "Fixed applicable-offer name. Pass only these values: " +
+                      "3 For $20, 2 For $25, BOGO 50, 3 For $99, 2 For $75, 3 For $129. " +
+                      "Use when the shopper asks for that deal. Omit if none match."
+                  },
                   must_match: {
                     type: "array",
                     items: { type: "string" },
@@ -170,11 +200,35 @@ export function getLocalCatalogSearchTools() {
                       "Skip filler words (season, perfume, fragrance, for, the). " +
                       "Add related product words for this ask only — any case, not a fixed list. " +
                       "Examples of the pattern: rainy season → [\"rain\", \"aquatic\", \"monsoon\"]; " +
-                      "kids → [\"kids\", \"children\", \"girls\", \"boys\", \"baby\"]; vanilla → [\"vanilla\"]."
+                      "kids → [\"kids\", \"children\"]; vanilla → [\"vanilla\"]."
                   },
                   category: {
                     type: "string",
-                    description: "Collection handle or name, e.g. womens-perfume, gift-set."
+                    enum: [
+                      "womens-perfume-new-arrivals",
+                      "best-selling-perfumes-for-women",
+                      "bundle-deals-for-women",
+                      "clearance-for-women-perfume",
+                      "mens-cologne-new-arrivals",
+                      "best-selling-colognes-for-men",
+                      "bundle-deals-for-men",
+                      "clearance-for-mens-cologne",
+                      "gift-set",
+                      "beauty",
+                      "only-at-perfumania",
+                      "body-sprays",
+                      "eau-de-parfum-edp-s",
+                      "eau-de-toilette-edt-s"
+                    ],
+                    description:
+                      "Shopify collection handle. Pass when the shopper ask matches one of these collections: " +
+                      "womens-perfume-new-arrivals (new women's), " +
+                      "best-selling-perfumes-for-women (best sellers women), bundle-deals-for-women (women bundles), " +
+                      "clearance-for-women-perfume (women clearance), mens-cologne-new-arrivals (new men's), " +
+                      "best-selling-colognes-for-men (best sellers men), bundle-deals-for-men (men bundles), " +
+                      "clearance-for-mens-cologne (men clearance), gift-set (gift sets), beauty (beauty), " +
+                      "only-at-perfumania (exclusive / only at Perfumania), body-sprays (body sprays), " +
+                      "eau-de-parfum-edp-s (EDP), eau-de-toilette-edt-s (EDT). Omit if none match."
                   },
                   price: {
                     type: "object",

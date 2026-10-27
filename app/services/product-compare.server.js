@@ -522,6 +522,7 @@ export function extractCatalogGenderFilter(toolArgs) {
   if (g === "men" || g === "man" || g === "mens") return "men";
   if (g === "women" || g === "woman" || g === "womens") return "women";
   if (g === "unisex") return "unisex";
+  if (g === "null" || g === "none" || g === "undefined") return null;
   return null;
 }
 
@@ -552,7 +553,7 @@ export function productMatchesCatalogGender(product, genderFilter) {
     return hasWomen || hasUnisex;
   }
   if (genderFilter === "unisex") {
-    return hasUnisex || (hasMen && hasWomen);
+    return hasUnisex || (!hasMen && !hasWomen);
   }
   return true;
 }

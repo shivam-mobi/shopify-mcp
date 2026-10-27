@@ -714,6 +714,10 @@ function StorefrontProductSection({ products }) {
               /\bfreshener|freshers/i.test(String(p.title || "")) ||
               /\bfreshener|freshers/i.test(String(p.productType || p.product_type || ""));
             const showBestBadge = Boolean(p.isBest && !isFreshener);
+            const offerName = String(p.applicable_offer || p.applicableOffer || "")
+              .replace(/\s*[-–—]?\s*mix\s*&\s*match\s*$/i, "")
+              .replace(/\s+/g, " ")
+              .trim();
 
             return (
               <div
@@ -726,6 +730,15 @@ function StorefrontProductSection({ products }) {
                   </span>
                 )}
                 <div className="storefront-product-image-wrap">
+                  {offerName ? (
+                    <span className="storefront-product-offer-badge" aria-label={`${offerName} MIX & Match`}>
+                      <span className="storefront-product-offer-icon" aria-hidden="true">%</span>
+                      <span className="storefront-product-offer-text">
+                        <span className="storefront-product-offer-deal">{offerName}</span>
+                        <span className="storefront-product-offer-mix">-MIX & Match</span>
+                      </span>
+                    </span>
+                  ) : null}
                   <img
                     src={imageUrl}
                     alt={title}
