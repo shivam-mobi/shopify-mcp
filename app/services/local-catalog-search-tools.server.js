@@ -110,11 +110,13 @@ export function getLocalCatalogSearchTools() {
         "catalog.query must include season, occasion, and mood from the shopper (summer, winter, office, date, gift), not only gender or scent family. " +
         "Example: wife + summer + fresh → query 'fresh summer perfume', filters.gender 'women'. " +
         "Price min/max in cents ($25 → 2500). " +
-        "Set catalog.filters.gender from intent: wife/girlfriend/her/mom/women → women; husband/boyfriend/him/dad/men → men; unisex → unisex. " +
-        "If none of these, do not pass catalog.filters.gender. " +
-        "Always set catalog.filters.must_match from the current shopper ask. " +
-        "Use short root words that can appear in product text, not inflected forms (rainy → rain, citrusy → citrus). " +
-        "Skip filler (season, perfume, fragrance, for). " +
+        "Set catalog.filters.gender from intent: wife/girlfriend/her/mom/women → women; husband/boyfriend/him/dad/men → men. " +
+        "Pass unisex only if they said unisex. Kids/children/baby: omit gender. If gender is unknown, omit gender — never default to unisex. " +
+        "A new ask replaces previous gender, price, and must_match. " +
+        "Set catalog.filters.must_match only for words that can appear on the product. " +
+        "Kids/children/baby → must_match [\"kids\", \"children\"] and put kids in query. " +
+        "Wife/her/husband is gender, not must_match." +
+        "Use short root words (rainy → rain, citrusy → citrus). " +
         "Set catalog.filters.category to a collection handle when the shopper ask matches one. " +
         "Set catalog.filters.applicable_offer to one fixed name when they ask for a deal: " +
         "3 For $20, 2 For $25, BOGO 50, 3 For $99, 2 For $75, 3 For $129. " +
@@ -140,15 +142,15 @@ export function getLocalCatalogSearchTools() {
               filters: {
                 type: "object",
                 additionalProperties: false,
-                required: ["must_match"],
                 properties: {
                   gender: {
                     type: "string",
                     enum: ["men", "women", "unisex"],
                     description:
                       "From shopper intent, not only the words men/women/unisex. " +
-                      "women: she, her, wife, girlfriend, mom. men: he, him, husband, boyfriend, dad. unisex: they asked unisex. " +
-                      "If gender is unknown, do not pass this field. " +
+                      "women: she, her, wife, girlfriend, mom. men: he, him, husband, boyfriend, dad. " +
+                      "unisex: only if they said unisex. " +
+                      "Kids, children, baby, or unknown gender: omit this field. Never default to unisex. " +
                       "men → men + unisex + no gender; women → women + unisex + no gender; unisex → unisex + no gender only."
                   },
                   brand: {
@@ -195,12 +197,11 @@ export function getLocalCatalogSearchTools() {
                     type: "array",
                     items: { type: "string" },
                     description:
-                      "Required on every search. Words that must appear in product text (embedding_content). " +
-                      "Use the short root form so LIKE matches more text: rainy → rain, citrusy → citrus, woody → wood. " +
-                      "Skip filler words (season, perfume, fragrance, for, the). " +
-                      "Add related product words for this ask only — any case, not a fixed list. " +
-                      "Examples of the pattern: rainy season → [\"rain\", \"aquatic\", \"monsoon\"]; " +
-                      "kids → [\"kids\", \"children\"]; vanilla → [\"vanilla\"]."
+                      "Words that must appear in product text (embedding_content). Omit if none. " +
+                      "Wife/girlfriend/her/mom → gender women" +
+                      "Husband/boyfriend/him/dad → gender men" +
+                      "Kids/children/baby → [\"kids\", \"children\"]. Vanilla → [\"vanilla\"]. " +
+                      "Skip filler (perfume, fragrance, for, the). Do not copy must_match from the previous turn."
                   },
                   category: {
                     type: "string",
