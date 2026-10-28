@@ -47,6 +47,7 @@
     "@shopify/shopify-app-react-router": "^1.0.0",
     "@shopify/shopify-app-session-storage-prisma": "^7.0.0",
     "dotenv": "^16.3.1",
+    "fuzzball": "^2.2.6",
     "isbot": "^5.1.0",
     "mammoth": "^1.13.0",
     "msedge-tts": "^2.0.7",

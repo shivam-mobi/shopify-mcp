@@ -1,11 +1,15 @@
 /**
  * Local product catalog search (MySQL products + vector rank).
  * Accepts the same catalog.query / filters / pagination shape as Shopify search_catalog,
- * plus Perfumania filters (brand, product_type, fragrance_family, scent_type, notes, category, applicable_offer, must_match).
+ * plus Perfumania filters (brand, product_type, fragrance_family, scent_type, notes, category, applicable_offer).
+ * must_match is LLM-extracted keyword text, used after the filter pool (title/brand, then embedding_content).
  */
+import * as fuzz from "fuzzball";
 import prisma from "../db.server.js";
 import { generateEmbedding, getEmbeddingModel, dotProduct } from "./embeddings.server.js";
 import { normalizeCatalogSearchArgs } from "./catalog-search-args.server.js";
+
+const FUZZ_BRAND_MIN_SCORE = 85;
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
@@ -178,6 +182,80 @@ async function getBrandNames() {
     .filter(Boolean);
   brandCacheAt = Date.now();
   return brandNameCache;
+}
+
+function fuzzBrandQuery(args) {
+  if (args.mustMatch?.length) return args.mustMatch.join(" ").trim();
+  const words = String(args.query || "")
+    .toLowerCase()
+    .split(" ")
+    .filter((word) => word && !QUERY_FILLER.has(word));
+  return words.join(" ").trim();
+}
+
+function brandWordHits(brandName, queryText) {
+  const words = String(queryText || "")
+    .toLowerCase()
+    .split(" ")
+    .filter(Boolean);
+  const lower = String(brandName || "").toLowerCase();
+  const compact = lower.split(" ").join("");
+  let hits = 0;
+  for (const word of words) {
+    if (lower.includes(word) || compact.includes(word)) hits += 1;
+  }
+  return hits;
+}
+
+function pickFuzzBrand(queryText, brands, options = {}) {
+  const text = String(queryText || "").trim();
+  if (!text) return { skip: "empty" };
+  const words = text.toLowerCase().split(" ").filter(Boolean);
+  if (!options.allowShort && words.length === 1 && words[0].length < 5) {
+    return { skip: "short_token", text };
+  }
+  const names = (brands || []).map((row) => row.name).filter(Boolean);
+  if (!names.length) return { skip: "no_brands", text };
+  const hits = fuzz.extract(text, names, {
+    scorer: fuzz.WRatio,
+    limit: 8
+  });
+  const ranked = hits
+    .filter(([, score]) => score >= FUZZ_BRAND_MIN_SCORE)
+    .map(([name, score]) => ({
+      name,
+      score,
+      wordHits: brandWordHits(name, text)
+    }))
+    .sort((left, right) => right.score - left.score || right.wordHits - left.wordHits);
+  if (!ranked.length) {
+    return {
+      skip: "below_cutoff",
+      text,
+      minScore: FUZZ_BRAND_MIN_SCORE,
+      top: hits.slice(0, 3).map(([name, score]) => ({ name, score }))
+    };
+  }
+  const top = ranked[0];
+  const second = ranked[1] || null;
+  if (second && second.score === top.score && second.wordHits === top.wordHits) {
+    return { skip: "tie", text, top, second, ranked };
+  }
+  return { brand: top.name, text, top, second, ranked };
+}
+
+function mustMatchWithCorrectedBrand(args, correctedBrand) {
+  const original = args.mustMatch?.length
+    ? args.mustMatch.slice()
+    : fuzzBrandQuery(args)
+      ? [fuzzBrandQuery(args)]
+      : [];
+  const next = original.slice();
+  const lower = String(correctedBrand || "").toLowerCase();
+  if (lower && !next.some((term) => String(term).toLowerCase() === lower)) {
+    next.push(correctedBrand);
+  }
+  return next;
 }
 
 function levenshtein(a, b) {
@@ -425,6 +503,146 @@ function interpolateSql(sql, params = []) {
   });
 }
 
+function likeNeedle(term) {
+  const cleaned = String(term || "")
+    .toLowerCase()
+    .split("%")
+    .join("")
+    .split("_")
+    .join("")
+    .trim();
+  return cleaned ? `%${cleaned}%` : "";
+}
+
+function keywordWords(text) {
+  return String(text || "")
+    .toLowerCase()
+    .split(" ")
+    .map((word) => likeNeedle(word))
+    .filter(Boolean);
+}
+
+function keywordGroups(args) {
+  if (args.mustMatch?.length) {
+    return args.mustMatch.map(keywordWords).filter((group) => group.length);
+  }
+  const words = keywordWords(args.query);
+  return words.length ? [words] : [];
+}
+
+function poolFiltersForLog(args) {
+  const filters = {
+    always: ["status=active", "embedding IS NOT NULL", "in stock"]
+  };
+  if (args.gender) filters.gender = args.gender;
+  if (args.brand) filters.brand = `brands.name LIKE %${args.brand.toLowerCase()}%`;
+  if (args.productType) filters.productType = args.productType;
+  if (args.fragranceFamily) filters.fragranceFamily = args.fragranceFamily;
+  if (args.scentType) filters.scentType = args.scentType;
+  if (args.applicableOffer) filters.applicableOffer = args.applicableOffer;
+  if (args.category) filters.category = args.category;
+  if (args.notes?.length) filters.notes = args.notes;
+  if (args.minCents != null) filters.priceMinCents = args.minCents;
+  if (args.maxCents != null) filters.priceMaxCents = args.maxCents;
+  return filters;
+}
+
+function rankRowsByEmbedding(rows, queryEmbedding) {
+  if (!queryEmbedding) {
+    return rows.map((row) => ({ id: row.id, score: 0, embeddingStr: row.embeddingStr }));
+  }
+  const ranked = [];
+  for (const row of rows) {
+    try {
+      const vector = row.embeddingStr ? JSON.parse(row.embeddingStr) : null;
+      if (!Array.isArray(vector) || !vector.length) continue;
+      ranked.push({ id: row.id, score: dotProduct(queryEmbedding, vector) });
+    } catch {
+      // skip malformed vectors
+    }
+  }
+  ranked.sort((a, b) => b.score - a.score);
+  return ranked;
+}
+
+function extraFiltersForStep(args, keywordMode) {
+  const groups = keywordGroups(args);
+  const source = args.mustMatch?.length ? "must_match" : "query";
+  const fieldAndSql = (field, words) =>
+    words.map((needle) => `${field} LIKE ${needle}`).join(" AND ");
+  const compactAndSql = (field, words) =>
+    words.map((needle) => `REPLACE(${field}, ' ', '') LIKE ${needle}`).join(" AND ");
+  if (keywordMode === "title_brand") {
+    return {
+      extra:
+        "each query word AND on title/brand/description, also with spaces removed so maritimejourney matches Maritime Journey",
+      source,
+      mustMatch: args.mustMatch,
+      query: args.query || null,
+      like: groups,
+      sql: groups
+        .map(
+          (words) =>
+            `(${fieldAndSql("title", words)}) OR (${compactAndSql("title", words)}) OR (${fieldAndSql("brand", words)}) OR (${compactAndSql("brand", words)}) OR (${fieldAndSql("description", words)}) OR (${compactAndSql("description", words)})`
+        )
+        .join(" OR ")
+    };
+  }
+  if (keywordMode === "embedding_content") {
+    return {
+      extra: "each query word AND on embedding_content, also with spaces removed",
+      source,
+      mustMatch: args.mustMatch,
+      query: args.query || null,
+      like: groups,
+      sql: groups
+        .map(
+          (words) =>
+            `(${fieldAndSql("embedding_content", words)}) OR (${compactAndSql("embedding_content", words)})`
+        )
+        .join(" OR ")
+    };
+  }
+  return { extra: "none (filter pool only)" };
+}
+
+function appendKeywordClause(where, params, groups, mode) {
+  if (!groups?.length || !mode) return;
+
+  const andField = (expr, words) => words.map(() => `LOWER(${expr}) LIKE ?`).join(" AND ");
+  const andCompact = (expr, words) =>
+    words.map(() => `REPLACE(LOWER(${expr}), ' ', '') LIKE ?`).join(" AND ");
+
+  if (mode === "title_brand") {
+    const parts = groups.map((words) => {
+      const titleAnd = andField("p.title", words);
+      const titleCompact = andCompact("p.title", words);
+      const brandAnd = andField("b.name", words);
+      const brandCompact = andCompact("b.name", words);
+      const descExpr = "IFNULL(p.description, '')";
+      const descAnd = andField(descExpr, words);
+      const descCompact = andCompact(descExpr, words);
+      return `((${titleAnd}) OR (${titleCompact}) OR (${brandAnd}) OR (${brandCompact}) OR (${descAnd}) OR (${descCompact}))`;
+    });
+    where.push(`(${parts.join(" OR ")})`);
+    for (const words of groups) {
+      params.push(...words, ...words, ...words, ...words, ...words, ...words);
+    }
+    return;
+  }
+  if (mode === "embedding_content") {
+    const parts = groups.map((words) => {
+      const textAnd = andField("p.embedding_content", words);
+      const textCompact = andCompact("p.embedding_content", words);
+      return `((${textAnd}) OR (${textCompact}))`;
+    });
+    where.push(`(${parts.join(" OR ")})`);
+    for (const words of groups) {
+      params.push(...words, ...words);
+    }
+  }
+}
+
 function compactDbProduct(product) {
   return {
     id: product.id,
@@ -450,7 +668,7 @@ function compactDbProduct(product) {
   };
 }
 
-function buildFilterSql(args) {
+function buildFilterSql(args, keywordMode = null) {
   const where = [`p.status = 'active'`, `p.embedding IS NOT NULL`];
   const params = [];
 
@@ -510,11 +728,7 @@ function buildFilterSql(args) {
     params.push(...args.notes.map((note) => note.toLowerCase()));
   }
 
-  if (args.mustMatch?.length) {
-    const clause = args.mustMatch.map(() => "p.embedding_content LIKE ?").join(" OR ");
-    where.push(`(${clause})`);
-    params.push(...args.mustMatch.map((term) => `%${term}%`));
-  }
+  appendKeywordClause(where, params, keywordGroups(args), keywordMode);
 
   const variantClauses = [`(v.available_for_sale = 1 OR v.inventory_quantity > 0)`];
   if (args.minCents != null) {
@@ -536,8 +750,8 @@ function buildFilterSql(args) {
   return { whereSql: where.join(" AND "), params };
 }
 
-function buildCandidateSql(args) {
-  const { whereSql, params } = buildFilterSql(args);
+function buildCandidateSql(args, keywordMode = null) {
+  const { whereSql, params } = buildFilterSql(args, keywordMode);
   const sql = `SELECT p.id, VECTOR_TO_STRING(p.embedding) AS embeddingStr
 FROM products p
 LEFT JOIN product_genders g ON g.id = p.gender_id
@@ -554,8 +768,8 @@ WHERE ${whereSql}`;
   };
 }
 
-async function loadCandidateRows(args) {
-  const query = buildCandidateSql(args);
+async function loadCandidateRows(args, keywordMode = null) {
+  const query = buildCandidateSql(args, keywordMode);
   const rows = await prisma.$queryRawUnsafe(query.sql, ...query.params);
   return { ...query, rows };
 }
@@ -576,37 +790,171 @@ function buildRankingQuery(catalogQuery, shopperText = "") {
 
 export async function searchLocalCatalog(input = {}, options = {}) {
   const args = parseLocalCatalogSearchArgs(input);
-  const searchText = buildRankingQuery(args.query, options.shopperText);
+  const searchText = String(args.query || "").trim();
   const debug = {
     parsed: args,
     sql: [],
     dbResponse: {}
   };
 
-  if (!args.brand) {
-    const detected =
-      (await detectBrandFromQuery(args.query)) ||
-      (await detectBrandFromQuery(options.shopperText));
-    if (detected) {
-      args.brand = detected;
+  // Auto-detect brand from query/shopper text is disabled.
+  // Brand SQL still applies when catalog.filters.brand is passed.
+  // if (!args.brand) {
+  //   const detected =
+  //     (await detectBrandFromQuery(args.query)) ||
+  //     (await detectBrandFromQuery(options.shopperText));
+  //   if (detected) {
+  //     args.brand = detected;
+  //     debug.parsed = args;
+  //   }
+  // }
+
+  if (args.brand) {
+    const brands = await getBrandNames();
+    const originalBrand = args.brand;
+    const picked = pickFuzzBrand(originalBrand, brands, { allowShort: true });
+    debug.brandFuzzFilter = picked;
+    console.log("[search_product] brand filter fuzzball", picked);
+    if (picked.brand) {
+      args.brand = picked.brand;
+      if (args.query.toLowerCase() === originalBrand.toLowerCase()) {
+        args.query = picked.brand;
+      }
       debug.parsed = args;
+      console.log("[search_product] brand filter corrected", {
+        original: originalBrand,
+        correctedBrand: picked.brand
+      });
     }
   }
 
+  const keywords = keywordGroups(args);
+  const hasKeywords = keywords.length > 0;
+  const hasRankingText = Boolean(searchText);
+  let searchStage = "pool";
   let rows = [];
-  try {
-    const loaded = await loadCandidateRows(args);
-    rows = loaded.rows || [];
+  let titleRows = [];
+  let embeddingExtras = [];
+
+  console.log("[search_product] start", {
+    query: args.query || null,
+    mustMatch: args.mustMatch,
+    gender: args.gender || null,
+    brand: args.brand || null,
+    category: args.category || null,
+    applicableOffer: args.applicableOffer || null,
+    price: { min: args.minCents, max: args.maxCents },
+    hasKeywords,
+    hasRankingText,
+    limit: args.limit,
+    offset: args.offset
+  });
+
+  const loadStage = async (step, name, keywordMode) => {
+    const extraFilters = extraFiltersForStep(args, keywordMode);
+    console.log(`[search_product] ${step} extra filters`, extraFilters);
+    console.log(`[search_product] ${step} pool filters`, poolFiltersForLog(args));
+    const loaded = await loadCandidateRows(args, keywordMode);
+    const stageRows = loaded.rows || [];
+    console.log(`[search_product] ${step} found ${stageRows.length} products`);
     debug.sql.push({
-      name: "filter_candidates",
+      name,
       sql: loaded.sql,
       params: loaded.params,
       interpolatedSql: loaded.interpolatedSql
     });
-    debug.dbResponse.filter_candidates = {
-      rowCount: rows.length,
-      productIds: rows.map((row) => row.id)
+    debug.dbResponse[name] = {
+      rowCount: stageRows.length,
+      productIds: stageRows.map((row) => row.id)
     };
+    return stageRows;
+  };
+
+  try {
+    if (hasKeywords) {
+      titleRows = await loadStage(
+        "step 2 title/brand/description keyword",
+        "keyword_title_brand",
+        "title_brand"
+      );
+
+      const applyKeywordHits = (embeddingRows, stageLabel) => {
+        const titleIds = new Set(titleRows.map((row) => row.id));
+        embeddingExtras = embeddingRows.filter((row) => !titleIds.has(row.id));
+        const textCount = titleRows.length + embeddingExtras.length;
+        console.log(
+          `[search_product] ${stageLabel} extras after skipping title/brand/description hits: ${embeddingExtras.length} (embedding_content total ${embeddingRows.length})`
+        );
+        if (textCount > 0) {
+          rows = [...titleRows, ...embeddingExtras];
+          searchStage =
+            titleRows.length && embeddingExtras.length
+              ? "keyword_title_and_embedding"
+              : titleRows.length
+                ? "keyword_title_brand"
+                : "keyword_embedding_content";
+          console.log("[search_product] text match found, skip vector pool", {
+            titleBrandDescription: titleRows.length,
+            embeddingExtras: embeddingExtras.length,
+            merged: textCount,
+            stage: searchStage
+          });
+          return true;
+        }
+        rows = [];
+        return false;
+      };
+
+      let embeddingRows = await loadStage(
+        "step 3 embedding_content keyword",
+        "keyword_embedding_content",
+        "embedding_content"
+      );
+      if (!applyKeywordHits(embeddingRows, "step 3")) {
+        if (!args.brand) {
+          const brands = await getBrandNames();
+          const fuzzText = fuzzBrandQuery(args);
+          const picked = pickFuzzBrand(fuzzText, brands);
+          debug.brandFuzz = picked;
+          console.log("[search_product] brand fuzzball", picked);
+          if (picked.brand) {
+            args.mustMatch = mustMatchWithCorrectedBrand(args, picked.brand);
+            debug.parsed = args;
+            console.log("[search_product] retry keyword with original OR corrected brand", {
+              original: fuzzText,
+              correctedBrand: picked.brand,
+              mustMatch: args.mustMatch
+            });
+            titleRows = await loadStage(
+              "step 2 title/brand/description after brand correction",
+              "keyword_title_brand_fuzz",
+              "title_brand"
+            );
+            embeddingRows = await loadStage(
+              "step 3 embedding_content after brand correction",
+              "keyword_embedding_content_fuzz",
+              "embedding_content"
+            );
+            applyKeywordHits(embeddingRows, "step 3 after brand correction");
+          }
+        }
+        if (!rows.length) {
+          searchStage = "empty";
+          rows = [];
+          console.log(
+            "[search_product] step 2 and 3 found 0, step 4 vector pool skipped, returning 0"
+          );
+        }
+      }
+    } else {
+      rows = await loadStage("step 1 filter pool", "pool", null);
+      searchStage = "pool";
+      // Step 4 vector pool is temporarily disabled (no query/must_match browse stays pool-only).
+      // searchStage = hasRankingText ? "vector_pool" : "pool";
+      console.log(
+        `[search_product] returning from step 1 filter pool (${rows.length} of ${rows.length})`
+      );
+    }
   } catch (error) {
     debug.sql.push({
       name: "filter_candidates",
@@ -617,12 +965,27 @@ export async function searchLocalCatalog(input = {}, options = {}) {
     throw error;
   }
 
-  let ranked = rows.map((row) => ({ id: row.id, score: 0, embeddingStr: row.embeddingStr }));
+  debug.searchStage = searchStage;
+  debug.keywordGroups = hasKeywords
+    ? {
+        titleBrand: titleRows.length,
+        embeddingExtras: embeddingExtras.length,
+        merged: titleRows.length + embeddingExtras.length
+      }
+    : null;
 
-  if (searchText) {
+  const textMatchStage =
+    searchStage === "keyword_title_brand" ||
+    searchStage === "keyword_embedding_content" ||
+    searchStage === "keyword_title_and_embedding";
+  const shouldRank = hasRankingText && rows.length > 0 && searchStage !== "empty";
+  let ranked = [];
+
+  if (shouldRank) {
     const queryEmbedding = await generateEmbedding(searchText);
     debug.ranking = {
       method: "js_dot_product",
+      searchStage,
       catalogQuery: args.query,
       shopperText: String(options.shopperText || "").trim() || null,
       rankingQuery: searchText,
@@ -631,22 +994,31 @@ export async function searchLocalCatalog(input = {}, options = {}) {
       queryVectorDimensions: Array.isArray(queryEmbedding) ? queryEmbedding.length : 0,
       queryVector: queryEmbedding || null
     };
-    if (queryEmbedding) {
-      ranked = [];
-      for (const row of rows) {
-        try {
-          const vector = row.embeddingStr ? JSON.parse(row.embeddingStr) : null;
-          if (!Array.isArray(vector) || !vector.length) continue;
-          ranked.push({ id: row.id, score: dotProduct(queryEmbedding, vector) });
-        } catch {
-          // skip malformed vectors
-        }
-      }
-      ranked.sort((a, b) => b.score - a.score);
+    if (textMatchStage) {
+      const rankedTitle = rankRowsByEmbedding(titleRows, queryEmbedding);
+      const rankedExtras = rankRowsByEmbedding(embeddingExtras, queryEmbedding);
+      ranked = [...rankedTitle, ...rankedExtras];
+      console.log("[search_product] ranked within text groups (title/brand/description first)", {
+        titleBrandDescription: rankedTitle.length,
+        embeddingExtras: rankedExtras.length,
+        merged: ranked.length
+      });
+    } else {
+      ranked = rankRowsByEmbedding(rows, queryEmbedding);
+      console.log(
+        `[search_product] vector rank scored ${ranked.length} of ${rows.length} from ${searchStage}`
+      );
     }
   } else {
+    ranked = textMatchStage
+      ? [
+          ...rankRowsByEmbedding(titleRows, null),
+          ...rankRowsByEmbedding(embeddingExtras, null)
+        ]
+      : rankRowsByEmbedding(rows, null);
     debug.ranking = {
       method: "none",
+      searchStage,
       catalogQuery: args.query,
       shopperText: String(options.shopperText || "").trim() || null,
       rankingQuery: searchText,
@@ -698,10 +1070,37 @@ export async function searchLocalCatalog(input = {}, options = {}) {
   products.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
 
   const hasNext = args.offset + args.limit < total;
+  const returnKeywordMode =
+    searchStage === "keyword_title_brand"
+      ? "title_brand"
+      : searchStage === "keyword_embedding_content"
+        ? "embedding_content"
+        : null;
+  const extraFilters =
+    searchStage === "keyword_title_and_embedding"
+      ? {
+          extra: "title/brand first, then embedding_content extras (no vector pool)",
+          titleBrand: extraFiltersForStep(args, "title_brand"),
+          embeddingContent: extraFiltersForStep(args, "embedding_content"),
+          groups: debug.keywordGroups
+        }
+      : extraFiltersForStep(args, returnKeywordMode);
+  console.log("[search_product] return", {
+    step: searchStage,
+    found: total,
+    returned: products.length,
+    of: `${products.length} of ${total}`,
+    poolFilters: poolFiltersForLog(args),
+    extraFilters,
+    offset: args.offset,
+    limit: args.limit,
+    hasNext
+  });
   return {
     result: {
       status: "success",
       source: "search_product",
+      search_stage: searchStage,
       products: products.map((product) =>
         formatLocalProduct(product, scoreById.get(product.id) ?? null)
       ),

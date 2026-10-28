@@ -32,6 +32,7 @@ function logSearchProductCall({ request, parsed, result, debug, error }) {
       sql: debug?.sql || [],
       dbResponse: debug?.dbResponse || {},
       ranking: debug?.ranking || null,
+      searchStage: debug?.searchStage || result?.search_stage || null,
       error: error || null,
       toolResponse: result
         ? {
@@ -103,8 +104,9 @@ export function getLocalCatalogSearchTools() {
       name: LOCAL_CATALOG_SEARCH_TOOL_NAME,
       description:
         "Search Perfumania products in the local catalog. This is the only product search tool. " +
-        "Required: catalog.query. Optional: catalog.filters, catalog.pagination. " +
+        "Required: catalog.filters. Optional: catalog.query, catalog.pagination. " +
         "Values already sent in catalog.filters should not be repeated in catalog.query — those are already applied as filters. " +
+        "When catalog.filters.category is set, omit catalog.query. " +
         "Put filters inside catalog (catalog.filters), never as a sibling key named catalog.filters. " +
         "Example: filters.gender 'women' → query 'winter perfume', not 'winter perfume for wife' or 'winter perfume for her'. " +
         "catalog.query must include season, occasion, and mood from the shopper (summer, winter, office, date, gift), not only gender or scent family. " +
@@ -112,12 +114,30 @@ export function getLocalCatalogSearchTools() {
         "Price min/max in cents ($25 → 2500). " +
         "Set catalog.filters.gender from intent: wife/girlfriend/her/mom/women → women; husband/boyfriend/him/dad/men → men. " +
         "Pass unisex only if they said unisex. Kids/children/baby: omit gender. If gender is unknown, omit gender — never default to unisex. " +
-        "A new ask replaces previous gender, price, and must_match. " +
-        "Set catalog.filters.must_match only for words that can appear on the product. " +
-        "Kids/children/baby → must_match [\"kids\", \"children\"] and put kids in query. " +
-        "Wife/her/husband is gender, not must_match." +
+        "A new ask replaces previous gender, price, must_match, and category. " +
+        "If a shopper word is not gender, price, category, or applicable_offer, and there is no other filter for it, put it in catalog.filters.must_match. " +
+        "Kids/children/baby → must_match [\"kids\", \"children\"] and omit gender. " +
+        "Product or line names → must_match. Brand → filters.brand. Notes → filters.notes. " +
+        "Wife/her/husband is gender, not must_match. " +
+        "Skip filler (perfume, cologne, fragrance, for, the). Do not copy the full sentence. " +
+        "Mood/season/occasion stay in catalog.query only. " +
         "Use short root words (rainy → rain, citrusy → citrus). " +
-        "Set catalog.filters.category to a collection handle when the shopper ask matches one. " +
+        "If the ask matches a collection, set catalog.filters.category to that handle and omit catalog.query. " +
+        "new women's / women's new arrivals → womens-perfume-new-arrivals; " +
+        "best sellers women / best selling women's → best-selling-perfumes-for-women; " +
+        "women bundles / bundle deals for women → bundle-deals-for-women; " +
+        "women clearance / women's sale → clearance-for-women-perfume; " +
+        "new men's / men's new arrivals → mens-cologne-new-arrivals; " +
+        "best sellers men / best selling men's → best-selling-colognes-for-men; " +
+        "men bundles / bundle deals for men → bundle-deals-for-men; " +
+        "men clearance / men's sale → clearance-for-mens-cologne; " +
+        "gift set / gift sets → gift-set; " +
+        "beauty → beauty; " +
+        "exclusive / only at Perfumania → only-at-perfumania; " +
+        "spray / sprays / body spray / body mist → body-sprays; " +
+        "EDP / eau de parfum → eau-de-parfum-edp-s; " +
+        "EDT / eau de toilette → eau-de-toilette-edt-s; " +
+        "women's perfume → womens-perfume. " +
         "Set catalog.filters.applicable_offer to one fixed name when they ask for a deal: " +
         "3 For $20, 2 For $25, BOGO 50, 3 For $99, 2 For $75, 3 For $129. " +
         "Show more: same query/filters plus pagination.cursor from the last result. " +
@@ -132,12 +152,13 @@ export function getLocalCatalogSearchTools() {
             type: "object",
             additionalProperties: false,
             description: "Local catalog search parameters.",
-            required: ["query", "filters"],
+            required: ["filters"],
             properties: {
               query: {
                 type: "string",
                 description:
-                  "Natural search text for vector ranking, including season/occasion/mood when the shopper said it (e.g. 'fresh summer perfume for her'). Also brand, notes, type."
+                  "Natural search text for vector ranking, including season/occasion/mood when the shopper said it (e.g. 'fresh summer perfume for her'). Also brand, notes, type. " +
+                  "Omit this field when catalog.filters.category is set."
               },
               filters: {
                 type: "object",
@@ -197,11 +218,13 @@ export function getLocalCatalogSearchTools() {
                     type: "array",
                     items: { type: "string" },
                     description:
-                      "Words that must appear in product text (embedding_content). Omit if none. " +
-                      "Wife/girlfriend/her/mom → gender women" +
-                      "Husband/boyfriend/him/dad → gender men" +
-                      "Kids/children/baby → [\"kids\", \"children\"]. Vanilla → [\"vanilla\"]. " +
-                      "Skip filler (perfume, fragrance, for, the). Do not copy must_match from the previous turn."
+                      "Words that are not gender, price, category, or a deal, and can appear on the product. " +
+                      "Kids/children/baby → [\"kids\", \"children\"]. Product or line name → those words. " +
+                      "Brand → filters.brand, not must_match. Notes → filters.notes. " +
+                      "Omit perfume, cologne, fragrance, for, the, and gender words. " +
+                      "Wife/girlfriend/her/mom → gender women. Husband/boyfriend/him/dad → gender men. " +
+                      "Mood/season/occasion-only → omit must_match, use catalog.query. " +
+                      "Do not copy the full shopper sentence or must_match from the previous turn."
                   },
                   category: {
                     type: "string",
@@ -210,6 +233,7 @@ export function getLocalCatalogSearchTools() {
                       "best-selling-perfumes-for-women",
                       "bundle-deals-for-women",
                       "clearance-for-women-perfume",
+                      "womens-perfume",
                       "mens-cologne-new-arrivals",
                       "best-selling-colognes-for-men",
                       "bundle-deals-for-men",
@@ -222,14 +246,16 @@ export function getLocalCatalogSearchTools() {
                       "eau-de-toilette-edt-s"
                     ],
                     description:
-                      "Shopify collection handle. Pass when the shopper ask matches one of these collections: " +
+                      "Shopify collection handle. Required when the shopper ask matches a collection. " +
+                      "When this is set, omit catalog.query. " +
+                      "spray, sprays, body spray, body mist → body-sprays. " +
+                      "EDP / eau de parfum → eau-de-parfum-edp-s. EDT / eau de toilette → eau-de-toilette-edt-s. " +
                       "womens-perfume-new-arrivals (new women's), " +
                       "best-selling-perfumes-for-women (best sellers women), bundle-deals-for-women (women bundles), " +
-                      "clearance-for-women-perfume (women clearance), mens-cologne-new-arrivals (new men's), " +
+                      "clearance-for-women-perfume (women clearance), womens-perfume (women's perfume), mens-cologne-new-arrivals (new men's), " +
                       "best-selling-colognes-for-men (best sellers men), bundle-deals-for-men (men bundles), " +
                       "clearance-for-mens-cologne (men clearance), gift-set (gift sets), beauty (beauty), " +
-                      "only-at-perfumania (exclusive / only at Perfumania), body-sprays (body sprays), " +
-                      "eau-de-parfum-edp-s (EDP), eau-de-toilette-edt-s (EDT). Omit if none match."
+                      "only-at-perfumania (exclusive / only at Perfumania). Omit if none match."
                   },
                   price: {
                     type: "object",
