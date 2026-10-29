@@ -110,33 +110,6 @@ function parsePriceNumber(price) {
   return match ? Number(match[1]) : null;
 }
 
-/**
- * Detect air-freshener products (leftover cabin-filter catalog).
- */
-export function isFreshenerProduct({
-  tags = [],
-  title = "",
-  productType = "",
-  product_type = ""
-} = {}) {
-  const type = String(productType || product_type || "").trim();
-  if (/freshener|freshers/i.test(type)) return true;
-
-  const tagList = normalizeTagList(tags);
-  if (
-    tagList.some(
-      (tag) =>
-        /^scent$/i.test(tag) ||
-        /^YGroup_Scent$/i.test(tag) ||
-        /^freshener/i.test(tag)
-    )
-  ) {
-    return true;
-  }
-
-  return /\b(air\s*)?fresheners?\b/i.test(String(title || ""));
-}
-
 function sortProductsForDisplay(products = []) {
   return [...products].sort((a, b) => {
     const displayFirstDiff =
@@ -238,7 +211,6 @@ export function buildLlmProductSummary(rankedProducts = [], options = {}) {
       price_amount_cents: priceAmountCents,
       sizes: sizes.length ? sizes : null,
       inStock: product.inStock === true,
-      vendor: product.vendor || profile.brand || null,
       brand: profile.brand || product.vendor || null,
       gender: profile.gender,
       fragrance_type:
@@ -528,7 +500,6 @@ export function buildProductListingMetadata(rankedProducts = []) {
 }
 
 export default {
-  isFreshenerProduct,
   resolveProductDescriptionHtml,
   enrichProductsWithComparison,
   resolveProductBrand,

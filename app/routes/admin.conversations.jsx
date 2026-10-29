@@ -624,6 +624,12 @@ function StorefrontProductSection({ products }) {
   );
 }
 
+function clampSimilarityUnit(score) {
+  const n = Number(score);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(1, n);
+}
+
 function AssistantMessageCard({
   msg,
   searchQuery = "",
@@ -648,7 +654,7 @@ function AssistantMessageCard({
 
     validResults.sort((a, b) => (b.similarity || 0) - (a.similarity || 0));
     const topResult = validResults[0];
-    const topScore = topResult.similarity;
+    const topScore = clampSimilarityUnit(topResult.similarity);
     const matchPct = Math.round(topScore * 100);
     const docTitle = topResult.chunk?.document?.title || "Knowledge Document";
     const docId = topResult.chunk?.document?.id;

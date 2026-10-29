@@ -27,6 +27,12 @@ const SHOPIFY_POLICY_TOOL_NAMES = new Set([SHOPIFY_POLICY_TOOL_NAME]);
 /** Drop knowledge heading/body below this score. */
 const MIN_KB_SIMILARITY_FOR_LLM = 0.5;
 
+function clampSimilarityUnit(score) {
+  const n = Number(score);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(1, n);
+}
+
 const VECTOR_KB_INSTRUCTION =
   "Answer from the provided knowledge base search results above. Do NOT invent details. " +
   "Perfumania products are 100% authentic designer fragrances. " +
@@ -92,29 +98,13 @@ export async function searchStorePolicies(
           WHERE c.embedding IS NOT NULL
         `);
 
-        const queryWords = effectiveQuery
-          .toLowerCase()
-          .split(/[^a-z0-9]+/)
-          .filter((w) => w.length > 2);
-
         const scoredChunks = [];
         for (const chunk of chunks) {
           try {
             if (chunk.embeddingStr) {
               const chunkVector = JSON.parse(chunk.embeddingStr);
               if (Array.isArray(chunkVector)) {
-                let score = dotProduct(queryEmbedding, chunkVector);
-                const contentLower = (chunk.content || "").toLowerCase();
-                const titleLower = (chunk.title || "").toLowerCase();
-
-                // Keyword matching boost for key terms (e.g. 'authenti', 'refund', 'return', 'ship')
-                for (const w of queryWords) {
-                  const stem = w.length > 5 ? w.substring(0, 5) : w;
-                  if (contentLower.includes(stem) || titleLower.includes(stem)) {
-                    score += 0.10;
-                  }
-                }
-
+                const score = dotProduct(queryEmbedding, chunkVector);
                 scoredChunks.push({ id: chunk.id, content: chunk.content, score });
               }
             }
@@ -156,7 +146,7 @@ export async function searchStorePolicies(
                       conversationId,
                       messageId: messageId || null,
                       chunkId: chunk.id,
-                      similarity: chunk.score,
+                      similarity: clampSimilarityUnit(chunk.score),
                       queryText: effectiveQuery,
                     },
                   })
@@ -190,7 +180,7 @@ export async function searchStorePolicies(
               ? "Most Relevant Knowledge Base Info"
               : `Related Knowledge Base Info (Part ${index + 1})`,
           body: chunk.content,
-          similarity: chunk.score,
+          similarity: clampSimilarityUnit(chunk.score),
         })),
         instruction: VECTOR_KB_INSTRUCTION,
       };

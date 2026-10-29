@@ -247,103 +247,6 @@ export function createToolService() {
     return true;
   };
 
-  const CATALOG_QUERY_STOPWORDS = new Set([
-    "perfume",
-    "perfumes",
-    "cologne",
-    "colognes",
-    "fragrance",
-    "fragrances",
-    "eau",
-    "de",
-    "parfum",
-    "toilette",
-    "for",
-    "the",
-    "and",
-    "a",
-    "an",
-    "men",
-    "women",
-    "mens",
-    "womens",
-    "man",
-    "woman",
-    "gift",
-    "under",
-    "over",
-    "below",
-    "above",
-    "oz",
-    "set",
-    "spray"
-  ]);
-
-  /**
-   * Whether ranked catalog products clearly match distinctive terms in the search query.
-   * Used so the LLM does not claim "more Gucci" when page 2 has no Gucci.
-   */
-  const evaluateCatalogQueryMatch = (toolArgs, rankedProducts = []) => {
-    const resultCount = rankedProducts.length;
-    const query = String(
-      toolArgs?.catalog?.query || toolArgs?.query || ""
-    ).trim();
-
-    if (resultCount === 0) {
-      return { query_match: false, match_count: 0, result_count: 0 };
-    }
-
-    const tokens = query
-      .toLowerCase()
-      .split(/[^a-z0-9]+/i)
-      .map((t) => t.trim())
-      .filter((t) => t.length > 2 && !CATALOG_QUERY_STOPWORDS.has(t));
-
-    // No distinctive brand/keyword → treat results as a soft match
-    if (tokens.length === 0) {
-      return { query_match: true, match_count: resultCount, result_count: resultCount };
-    }
-
-    let matchCount = 0;
-    for (const product of rankedProducts) {
-      const tagBlob = Array.isArray(product.tags)
-        ? product.tags.join(" ")
-        : String(product.tags || "");
-      const notesBlob = [
-        product.key_notes,
-        product.top_notes,
-        product.middle_notes,
-        product.base_notes,
-        Array.isArray(product.scent_notes)
-          ? product.scent_notes.filter(Boolean).join(" ")
-          : product.scent_notes
-      ]
-        .filter(Boolean)
-        .join(" ");
-      const blob = [
-        product.title,
-        product.name,
-        product.vendor,
-        product.brand,
-        tagBlob,
-        notesBlob
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      if (tokens.some((token) => blob.includes(token))) {
-        matchCount += 1;
-      }
-    }
-
-    return {
-      query_match: matchCount > 0,
-      match_count: matchCount,
-      result_count: resultCount
-    };
-  };
-
   const buildProductSearchToolHistory = (
     toolUseResponse,
     rankedProducts,
@@ -356,7 +259,6 @@ export function createToolService() {
       forListing: !isDetail
     });
     const listingMeta = buildProductListingMetadata(rankedProducts);
-    const matchInfo = evaluateCatalogQueryMatch(toolArgs, rankedProducts);
 
     const pagination = originalData.pagination && typeof originalData.pagination === "object"
       ? {
@@ -369,13 +271,9 @@ export function createToolService() {
         }
       : null;
 
-    const matchInstruction = matchInfo.query_match
-      ? "query_match is true: say matching products were found (generic only), then ask if they want to add one to the cart. Do NOT name brands, titles, or prices in this browse reply."
-      : rankedProducts.length > 0
-        ? "query_match is false: products below are NOT a clear match for the customer's search (common after show more). " +
-          "Say you could not find products matching their request, but a few other options are shown below. " +
-          "Ask if they want to try another brand or name. Do NOT say you found their brand or 'more [brand] products'."
-        : "No products to show: say you could not find a match and ask them to rephrase.";
+    const matchInstruction = rankedProducts.length > 0
+      ? "Say matching products were found (generic only), then ask if they want to add one to the cart. Do NOT name brands, titles, or prices in this browse reply."
+      : "No products to show: say you could not find a match and ask them to rephrase.";
 
     const enriched = {
       status: originalData.status || "success",
@@ -383,9 +281,7 @@ export function createToolService() {
       products,
       ...listingMeta,
       ...(pagination ? { pagination } : {}),
-      query_match: isDetail ? true : matchInfo.query_match,
-      match_count: matchInfo.match_count,
-      result_count: matchInfo.result_count,
+      result_count: products.length,
       ui_instruction:
         isDetail
           ? "get_product_details: Product Details cards are shown BELOW your text (listing cards above stay visible). products[] is INTERNAL ONLY — do not paste metafield lists into chat. " +
@@ -414,8 +310,6 @@ export function createToolService() {
     console.log("[tool] enriched product listing for LLM history", {
       source: toolName,
       count: products.length,
-      query_match: matchInfo.query_match,
-      match_count: matchInfo.match_count,
       first_product_variant_id: listingMeta.first_product_variant_id
     });
 

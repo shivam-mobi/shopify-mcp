@@ -156,6 +156,16 @@ const QUERY_FILLER = new Set([
   "more"
 ]);
 
+/** Dropped in step 3 when the query has more than one word. */
+const STEP3_KEYWORD_FILLER = new Set([
+  "perfume",
+  "perfumes",
+  "cologne",
+  "colognes",
+  "fragrance",
+  "fragrances"
+]);
+
 let brandNameCache = null;
 let brandCacheAt = 0;
 
@@ -522,12 +532,30 @@ function keywordWords(text) {
     .filter(Boolean);
 }
 
-function keywordGroups(args) {
+function keywordToken(needle) {
+  return String(needle || "")
+    .replace(/%/g, "")
+    .toLowerCase();
+}
+
+function dropStep3Filler(words = []) {
+  if (!Array.isArray(words) || words.length <= 1) return words;
+  const kept = words.filter((needle) => !STEP3_KEYWORD_FILLER.has(keywordToken(needle)));
+  return kept.length ? kept : words;
+}
+
+function keywordGroups(args, keywordMode = null) {
+  let groups;
   if (args.mustMatch?.length) {
-    return args.mustMatch.map(keywordWords).filter((group) => group.length);
+    groups = args.mustMatch.map(keywordWords).filter((group) => group.length);
+  } else {
+    const words = keywordWords(args.query);
+    groups = words.length ? [words] : [];
   }
-  const words = keywordWords(args.query);
-  return words.length ? [words] : [];
+  if (keywordMode === "embedding_content") {
+    return groups.map(dropStep3Filler).filter((group) => group.length);
+  }
+  return groups;
 }
 
 function poolFiltersForLog(args) {
@@ -566,7 +594,7 @@ function rankRowsByEmbedding(rows, queryEmbedding) {
 }
 
 function extraFiltersForStep(args, keywordMode) {
-  const groups = keywordGroups(args);
+  const groups = keywordGroups(args, keywordMode);
   const source = args.mustMatch?.length ? "must_match" : "query";
   const fieldAndSql = (field, words) =>
     words.map((needle) => `${field} LIKE ${needle}`).join(" AND ");
@@ -590,7 +618,8 @@ function extraFiltersForStep(args, keywordMode) {
   }
   if (keywordMode === "embedding_content") {
     return {
-      extra: "each query word AND on embedding_content, also with spaces removed",
+      extra:
+        "each query word AND on embedding_content, also with spaces removed; if more than one word, drop perfume/fragrance/cologne",
       source,
       mustMatch: args.mustMatch,
       query: args.query || null,
@@ -728,7 +757,7 @@ function buildFilterSql(args, keywordMode = null) {
     params.push(...args.notes.map((note) => note.toLowerCase()));
   }
 
-  appendKeywordClause(where, params, keywordGroups(args), keywordMode);
+  appendKeywordClause(where, params, keywordGroups(args, keywordMode), keywordMode);
 
   const variantClauses = [`(v.available_for_sale = 1 OR v.inventory_quantity > 0)`];
   if (args.minCents != null) {

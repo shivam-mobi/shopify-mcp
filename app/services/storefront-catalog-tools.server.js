@@ -104,7 +104,6 @@ export async function callStorefrontCatalogTool(toolName, toolArgs = {}) {
       source: GET_PRODUCT_DETAILS,
       products,
       result_count: products.length,
-      query_match: products.length > 0,
       instruction:
         "INTERNAL ONLY: products[] has full detail for your understanding. " +
         "Product Details cards appear BELOW your reply; Top Matching Products listing stays above. " +
