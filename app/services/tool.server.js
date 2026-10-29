@@ -10,7 +10,6 @@ import {
 } from "./catalog-pagination.server.js";
 import {
   enrichProductsWithComparison,
-  buildCompareAttributes,
   buildLlmProductSummary,
   buildProductListingMetadata,
   resolveProductBrand,
@@ -310,12 +309,24 @@ export function createToolService() {
       const tagBlob = Array.isArray(product.tags)
         ? product.tags.join(" ")
         : String(product.tags || "");
+      const notesBlob = [
+        product.key_notes,
+        product.top_notes,
+        product.middle_notes,
+        product.base_notes,
+        Array.isArray(product.scent_notes)
+          ? product.scent_notes.filter(Boolean).join(" ")
+          : product.scent_notes
+      ]
+        .filter(Boolean)
+        .join(" ");
       const blob = [
         product.title,
         product.name,
         product.vendor,
         product.brand,
-        tagBlob
+        tagBlob,
+        notesBlob
       ]
         .filter(Boolean)
         .join(" ")
@@ -452,10 +463,6 @@ export function createToolService() {
     }
 
     return [];
-  };
-
-  const shouldBuildCompareAttrs = (product) => {
-    return !product.filterType && product.isHepa == null;
   };
 
   const formatVariantOption = (variant, product) => {
@@ -723,17 +730,6 @@ export function createToolService() {
       sku: product.sku || product.partNumber || selectedVariant?.sku || "",
       productType: product.productType || product.product_type || "",
       product_type: product.product_type || product.productType || "",
-      productCategory: product.productCategory,
-      fragrance: product.fragrance,
-      durationDays: product.durationDays,
-      hasOdorEliminator: product.hasOdorEliminator,
-      filterType: product.filterType,
-      isHepa: product.isHepa,
-      hasAntibacterial: product.hasAntibacterial,
-      hasCharcoal: product.hasCharcoal,
-      hasParticulate: product.hasParticulate,
-      yGroup: product.yGroup || "",
-      features: Array.isArray(product.features) ? product.features : undefined,
       tags: Array.isArray(product.tags) ? product.tags : product.tags,
       similarity:
         typeof product.similarity === "number" && Number.isFinite(product.similarity)
@@ -765,18 +761,7 @@ export function createToolService() {
         selectedVariant?.checkout_url ||
         product.checkout_url ||
         variant?.checkout_url ||
-        null,
-      ...(shouldBuildCompareAttrs(product)
-        ? buildCompareAttributes({
-            tags: product.tags,
-            title: product.title || product.partTypeName || product.name || "",
-            descriptionHtml,
-            vendor,
-            sku: product.sku || product.partNumber || "",
-            productType: product.productType || product.product_type || "",
-            product_type: product.product_type || product.productType || ""
-          })
-        : {})
+        null
     };
   };
 

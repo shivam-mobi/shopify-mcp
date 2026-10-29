@@ -422,170 +422,10 @@ function renderFormattedMessage(text, searchQuery = "", startIndex = 0, activeIn
   );
 }
 
-function StorefrontComparisonTable({ products }) {
-  if (!Array.isArray(products) || products.length <= 1) return null;
-
-  const isHomeFilter = (product) => {
-    if (!product) return false;
-    const category = String(product.productCategory || "").toLowerCase();
-    if (category === "home_filter" || category === "home") return true;
-    const type = String(product.productType || product.product_type || "");
-    if (/home furnace air filter|home air filter/i.test(type)) return true;
-    const title = String(product.title || "");
-    return /home air filter|furnace filter/i.test(title) && !/cabin/i.test(title);
-  };
-  const isHomeCompare = products.length > 0 && products.every(isHomeFilter);
-
-  const mervLabel = (product) => {
-    const direct = String(product.merv || product.mervRating || "").trim();
-    if (direct) {
-      const level = direct.match(/(\d{1,2})/);
-      return level ? `MERV ${level[1]}` : direct;
-    }
-    const tags = Array.isArray(product.tags) ? product.tags : [];
-    const tag = tags.find((item) => /^merv-\d+/i.test(String(item || "")));
-    if (tag) return String(tag).replace(/^merv-/i, "MERV ");
-    const fromTitle = String(product.title || "").match(/\bMERV\s*(\d{1,2})\b/i);
-    return fromTitle ? `MERV ${fromTitle[1]}` : "—";
-  };
-
-  const getIsHepa = (p) => {
-    if (p.isHepa != null) return Boolean(p.isHepa);
-    return /hepa/i.test(p.title || "") || /hepa/i.test(p.filterType || "");
-  };
-
-  const getHasAntibacterial = (p) => {
-    if (p.hasAntibacterial != null) return Boolean(p.hasAntibacterial);
-    return /antibacterial|anti-microbial|antimicrobial/i.test(p.title || "");
-  };
-
-  const getHasCharcoal = (p) => {
-    if (p.hasCharcoal != null) return Boolean(p.hasCharcoal);
-    return /charcoal|carbon|odor/i.test(p.title || "") || /charcoal/i.test(p.filterType || "");
-  };
-
-  const productName = (product) => {
-    const full = String(product.title || product.sku || product.partNumber || "Product").trim();
-    if (full.length <= 36) return full;
-    return `${full.slice(0, 33).trim()}…`;
-  };
-
-  const rows = isHomeCompare
-    ? [
-        { label: "MERV", getValue: (p) => mervLabel(p), isBoolean: false },
-        { label: "Charcoal / odor", getValue: (p) => getHasCharcoal(p), isBoolean: true },
-        {
-          label: "Price",
-          getValue: (p) =>
-            p.price || (typeof p.priceAmount === "number" ? `$${p.priceAmount.toFixed(2)}` : "—"),
-          isBoolean: false
-        },
-        {
-          label: "Stock",
-          getValue: (p) =>
-            p.inStock !== false && p.availableForSale !== false ? "In stock" : "Out of stock",
-          isStock: true
-        }
-      ]
-    : [
-        { label: "HEPA", getValue: (p) => getIsHepa(p), isBoolean: true },
-        { label: "Antibacterial", getValue: (p) => getHasAntibacterial(p), isBoolean: true },
-        { label: "Charcoal / odor", getValue: (p) => getHasCharcoal(p), isBoolean: true },
-        {
-          label: "Price",
-          getValue: (p) =>
-            p.price || (typeof p.priceAmount === "number" ? `$${p.priceAmount.toFixed(2)}` : "—"),
-          isBoolean: false
-        },
-        {
-          label: "Stock",
-          getValue: (p) =>
-            p.inStock !== false && p.availableForSale !== false ? "In stock" : "Out of stock",
-          isStock: true
-        }
-      ];
-
-  return (
-    <div className="storefront-compare">
-      <h5 className="storefront-compare-title">Quick comparison</h5>
-      <div className="storefront-compare-scroll">
-        <table className="storefront-compare-table">
-          <thead>
-            <tr>
-              <th>Feature</th>
-              {products.map((p, idx) => {
-                const key = p.id || p.variantId || idx;
-                const isBest = Boolean(p.isBest);
-                return (
-                  <th
-                    key={key}
-                    className={isBest ? "is-best" : ""}
-                    title={p.title || ""}
-                  >
-                    <span className="storefront-compare-product-head">
-                      {productName(p)}
-                    </span>
-                    {isBest && <span className="storefront-compare-best-tag">Best pick</span>}
-                  </th>
-                );
-              })}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={row.label}>
-                <td>{row.label}</td>
-                {products.map((p, idx) => {
-                  const key = p.id || p.variantId || idx;
-                  const isBest = Boolean(p.isBest);
-                  const rawVal = row.getValue(p);
-                  let displayVal = rawVal;
-                  if (row.isBoolean) {
-                    displayVal = rawVal ? (
-                      <span className="yes-badge">Yes</span>
-                    ) : (
-                      <span className="no-badge">No</span>
-                    );
-                  } else if (row.isStock) {
-                    displayVal =
-                      rawVal === "In stock" ? (
-                        <span className="stock-in" style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
-                          <CheckIcon size={12} /> In stock
-                        </span>
-                      ) : (
-                        <span className="stock-out" style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
-                          <CloseIcon size={10} /> Out
-                        </span>
-                      );
-                  }
-                  return (
-                    <td
-                      key={key}
-                      className={isBest ? "is-best" : ""}
-                    >
-                      {displayVal}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
 function StorefrontBestProductSection({ product }) {
   if (!product) return null;
-  const isFreshener =
-    product.productCategory === "freshener" ||
-    product.filterType === "freshener" ||
-    /\bfreshener|freshers/i.test(String(product.title || "")) ||
-    /\bfreshener|freshers/i.test(String(product.productType || product.product_type || ""));
-  if (isFreshener) return null;
 
-  const title = product.title || "Best Matching Cabin Filter";
+  const title = product.title || "Best matching product";
   const imageUrl =
     product.image_url ||
     product.imageUrl ||
@@ -666,18 +506,7 @@ function StorefrontBestProductSection({ product }) {
 function StorefrontProductSection({ products }) {
   if (!Array.isArray(products) || products.length === 0) return null;
 
-  const hasFreshener = products.some(
-    (p) =>
-      p &&
-      (p.productCategory === "freshener" ||
-        p.filterType === "freshener" ||
-        /\bfreshener|freshers/i.test(String(p.title || "")) ||
-        /\bfreshener|freshers/i.test(String(p.productType || p.product_type || "")))
-  );
-
-  const bestProduct = !hasFreshener
-    ? products.find((p) => p && p.isBest) || null
-    : null;
+  const bestProduct = products.find((p) => p && p.isBest) || null;
 
   return (
     <div className="storefront-product-section">
@@ -708,12 +537,7 @@ function StorefrontProductSection({ products }) {
                 : `https://perfumania.com${p.url}`
               : "https://perfumania.com";
 
-            const isFreshener =
-              p.productCategory === "freshener" ||
-              p.filterType === "freshener" ||
-              /\bfreshener|freshers/i.test(String(p.title || "")) ||
-              /\bfreshener|freshers/i.test(String(p.productType || p.product_type || ""));
-            const showBestBadge = Boolean(p.isBest && !isFreshener);
+            const showBestBadge = Boolean(p.isBest);
             const offerName = String(p.applicable_offer || p.applicableOffer || "")
               .replace(/\s*[-–—]?\s*mix\s*&\s*match\s*$/i, "")
               .replace(/\s+/g, " ")
@@ -793,9 +617,6 @@ function StorefrontProductSection({ products }) {
           })}
         </div>
       </div>
-      {products.length > 1 && !hasFreshener && (
-        <StorefrontComparisonTable products={products} />
-      )}
       {bestProduct && (
         <StorefrontBestProductSection product={bestProduct} />
       )}

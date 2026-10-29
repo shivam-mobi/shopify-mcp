@@ -110,12 +110,8 @@ function parsePriceNumber(price) {
   return match ? Number(match[1]) : null;
 }
 
-const KNOWN_FRESHENER_SCENTS =
-  /fresh\s*linen|black\s*rock|vanilla\s*orchid|tropical\s*peach|new\s*car|lavender/i;
-
 /**
- * Detect cabin-filter air fresheners so compare uses scent attrs, not HEPA/charcoal.
- * Cabin / home filters must not match this.
+ * Detect air-freshener products (leftover cabin-filter catalog).
  */
 export function isFreshenerProduct({
   tags = [],
@@ -141,163 +137,6 @@ export function isFreshenerProduct({
   return /\b(air\s*)?fresheners?\b/i.test(String(title || ""));
 }
 
-function extractFragrance(title = "") {
-  const raw = String(title || "").trim();
-  if (!raw) return null;
-
-  const known = raw.match(KNOWN_FRESHENER_SCENTS);
-  if (known) {
-    return known[0].replace(/\s+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  }
-
-  const parts = raw.split(/\s+[-–—]\s+/);
-  if (parts.length >= 2) {
-    const last = parts[parts.length - 1].trim();
-    if (last && last.length <= 40 && !/^\d+\s*-?\s*pack\b/i.test(last)) {
-      return last;
-    }
-  }
-
-  return null;
-}
-
-function extractDurationDays(text = "") {
-  const match = String(text || "").match(/up\s+to\s+(\d+)\s*days?|(\d+)\s*days?/i);
-  if (!match) return null;
-  const days = Number(match[1] || match[2]);
-  return Number.isFinite(days) ? days : null;
-}
-
-function buildFreshenerCompareAttributes({
-  tags = [],
-  title = "",
-  descriptionHtml = "",
-  vendor = "",
-  sku = ""
-} = {}) {
-  const tagList = normalizeTagList(tags);
-  const plain = stripHtml(descriptionHtml);
-  const textBlob = `${title} ${plain}`.toLowerCase();
-
-  const fragrance = extractFragrance(title);
-  const durationDays = extractDurationDays(`${title} ${plain}`);
-  const hasOdorEliminator =
-    /odor\s*(eliminat|neutraliz)|odor\s*control|neutraliz(?:er|ing)?\s+technolog/i.test(
-      textBlob
-    );
-
-  const yGroupTag = tagList.find((tag) => /^YGroup_/i.test(tag));
-  const yGroup = yGroupTag ? yGroupTag.replace(/^YGroup_/i, "").trim() : "";
-
-  const features = [];
-  if (fragrance) features.push(`Fragrance: ${fragrance}`);
-  if (durationDays != null) features.push(`Up to ${durationDays} days`);
-  if (hasOdorEliminator) features.push("Odor eliminator / neutralizer");
-
-  return {
-    vendor: vendor || "",
-    sku: sku || "",
-    productCategory: "freshener",
-    fragrance: fragrance || null,
-    durationDays,
-    hasOdorEliminator,
-    // Keep filter fields falsey so UI/scoring never treat fresheners as filters.
-    filterType: "freshener",
-    isHepa: false,
-    hasAntibacterial: false,
-    hasCharcoal: false,
-    hasParticulate: false,
-    yGroup,
-    features: features.slice(0, 4),
-    tags: tagList
-  };
-}
-
-/**
- * Build comparison attributes from Shopify product fields.
- * Fresheners → fragrance / duration / odor eliminator.
- * Filters → HEPA / charcoal / antibacterial (unchanged).
- */
-export function buildCompareAttributes({
-  tags = [],
-  title = "",
-  descriptionHtml = "",
-  vendor = "",
-  sku = "",
-  productType = "",
-  product_type = ""
-} = {}) {
-  if (
-    isFreshenerProduct({
-      tags,
-      title,
-      productType,
-      product_type
-    })
-  ) {
-    return buildFreshenerCompareAttributes({
-      tags,
-      title,
-      descriptionHtml,
-      vendor,
-      sku
-    });
-  }
-
-  const tagList = normalizeTagList(tags);
-  const tagBlob = tagList.map((tag) => tag.toLowerCase()).join(" | ");
-  const textBlob = `${title} ${stripHtml(descriptionHtml)} ${tagBlob}`.toLowerCase();
-
-  const isHepa =
-    /\bhepa\b/i.test(tagBlob) && !/\bnon[-_]?hepa\b/i.test(tagBlob)
-      ? true
-      : /\bnon[-_]?hepa\b/i.test(tagBlob)
-        ? false
-        : /\bhepa\b/i.test(textBlob) && !/\bnon[-_]?hepa\b/i.test(textBlob);
-
-  const hasAntibacterial = /antibacterial|anti[- ]bacterial|micro technology/i.test(textBlob);
-  const hasCharcoal = /charcoal|activated carbon|odor/i.test(textBlob);
-  const hasParticulate = /particulate|pollen|dust/i.test(textBlob);
-
-  const yGroupTag = tagList.find((tag) => /^YGroup_/i.test(tag));
-  const yGroup = yGroupTag ? yGroupTag.replace(/^YGroup_/i, "").trim() : "";
-
-  const filterType = isHepa
-    ? "hepa"
-    : /\bnon[-_]?hepa\b/i.test(tagBlob)
-      ? "non-hepa"
-      : hasCharcoal
-        ? "charcoal"
-        : "standard";
-
-  const features = [];
-  if (isHepa) features.push("HEPA filtration");
-  if (hasParticulate) features.push("Particulate / pollen capture");
-  if (hasCharcoal) features.push("Activated charcoal / odor control");
-  if (hasAntibacterial) features.push("Antibacterial technology");
-  if (!features.length && descriptionHtml) {
-    const plain = stripHtml(descriptionHtml);
-    if (plain) features.push(plain.slice(0, 120) + (plain.length > 120 ? "…" : ""));
-  }
-
-  return {
-    vendor: vendor || "",
-    sku: sku || "",
-    productCategory: "filter",
-    fragrance: null,
-    durationDays: null,
-    hasOdorEliminator: false,
-    filterType,
-    isHepa: Boolean(isHepa),
-    hasAntibacterial,
-    hasCharcoal,
-    hasParticulate,
-    yGroup,
-    features: features.slice(0, 4),
-    tags: tagList
-  };
-}
-
 function sortProductsForDisplay(products = []) {
   return [...products].sort((a, b) => {
     const displayFirstDiff =
@@ -318,50 +157,10 @@ export function enrichProductsWithComparison(products = []) {
   }
 
   const enriched = products.map((product) => {
-    const looksFreshener = isFreshenerProduct(product);
-    // Recompute fresheners even if stale filter attrs were copied earlier.
-    const hasFilterAttrs =
-      !looksFreshener &&
-      product.productCategory !== "freshener" &&
-      (product.filterType != null || product.isHepa != null);
-
-    const attrs = hasFilterAttrs
-      ? {
-          vendor: product.vendor || "",
-          sku: product.sku || product.partNumber || "",
-          productCategory: product.productCategory || "filter",
-          fragrance: product.fragrance || null,
-          durationDays:
-            typeof product.durationDays === "number" ? product.durationDays : null,
-          hasOdorEliminator: product.hasOdorEliminator === true,
-          filterType: product.filterType || "standard",
-          isHepa: product.isHepa === true,
-          hasAntibacterial: product.hasAntibacterial === true,
-          hasCharcoal: product.hasCharcoal === true,
-          hasParticulate: product.hasParticulate === true,
-          yGroup: product.yGroup || "",
-          features: Array.isArray(product.features) ? product.features : [],
-          tags: Array.isArray(product.tags) ? product.tags : []
-        }
-      : buildCompareAttributes({
-          tags: product.tags,
-          title: product.title,
-          descriptionHtml: resolveProductDescriptionHtml(product),
-          vendor: product.vendor,
-          sku: product.sku || product.partNumber,
-          productType: product.productType || product.product_type || "",
-          product_type: product.product_type || product.productType || ""
-        });
-
-    const brand = resolveProductBrand({
-      ...product,
-      vendor: product.vendor || attrs.vendor || ""
-    });
-
+    const brand = resolveProductBrand(product);
     return {
       ...product,
-      ...attrs,
-      vendor: product.vendor || attrs.vendor || brand || "",
+      vendor: product.vendor || brand || "",
       brand,
       priceAmount:
         typeof product.priceAmount === "number"
@@ -729,7 +528,6 @@ export function buildProductListingMetadata(rankedProducts = []) {
 }
 
 export default {
-  buildCompareAttributes,
   isFreshenerProduct,
   resolveProductDescriptionHtml,
   enrichProductsWithComparison,
