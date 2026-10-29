@@ -116,7 +116,7 @@ export function getLocalCatalogSearchTools() {
         "Pass unisex only if they said unisex. Kids/children/baby: omit gender. If gender is unknown, omit gender — never default to unisex. " +
         "A new ask replaces previous gender, price, must_match, and category. " +
         "If a shopper word is not gender, price, category, or applicable_offer, and there is no other filter for it, put it in catalog.filters.must_match. " +
-        "Kids/children/baby → must_match [\"kids\", \"children\"] and omit gender. " +
+        "Kids/children/baby → catalog.filters.must_match [\"kids\", \"children\"] (never catalog.must_match) and omit gender. " +
         "Product or line names → must_match. Brand → filters.brand. Notes → filters.notes. " +
         "Wife/her/husband is gender, not must_match. " +
         "Skip filler (perfume, cologne, fragrance, for, the). Do not copy the full sentence. " +
@@ -218,6 +218,7 @@ export function getLocalCatalogSearchTools() {
                     type: "array",
                     items: { type: "string" },
                     description:
+                      "Put this inside catalog.filters.must_match — never catalog.must_match. " +
                       "Words that are not gender, price, category, or a deal, and can appear on the product. " +
                       "Kids/children/baby → [\"kids\", \"children\"]. Product or line name → those words. " +
                       "Brand → filters.brand, not must_match. Notes → filters.notes. " +
