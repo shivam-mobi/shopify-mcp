@@ -43,7 +43,10 @@ const CATEGORIES = [
   { handle: "best-selling-colognes-for-men", name: "Best Selling Colognes for Men" },
   { handle: "clearance-for-mens-cologne", name: "Men's Cologne on Sale" },
   { handle: "beauty", name: "Beauty" },
-  { handle: "gift-set", name: "Gift Sets" }
+  { handle: "gift-set", name: "Gift Sets" },
+  { handle: "body-sprays", name: "Body Sprays" },
+  { handle: "eau-de-parfum-edp-s", name: "Eau de Parfum (EDP)" },
+  { handle: "eau-de-toilette-edt-s", name: "Eau de Toilette (EDT)" }
 ];
 
 const CATEGORY_HANDLES = new Set(CATEGORIES.map((c) => c.handle));
@@ -205,12 +208,61 @@ function stripHtml(html) {
     .trim();
 }
 
+function stripTrailingPunctuation(name) {
+  return String(name || "")
+    .replace(/&amp;/gi, "&")
+    .replace(/[\s.;]+$/g, "")
+    .trim();
+}
+
+function canonicalNoteName(name) {
+  return stripTrailingPunctuation(name)
+    .replace(/["“”]/g, "")
+    .replace(/[()]/g, " ")
+    .replace(/^[&/]+|[&/]+$/g, "")
+    .replace(/-/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function splitNoteParts(name) {
+  const chunks = [];
+  let text = stripTrailingPunctuation(name);
+  text = text.replace(/\(([^)]*)\)/g, (_, inner) => {
+    chunks.push(inner);
+    return " ";
+  });
+  text = text.replace(/[()]/g, " ");
+  chunks.unshift(text);
+
+  const parts = [];
+  const seen = new Set();
+  for (const chunk of chunks) {
+    for (const piece of String(chunk).split(/\s*(?:and\/or|\/or|&|\band\b|\bor\b|\/)\s*/i)) {
+      const part = canonicalNoteName(piece);
+      if (!part || /^(and|or|&|\/|and\/or)$/i.test(part)) continue;
+      const key = part.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      parts.push(part);
+    }
+  }
+  return parts;
+}
+
 function splitNotes(raw) {
   if (!raw) return [];
-  return String(raw)
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
+  const names = [];
+  const seen = new Set();
+  for (const chunk of String(raw).split(",")) {
+    for (const part of splitNoteParts(chunk)) {
+      const key = part.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      names.push(part);
+    }
+  }
+  return names;
 }
 
 function parseReviewSummary(raw) {
@@ -581,6 +633,14 @@ async function shopifyGraphql(query, variables = {}, { retries = 5 } = {}) {
         durationMs: Date.now() - started,
         errorMessage: err.message
       });
+      if (attempt < retries) {
+        const waitMs = Math.min(8000, 1000 * attempt);
+        console.warn(
+          `[sync-products] ${err.message || "fetch failed"}, retrying in ${waitMs}ms (attempt ${attempt}/${retries})`
+        );
+        await sleep(waitMs);
+        continue;
+      }
       throw err;
     }
   }

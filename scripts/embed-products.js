@@ -84,10 +84,6 @@ function buildEmbeddingContent(product) {
     .map((row) => row.category?.name)
     .filter(Boolean);
   const offer = product.applicableOffer?.name || product.applicableOffer?.offerText;
-  const rating =
-    product.review && Number(product.review.totalReviews) > 0
-      ? `${Number(product.review.averageRating)}/5 from ${product.review.totalReviews} reviews`
-      : "";
 
   const lines = [
     product.title,
@@ -103,7 +99,6 @@ function buildEmbeddingContent(product) {
     sizes.length ? `Sizes: ${sizes.join(", ")}` : "",
     offer ? `Offer: ${offer}` : "",
     categories.length ? `Collections: ${categories.join(", ")}` : "",
-    rating ? `Reviews: ${rating}` : "",
     product.description ? `Description: ${product.description}` : ""
   ];
   return lines.filter(Boolean).join("\n");
