@@ -388,11 +388,42 @@ async function writeCartStateForConversation(conversationId, fields = {}) {
   return shopperId;
 }
 
+function normalizeShopifyCustomerId(value) {
+  const id = String(value || "").trim();
+  return id || null;
+}
+
+function createShopperCartId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `anon_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Cart/checkout fields: newer updatedAt wins; fall back to the other row. */
+function pickLastActiveCartFields(a, b) {
+  const aTime = Number(a?.updatedAt) || 0;
+  const bTime = Number(b?.updatedAt) || 0;
+  const newer = aTime >= bTime ? a : b;
+  const older = aTime >= bTime ? b : a;
+  return {
+    activeCartId: newer?.activeCartId || older?.activeCartId || null,
+    activeCheckoutId: newer?.activeCheckoutId || older?.activeCheckoutId || null,
+    checkoutUrl: newer?.checkoutUrl || older?.checkoutUrl || null,
+    shippingAddress: newer?.shippingAddress || older?.shippingAddress || null,
+    activeConversationId:
+      newer?.activeConversationId || older?.activeConversationId || null
+  };
+}
+
 /**
  * Merge cart/profile from one shopper id into another; remount conversations.
+ * Refuses to merge when both sides are owned by different Shopify customers.
  */
 async function mergeShopperCartIds(fromId, toId) {
-  if (!fromId || !toId || fromId === toId) return;
+  if (!fromId || !toId || fromId === toId) {
+    return { ok: true, skipped: true };
+  }
 
   const from = await prisma.shopperCart.findUnique({ where: { id: fromId } });
   if (!from) {
@@ -400,21 +431,30 @@ async function mergeShopperCartIds(fromId, toId) {
       where: { shopperId: fromId },
       data: { shopperId: toId }
     });
-    return;
+    return { ok: true };
   }
 
   const to = await prisma.shopperCart.findUnique({ where: { id: toId } });
+  const fromOwner = normalizeShopifyCustomerId(from.shopifyCustomerId);
+  const toOwner = normalizeShopifyCustomerId(to?.shopifyCustomerId);
+
+  if (fromOwner && toOwner && fromOwner !== toOwner) {
+    console.warn("[shopper-cart] merge blocked: different customers", {
+      fromId,
+      toId,
+      fromOwner,
+      toOwner
+    });
+    return { ok: false, reason: "owned_by_other" };
+  }
+
+  const cartFields = pickLastActiveCartFields(from, to || {});
   const merged = {
-    activeCartId: to?.activeCartId || from.activeCartId || null,
-    activeCheckoutId: to?.activeCheckoutId || from.activeCheckoutId || null,
-    checkoutUrl: to?.checkoutUrl || from.checkoutUrl || null,
-    shippingAddress: to?.shippingAddress || from.shippingAddress || null,
-    shopifyCustomerId: to?.shopifyCustomerId || from.shopifyCustomerId || null,
+    ...cartFields,
+    shopifyCustomerId: toOwner || fromOwner || null,
     customerFirstName: to?.customerFirstName || from.customerFirstName || null,
     customerLastName: to?.customerLastName || from.customerLastName || null,
-    customerLoggedIn: Boolean(to?.customerLoggedIn || from.customerLoggedIn),
-    activeConversationId:
-      to?.activeConversationId || from.activeConversationId || null
+    customerLoggedIn: Boolean(to?.customerLoggedIn || from.customerLoggedIn)
   };
 
   await upsertShopperCartFields(toId, merged);
@@ -426,12 +466,249 @@ async function mergeShopperCartIds(fromId, toId) {
   try {
     await prisma.shopperCart.delete({ where: { id: fromId } });
   } catch {
-    // ignore
+    // ignore — row may already be gone
+  }
+
+  return { ok: true };
+}
+
+async function countShopperConversations(shopperId) {
+  const id = String(shopperId || "").trim();
+  if (!id) return 0;
+  return prisma.conversation.count({ where: { shopperId: id } });
+}
+
+/**
+ * Prefer a cart that already has conversations; then most recently updated.
+ */
+async function pickCanonicalCustomerShopper(
+  customerId,
+  { excludeId = null } = {}
+) {
+  const id = normalizeShopifyCustomerId(customerId);
+  if (!id) return null;
+
+  const rows = await prisma.shopperCart.findMany({
+    where: {
+      shopifyCustomerId: id,
+      ...(excludeId ? { NOT: { id: String(excludeId) } } : {})
+    }
+  });
+  if (!rows.length) return null;
+
+  const ranked = await Promise.all(
+    rows.map(async (row) => ({
+      row,
+      convCount: await countShopperConversations(row.id)
+    }))
+  );
+
+  ranked.sort((a, b) => {
+    if (a.convCount > 0 && b.convCount === 0) return -1;
+    if (b.convCount > 0 && a.convCount === 0) return 1;
+    return (Number(b.row.updatedAt) || 0) - (Number(a.row.updatedAt) || 0);
+  });
+
+  return ranked[0].row;
+}
+
+async function collapseCustomerShoppersInto(customerId, canonicalId) {
+  const id = normalizeShopifyCustomerId(customerId);
+  const target = String(canonicalId || "").trim();
+  if (!id || !target) return;
+
+  const others = await prisma.shopperCart.findMany({
+    where: { shopifyCustomerId: id, NOT: { id: target } },
+    select: { id: true }
+  });
+  for (const other of others) {
+    await mergeShopperCartIds(other.id, target);
   }
 }
 
 /**
+ * Align a browser shopper id with a logged-in Shopify customer.
+ * - Guest / same customer → merge into existing customer cart (canonical wins)
+ * - Local cart owned by a different customer → leave it; switch to customer cart
+ * - Empty guest cart (no conversations) → delete after transferring last-active cart fields
+ */
+export async function reconcileShopperForCustomer({
+  anonymousShopperId = null,
+  shopifyCustomerId = null,
+  firstName = null,
+  lastName = null
+} = {}) {
+  const localId = String(anonymousShopperId || "").trim();
+  const customerId = normalizeShopifyCustomerId(shopifyCustomerId);
+  if (!localId) return { ok: false, error: "shopper_id_required" };
+  if (!customerId) return { ok: false, error: "customer_id_required" };
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const namePatch = {
+    ...(firstName && String(firstName).trim()
+      ? { customerFirstName: String(firstName).trim() }
+      : {}),
+    ...(lastName && String(lastName).trim()
+      ? { customerLastName: String(lastName).trim() }
+      : {})
+  };
+
+  let local = await prisma.shopperCart.findUnique({ where: { id: localId } });
+  const localOwner = normalizeShopifyCustomerId(local?.shopifyCustomerId);
+
+  // Local cart belongs to another Shopify customer — never merge or overwrite.
+  if (localOwner && localOwner !== customerId) {
+    let canonical = await pickCanonicalCustomerShopper(customerId);
+    if (!canonical) {
+      const freshId = createShopperCartId();
+      canonical = await prisma.shopperCart.create({
+        data: {
+          id: freshId,
+          shopifyCustomerId: customerId,
+          customerLoggedIn: true,
+          ...namePatch,
+          createdAt: nowSec,
+          updatedAt: nowSec
+        }
+      });
+      return {
+        ok: true,
+        shopperId: freshId,
+        previousShopperId: localId,
+        merged: false,
+        switched: true,
+        shopper: canonical
+      };
+    }
+
+    await collapseCustomerShoppersInto(customerId, canonical.id);
+    await upsertShopperCartFields(canonical.id, {
+      shopifyCustomerId: customerId,
+      customerLoggedIn: true,
+      ...namePatch
+    });
+    canonical = await prisma.shopperCart.findUnique({ where: { id: canonical.id } });
+    return {
+      ok: true,
+      shopperId: canonical.id,
+      previousShopperId: localId,
+      merged: false,
+      switched: true,
+      shopper: canonical
+    };
+  }
+
+  if (!local) {
+    const existingCanonical = await pickCanonicalCustomerShopper(customerId);
+    if (existingCanonical) {
+      await upsertShopperCartFields(existingCanonical.id, {
+        shopifyCustomerId: customerId,
+        customerLoggedIn: true,
+        ...namePatch
+      });
+      await collapseCustomerShoppersInto(customerId, existingCanonical.id);
+      const shopper = await prisma.shopperCart.findUnique({
+        where: { id: existingCanonical.id }
+      });
+      return {
+        ok: true,
+        shopperId: existingCanonical.id,
+        previousShopperId: localId,
+        merged: true,
+        switched: true,
+        shopper
+      };
+    }
+
+    local = await prisma.shopperCart.create({
+      data: {
+        id: localId,
+        shopifyCustomerId: customerId,
+        customerLoggedIn: true,
+        ...namePatch,
+        createdAt: nowSec,
+        updatedAt: nowSec
+      }
+    });
+    return {
+      ok: true,
+      shopperId: localId,
+      previousShopperId: null,
+      merged: false,
+      switched: false,
+      shopper: local
+    };
+  }
+
+  // Ensure local is stamped as this customer before ranking (guests become eligible).
+  if (localOwner !== customerId) {
+    local = await prisma.shopperCart.update({
+      where: { id: localId },
+      data: {
+        shopifyCustomerId: customerId,
+        customerLoggedIn: true,
+        ...namePatch,
+        updatedAt: nowSec
+      }
+    });
+  } else if (Object.keys(namePatch).length) {
+    local = await prisma.shopperCart.update({
+      where: { id: localId },
+      data: {
+        customerLoggedIn: true,
+        ...namePatch,
+        updatedAt: nowSec
+      }
+    });
+  }
+
+  // Pick the best cart among ALL rows for this customer (including local).
+  const canonical = await pickCanonicalCustomerShopper(customerId);
+  const winnerId = canonical?.id || localId;
+
+  if (winnerId === localId) {
+    const peersBefore = await prisma.shopperCart.findMany({
+      where: { shopifyCustomerId: customerId, NOT: { id: localId } },
+      select: { id: true }
+    });
+    await collapseCustomerShoppersInto(customerId, localId);
+    const shopper = await prisma.shopperCart.findUnique({ where: { id: localId } });
+    return {
+      ok: true,
+      shopperId: localId,
+      previousShopperId: null,
+      merged: peersBefore.length > 0,
+      switched: false,
+      shopper
+    };
+  }
+
+  // Another cart is a better canonical (usually has conversations) — merge local into it.
+  const convCount = await countShopperConversations(localId);
+  await mergeShopperCartIds(localId, winnerId);
+  await upsertShopperCartFields(winnerId, {
+    shopifyCustomerId: customerId,
+    customerLoggedIn: true,
+    ...namePatch
+  });
+  await collapseCustomerShoppersInto(customerId, winnerId);
+
+  const shopper = await prisma.shopperCart.findUnique({ where: { id: winnerId } });
+
+  return {
+    ok: true,
+    shopperId: winnerId,
+    previousShopperId: localId,
+    merged: true,
+    switched: true,
+    emptyGuestDeleted: convCount === 0,
+    shopper
+  };
+}
+
+/**
  * Link a conversation to a shopper id (ShopperCart.id).
+ * Never reassigns a conversation owned by customer A onto customer B's cart.
  */
 export async function bindConversationShopper(
   conversationId,
@@ -456,11 +733,39 @@ export async function bindConversationShopper(
       });
     }
 
+    const previousOwner = normalizeShopifyCustomerId(
+      previousProfile?.shopifyCustomerId
+    );
+    const incomingCustomer = normalizeShopifyCustomerId(shopifyCustomerId);
+
+    // Conversation already belongs to a different Shopify customer — do not steal it.
+    if (previousOwner && incomingCustomer && previousOwner !== incomingCustomer) {
+      console.warn("[shopper-cart] bind blocked: owned by other customer", {
+        conversationId,
+        previousOwner,
+        incomingCustomer
+      });
+      return null;
+    }
+
     // Prefer localStorage shopper_id. Never keep shopperId === conversationId.
     let targetId = resolveShopperId({ anonymousShopperId });
     if (!targetId && previousId && previousId !== conversationId) {
       targetId = previousId;
     }
+
+    if (incomingCustomer && targetId) {
+      const reconciled = await reconcileShopperForCustomer({
+        anonymousShopperId: targetId,
+        shopifyCustomerId: incomingCustomer,
+        firstName,
+        lastName
+      });
+      if (reconciled?.ok && reconciled.shopperId) {
+        targetId = reconciled.shopperId;
+      }
+    }
+
     if (!targetId || targetId === conversationId) {
       console.warn("[shopper-cart] bind skipped: missing shopper_id", {
         conversationId,
@@ -470,15 +775,37 @@ export async function bindConversationShopper(
     }
 
     if (previousId && previousId !== targetId) {
-      await mergeShopperCartIds(previousId, targetId);
+      const targetProfile = await prisma.shopperCart.findUnique({
+        where: { id: targetId }
+      });
+      const targetOwner = normalizeShopifyCustomerId(
+        targetProfile?.shopifyCustomerId
+      );
+      // Only merge previous → target when ownership is compatible.
+      if (
+        !previousOwner ||
+        !targetOwner ||
+        previousOwner === targetOwner
+      ) {
+        await mergeShopperCartIds(previousId, targetId);
+      } else {
+        // Remount only this conversation; leave the previous customer's cart intact.
+        await prisma.conversation.update({
+          where: { id: conversationId },
+          data: { shopperId: targetId }
+        });
+      }
     }
 
     const profilePatch = {
       activeConversationId: conversationId
     };
-    const customerId = String(
-      shopifyCustomerId || previousProfile?.shopifyCustomerId || ""
-    ).trim();
+    // Never stamp a new customer over a different owner (already blocked above).
+    // For guests, prefer incoming; otherwise keep previous.
+    const customerId =
+      incomingCustomer ||
+      previousOwner ||
+      null;
     if (customerId) profilePatch.shopifyCustomerId = customerId;
     if (firstName != null && String(firstName).trim()) {
       profilePatch.customerFirstName = String(firstName).trim();
@@ -514,50 +841,52 @@ export async function resolveShopperSession({
   action = "get",
   conversationId = null
 } = {}) {
-  const shopperId = resolveShopperId({ anonymousShopperId });
-  if (!shopperId) {
+  const requestedShopperId = resolveShopperId({ anonymousShopperId });
+  if (!requestedShopperId) {
     return { ok: false, error: "shopper_id_required" };
   }
 
   const nowSec = Math.floor(Date.now() / 1000);
-  let shopper = await prisma.shopperCart.findUnique({ where: { id: shopperId } });
+  const customerId = normalizeShopifyCustomerId(shopifyCustomerId);
 
-  if (!shopper) {
-    shopper = await prisma.shopperCart.create({
-      data: {
-        id: shopperId,
-        shopifyCustomerId: shopifyCustomerId ? String(shopifyCustomerId).trim() : null,
-        customerFirstName: firstName ? String(firstName).trim() : null,
-        customerLastName: lastName ? String(lastName).trim() : null,
-        customerLoggedIn: Boolean(shopifyCustomerId),
-        createdAt: nowSec,
-        updatedAt: nowSec
-      }
-    });
-  } else if (shopifyCustomerId) {
-    shopper = await prisma.shopperCart.update({
-      where: { id: shopperId },
-      data: {
-        shopifyCustomerId: String(shopifyCustomerId).trim(),
-        customerLoggedIn: true,
-        ...(firstName ? { customerFirstName: String(firstName).trim() } : {}),
-        ...(lastName ? { customerLastName: String(lastName).trim() } : {}),
-        updatedAt: nowSec
-      }
-    });
+  let shopperId = requestedShopperId;
+  let shopper = null;
+  let merged = false;
+  let switched = false;
+  let previousShopperId = null;
 
-    // Same logged-in customer may have older browser shopper rows — merge them.
-    const otherShoppers = await prisma.shopperCart.findMany({
-      where: {
-        shopifyCustomerId: String(shopifyCustomerId).trim(),
-        NOT: { id: shopperId }
-      },
-      select: { id: true }
+  if (customerId) {
+    const reconciled = await reconcileShopperForCustomer({
+      anonymousShopperId: requestedShopperId,
+      shopifyCustomerId: customerId,
+      firstName,
+      lastName
     });
-    for (const other of otherShoppers) {
-      await mergeShopperCartIds(other.id, shopperId);
+    if (!reconciled?.ok) {
+      return { ok: false, error: reconciled?.error || "reconcile_failed" };
     }
-    shopper = await prisma.shopperCart.findUnique({ where: { id: shopperId } });
+    shopperId = reconciled.shopperId;
+    shopper = reconciled.shopper;
+    merged = Boolean(reconciled.merged);
+    switched = Boolean(reconciled.switched);
+    previousShopperId = reconciled.previousShopperId || null;
+  } else {
+    shopper = await prisma.shopperCart.findUnique({
+      where: { id: shopperId }
+    });
+    if (!shopper) {
+      shopper = await prisma.shopperCart.create({
+        data: {
+          id: shopperId,
+          shopifyCustomerId: null,
+          customerFirstName: firstName ? String(firstName).trim() : null,
+          customerLastName: lastName ? String(lastName).trim() : null,
+          customerLoggedIn: false,
+          createdAt: nowSec,
+          updatedAt: nowSec
+        }
+      });
+    }
   }
 
   const normalizedAction = String(action || "get").toLowerCase();
@@ -590,7 +919,7 @@ export async function resolveShopperSession({
       data: { activeConversationId: targetId, updatedAt: nowSec }
     });
   } else {
-    let activeId = shopper.activeConversationId
+    let activeId = shopper?.activeConversationId
       ? String(shopper.activeConversationId)
       : null;
 
@@ -638,7 +967,10 @@ export async function resolveShopperSession({
     ok: true,
     shopper_id: shopperId,
     conversation_id: shopper.activeConversationId || null,
-    sessions
+    sessions,
+    merged,
+    switched,
+    previous_shopper_id: previousShopperId
   };
 }
 
@@ -936,6 +1268,23 @@ export async function setConversationCustomerProfile(
 
     void shopDomain; // single-shop; kept for caller compatibility
 
+    // Refuse to stamp a different Shopify customer onto an already-owned cart.
+    const existingProfile = await getConversationCustomerProfile(conversationId);
+    const existingCustomer = normalizeShopifyCustomerId(
+      existingProfile?.shopifyCustomerId
+    );
+    if (
+      existingCustomer &&
+      normalizedCustomerId &&
+      existingCustomer !== normalizedCustomerId
+    ) {
+      console.warn(
+        "[shopper-cart] profile update blocked: owned by other customer",
+        { conversationId, existingCustomer, normalizedCustomerId }
+      );
+      return null;
+    }
+
     // Only re-key when we have a real shopper identity (customer or anon).
     // Never force a conversation-only re-key here when identity is missing —
     // that would break shared carts. Pass anonymousShopperId/customer id to re-key.
@@ -1010,7 +1359,13 @@ function extractPlainUserText(content) {
  */
 export async function claimConversationForCustomer(
   conversationId,
-  { shopifyCustomerId, shopDomain = null, firstName = null, lastName = null } = {}
+  {
+    shopifyCustomerId,
+    shopDomain = null,
+    firstName = null,
+    lastName = null,
+    anonymousShopperId = null
+  } = {}
 ) {
   const id = String(conversationId || "").trim();
   const customerId = String(shopifyCustomerId || "").trim();
@@ -1040,14 +1395,44 @@ export async function claimConversationForCustomer(
       (!normalizedFirst || profile.firstName === normalizedFirst) &&
       (!normalizedLast || profile.lastName === normalizedLast);
 
-    await bindConversationShopper(id, {
+    const meta = await getConversationShopperMeta(id);
+    const localShopperId =
+      String(anonymousShopperId || "").trim() || meta?.shopperId || null;
+
+    let targetShopperId = localShopperId;
+    let merged = false;
+    let switched = false;
+
+    if (localShopperId) {
+      const reconciled = await reconcileShopperForCustomer({
+        anonymousShopperId: localShopperId,
+        shopifyCustomerId: customerId,
+        firstName: normalizedFirst,
+        lastName: normalizedLast
+      });
+      if (reconciled?.ok && reconciled.shopperId) {
+        targetShopperId = reconciled.shopperId;
+        merged = Boolean(reconciled.merged);
+        switched = Boolean(reconciled.switched);
+      }
+    }
+
+    const boundId = await bindConversationShopper(id, {
       shopifyCustomerId: customerId,
+      anonymousShopperId: targetShopperId,
       firstName: normalizedFirst,
       lastName: normalizedLast,
       loggedIn: true
     });
 
-    return { ok: true, conversationId: id, claimed: !alreadyLinked && !ownedBy };
+    return {
+      ok: true,
+      conversationId: id,
+      claimed: !alreadyLinked && !ownedBy,
+      shopper_id: boundId || targetShopperId || null,
+      merged,
+      switched
+    };
   } catch (error) {
     console.error("Error claiming conversation for customer:", error);
     return { ok: false, reason: "error" };

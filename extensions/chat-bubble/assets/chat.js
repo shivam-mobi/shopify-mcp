@@ -34,6 +34,8 @@
   const CHAT_EXPANDED_KEY = 'shopAiChatExpanded';
   const BUBBLE_CALLOUT_KEY = 'shopAiBubbleCalloutSeen';
   const SHOPPER_ID_KEY = 'shopAiShopperId';
+  // Last Shopify customer id seen in this browser — used to clear local chats on logout / switch.
+  const LAST_CUSTOMER_KEY = 'shopAiLastCustomerId';
   // Per-shopper cache so home/recent chats paint before shopper-session returns.
   const SESSIONS_CACHE_PREFIX = 'shopAiSessions:';
   const ACTIVE_CONVERSATION_PREFIX = 'shopAiActiveConversation:';
@@ -53,20 +55,133 @@
     }
   }
 
+  function createFreshShopperId() {
+    return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `anon_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function clearShopperLocalCache(shopperId) {
+    const id = String(shopperId || '').trim();
+    if (!id) return;
+    try {
+      localStorage.removeItem(SESSIONS_CACHE_PREFIX + id);
+      localStorage.removeItem(ACTIVE_CONVERSATION_PREFIX + id);
+      sessionStorage.removeItem(SESSIONS_CACHE_PREFIX + id);
+      sessionStorage.removeItem(ACTIVE_CONVERSATION_PREFIX + id);
+    } catch (e) {
+      // ignore
+    }
+  }
+
   function getOrCreateShopperId() {
     try {
       let id = localStorage.getItem(SHOPPER_ID_KEY);
       if (!id || !String(id).trim()) {
-        id =
-          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : `anon_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        id = createFreshShopperId();
         localStorage.setItem(SHOPPER_ID_KEY, id);
       }
       return String(id).trim();
     } catch (e) {
       return `anon_${Date.now()}`;
     }
+  }
+
+  /**
+   * After server merge/switch, adopt the canonical shopper id in localStorage.
+   */
+  function setShopperIdFromServer(nextId) {
+    const id = String(nextId || '').trim();
+    if (!id) return getOrCreateShopperId();
+    try {
+      const prev = String(localStorage.getItem(SHOPPER_ID_KEY) || '').trim();
+      if (prev && prev !== id) {
+        clearShopperLocalCache(prev);
+      }
+      localStorage.setItem(SHOPPER_ID_KEY, id);
+    } catch (e) {
+      // ignore
+    }
+    return id;
+  }
+
+  /**
+   * On logout: drop customer-owned local chats and rotate to a fresh guest shopper id.
+   * On customer switch: drop local chats; server reconcile will return the right shopper id.
+   */
+  function syncAuthBoundaryOnLoad() {
+    let lastCustomer = '';
+    try {
+      lastCustomer = String(localStorage.getItem(LAST_CUSTOMER_KEY) || '').trim();
+    } catch (e) {
+      lastCustomer = '';
+    }
+
+    const currentCustomer = getLoggedInCustomerId();
+    const currentShopperId = (() => {
+      try {
+        return String(localStorage.getItem(SHOPPER_ID_KEY) || '').trim();
+      } catch (e) {
+        return '';
+      }
+    })();
+
+    if (lastCustomer && lastCustomer !== currentCustomer) {
+      // Logout or switched Shopify customer — local session list belongs to the old customer.
+      if (currentShopperId) {
+        clearShopperLocalCache(currentShopperId);
+      }
+      clearConversationId();
+      sessionsMemory = [];
+
+      if (!currentCustomer) {
+        // Fully logged out → new guest shopper so new chats don't attach to the old cart.
+        const freshId = createFreshShopperId();
+        try {
+          localStorage.setItem(SHOPPER_ID_KEY, freshId);
+          localStorage.removeItem(LAST_CUSTOMER_KEY);
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+
+    try {
+      if (currentCustomer) {
+        localStorage.setItem(LAST_CUSTOMER_KEY, currentCustomer);
+      } else if (!lastCustomer) {
+        localStorage.removeItem(LAST_CUSTOMER_KEY);
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function applyShopperSessionResponse(data) {
+    if (!data || typeof data !== 'object') return data;
+
+    const serverShopperId = String(data.shopper_id || '').trim();
+    if (serverShopperId) {
+      setShopperIdFromServer(serverShopperId);
+    }
+
+    if (data.merged || data.switched) {
+      // Canonical cart may not include the conversation that was open under the old id.
+      if (Object.prototype.hasOwnProperty.call(data, 'conversation_id')) {
+        setConversationId(data.conversation_id || null);
+      } else {
+        clearConversationId();
+      }
+    } else if (Object.prototype.hasOwnProperty.call(data, 'conversation_id')) {
+      setConversationId(data.conversation_id || null);
+    }
+
+    if (Array.isArray(data.sessions)) {
+      sessionsMemory = data.sessions.map(normalizeSessionEntry).filter(Boolean);
+      persistSessionsToStorage(sessionsMemory);
+    }
+
+    return data;
   }
 
   function sessionsCacheKey(shopperId = getOrCreateShopperId()) {
@@ -218,14 +333,7 @@
     }
 
     const data = await response.json();
-    if (Object.prototype.hasOwnProperty.call(data, 'conversation_id')) {
-      setConversationId(data.conversation_id || null);
-    }
-    if (Array.isArray(data.sessions)) {
-      sessionsMemory = data.sessions.map(normalizeSessionEntry).filter(Boolean);
-      persistSessionsToStorage(sessionsMemory);
-    }
-    return data;
+    return applyShopperSessionResponse(data);
   }
 
   /**
@@ -552,6 +660,15 @@
         }
 
         const data = await response.json();
+        if (Array.isArray(data.claims)) {
+          for (let i = 0; i < data.claims.length; i++) {
+            const claimShopperId = String(data.claims[i]?.shopper_id || '').trim();
+            if (claimShopperId) {
+              setShopperIdFromServer(claimShopperId);
+              break;
+            }
+          }
+        }
         if (Array.isArray(data.sessions)) {
           this.replaceAll(data.sessions);
         }
@@ -2205,6 +2322,26 @@
               ShopAIChat.UI.renderSessionsList();
             }
             break;
+
+          case 'shopper_switched': {
+            // Conversation belongs to another Shopify customer — adopt reconciled shopper and leave the thread.
+            if (data.shopper_id) {
+              setShopperIdFromServer(data.shopper_id);
+            }
+            clearConversationId();
+            sessionsMemory = [];
+            persistSessionsToStorage([]);
+            ShopAIChat.UI.clearMessages();
+            ShopAIChat.UI.removeTypingIndicator();
+            ShopAIChat.UI.showHomeView();
+            ShopAIChat.UI.renderSessionsList();
+            if (isCustomerLoggedIn()) {
+              Sessions.syncFromServer()
+                .then(() => ShopAIChat.UI.renderSessionsList())
+                .catch(() => {});
+            }
+            break;
+          }
 
           case 'chunk':
             ShopAIChat.UI.removeTypingIndicator();
@@ -5026,13 +5163,22 @@
       this.ThemeCart.ensureListeners();
       clearLegacyConversationStorage();
 
+      // Logout / customer switch: clear customer-owned local chats before painting cache.
+      syncAuthBoundaryOnLoad();
+
       // Paint home/recent chats from local cache immediately (keyed by shopAiShopperId).
       hydrateShopperCacheFromStorage();
       this.UI.showHomeView();
 
       // One shopper-session call per page load — then rely on localStorage + chat bind.
       resolveShopperSessionOnceOnLoad()
-        .then(() => {
+        .then((data) => {
+          if (data && (data.merged || data.switched)) {
+            this.UI.clearMessages();
+            if (!data.conversation_id) {
+              this.UI.showHomeView();
+            }
+          }
           if (this.UI.currentView === 'home') {
             this.UI.renderSessionsList();
           }

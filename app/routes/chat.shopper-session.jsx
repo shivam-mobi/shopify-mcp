@@ -62,7 +62,10 @@ async function handleShopperSession(request, params) {
     ok: true,
     shopper_id: result.shopper_id,
     conversation_id: result.conversation_id,
-    sessions: result.sessions
+    sessions: result.sessions,
+    merged: Boolean(result.merged),
+    switched: Boolean(result.switched),
+    previous_shopper_id: result.previous_shopper_id || null
   });
 }
 

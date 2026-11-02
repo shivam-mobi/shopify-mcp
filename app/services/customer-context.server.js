@@ -6,7 +6,8 @@ import {
   getConversationCustomerProfile,
   setConversationCustomerProfile,
   claimConversationForCustomer,
-  bindConversationShopper
+  bindConversationShopper,
+  reconcileShopperForCustomer
 } from "../db.server";
 
 export function normalizeCustomerName(value) {
@@ -46,6 +47,51 @@ export async function syncCustomerContextFromRequest(conversationId, body = {}) 
   }
 
   const existing = await getConversationCustomerProfile(conversationId);
+  const existingCustomer = String(existing?.shopifyCustomerId || "").trim();
+  const incomingCustomer = String(incoming.shopifyCustomerId || "").trim();
+
+  // Logged-in as B while this conversation belongs to A — do not mutate it.
+  if (existingCustomer && incomingCustomer && existingCustomer !== incomingCustomer) {
+    let reconciledShopperId = null;
+    if (incoming.anonymousShopperId) {
+      try {
+        const reconciled = await reconcileShopperForCustomer({
+          anonymousShopperId: incoming.anonymousShopperId,
+          shopifyCustomerId: incomingCustomer,
+          firstName: incoming.firstName,
+          lastName: incoming.lastName
+        });
+        if (reconciled?.ok) {
+          reconciledShopperId = reconciled.shopperId || null;
+        }
+      } catch (error) {
+        console.warn(
+          "[shopper-cart] reconcile on owned_by_other failed:",
+          error?.message || error
+        );
+      }
+    }
+
+    return {
+      firstName: incoming.firstName || null,
+      lastName: incoming.lastName || null,
+      loggedIn: true,
+      hasName: Boolean(incoming.firstName || incoming.lastName),
+      shopifyCustomerId: incomingCustomer,
+      shopDomain: incoming.shopDomain || null,
+      anonymousShopperId: incoming.anonymousShopperId || null,
+      blocked: true,
+      reason: "owned_by_other",
+      shopper_id: reconciledShopperId,
+      merged: Boolean(reconciledShopperId),
+      switched: Boolean(
+        reconciledShopperId &&
+          incoming.anonymousShopperId &&
+          reconciledShopperId !== incoming.anonymousShopperId
+      )
+    };
+  }
+
   const merged = {
     firstName: incoming.firstName || existing?.firstName || null,
     lastName: incoming.lastName || existing?.lastName || null,
@@ -66,6 +112,21 @@ export async function syncCustomerContextFromRequest(conversationId, body = {}) 
         merged.shopifyCustomerId !== existing.shopifyCustomerId ||
         merged.shopDomain !== existing.shopDomain));
 
+  // Guest session → login: claim + reconcile into canonical customer cart first.
+  let claimResult = null;
+  if (incoming.shopifyCustomerId) {
+    claimResult = await claimConversationForCustomer(conversationId, {
+      shopifyCustomerId: incoming.shopifyCustomerId,
+      shopDomain: incoming.shopDomain,
+      firstName: merged.firstName,
+      lastName: merged.lastName,
+      anonymousShopperId: incoming.anonymousShopperId
+    });
+  }
+
+  const effectiveShopperId =
+    claimResult?.shopper_id || incoming.anonymousShopperId || null;
+
   if (
     shouldPersist &&
     (merged.firstName ||
@@ -75,17 +136,7 @@ export async function syncCustomerContextFromRequest(conversationId, body = {}) 
   ) {
     await setConversationCustomerProfile(conversationId, {
       ...merged,
-      anonymousShopperId: incoming.anonymousShopperId
-    });
-  }
-
-  // Guest session → login: attach this conversation to the customer
-  if (incoming.shopifyCustomerId) {
-    await claimConversationForCustomer(conversationId, {
-      shopifyCustomerId: incoming.shopifyCustomerId,
-      shopDomain: incoming.shopDomain,
-      firstName: merged.firstName,
-      lastName: merged.lastName
+      anonymousShopperId: effectiveShopperId
     });
   }
 
@@ -94,7 +145,7 @@ export async function syncCustomerContextFromRequest(conversationId, body = {}) 
   try {
     await bindConversationShopper(conversationId, {
       shopifyCustomerId: merged.shopifyCustomerId || incoming.shopifyCustomerId,
-      anonymousShopperId: incoming.anonymousShopperId,
+      anonymousShopperId: effectiveShopperId,
       firstName: merged.firstName,
       lastName: merged.lastName,
       loggedIn: merged.loggedIn
@@ -106,7 +157,12 @@ export async function syncCustomerContextFromRequest(conversationId, body = {}) 
     );
   }
 
-  return merged;
+  return {
+    ...merged,
+    shopper_id: effectiveShopperId,
+    merged: Boolean(claimResult?.merged),
+    switched: Boolean(claimResult?.switched)
+  };
 }
 
 export function buildCustomerDisplayName({ firstName, lastName } = {}) {

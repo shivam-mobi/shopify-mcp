@@ -261,6 +261,19 @@ async function handleWelcomeSession({
     }
 
     const customerProfile = await syncCustomerContextFromRequest(conversationId, body);
+
+    if (customerProfile?.blocked && customerProfile?.reason === "owned_by_other") {
+      stream.sendMessage({
+        type: "shopper_switched",
+        reason: "owned_by_other",
+        shopper_id: customerProfile.shopper_id || null,
+        merged: Boolean(customerProfile.merged),
+        switched: Boolean(customerProfile.switched)
+      });
+      stream.sendMessage({ type: "end_turn" });
+      return;
+    }
+
     const welcomeMessages = buildWelcomePromptMessages(customerProfile, {
       welcomeTemplate: body.welcome_template
     });
@@ -448,6 +461,20 @@ async function handleChatSession({
     let customerAddressesToDisplay = null;
 
     const customerProfile = await syncCustomerContextFromRequest(conversationId, body);
+
+    // Different Shopify customer opened a chat owned by someone else — do not write to it.
+    if (customerProfile?.blocked && customerProfile?.reason === "owned_by_other") {
+      stream.sendMessage({ type: "id", conversation_id: conversationId });
+      stream.sendMessage({
+        type: "shopper_switched",
+        reason: "owned_by_other",
+        shopper_id: customerProfile.shopper_id || null,
+        merged: Boolean(customerProfile.merged),
+        switched: Boolean(customerProfile.switched)
+      });
+      stream.sendMessage({ type: "end_turn" });
+      return;
+    }
 
     // Save user message to the database
     const userDbMessage = await saveMessage(conversationId, 'user', userMessage);

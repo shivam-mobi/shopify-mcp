@@ -93,7 +93,9 @@ export async function action({ request }) {
       shopifyCustomerId: customerId,
       shopDomain: shop || null,
       firstName,
-      lastName
+      lastName,
+      anonymousShopperId:
+        String(body.shopper_id || body.anonymous_shopper_id || "").trim() || null
     });
     claims.push({ conversationId, ...result });
   }
