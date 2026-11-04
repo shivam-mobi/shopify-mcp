@@ -2,7 +2,7 @@
  * get_product_details — local catalog details for products shown by search_product.
  */
 
-import { getLocalProductDetails } from "./local-catalog-search.server.js";
+import { getLocalProductDetails } from "./product-search/product-cards.server.js";
 
 const LOOKUP_CATALOG_NAME = "lookup_catalog";
 const GET_PRODUCT_DETAILS = "get_product_details";

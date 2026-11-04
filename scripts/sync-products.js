@@ -10,6 +10,7 @@
  */
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
+import { randomUUID } from "crypto";
 import { PrismaClient } from "@prisma/client";
 import dotenv from "dotenv";
 
@@ -48,8 +49,6 @@ const CATEGORIES = [
   { handle: "eau-de-parfum-edp-s", name: "Eau de Parfum (EDP)" },
   { handle: "eau-de-toilette-edt-s", name: "Eau de Toilette (EDT)" }
 ];
-
-const CATEGORY_HANDLES = new Set(CATEGORIES.map((c) => c.handle));
 
 const FRAGRANCE_FAMILY_GID_LABELS = {
   "gid://shopify/Metaobject/123821228165": "Fresh",
@@ -99,6 +98,7 @@ const lookups = {
   note: new Map(),
   noteType: new Map(),
   category: new Map(),
+  tag: new Map(),
   faq: new Map()
 };
 
@@ -118,6 +118,8 @@ const stats = {
   faqs: 0,
   reviews: 0,
   categoryLinks: 0,
+  tags: 0,
+  tagLinks: 0,
   errors: 0
 };
 
@@ -513,7 +515,7 @@ function productsQuery(includeMetaobjectRefs) {
           status
           tags
           updatedAt
-          collections(first: 50) {
+          collections(first: 100) {
             nodes { handle title }
           }
           images(first: 30) {
@@ -540,6 +542,19 @@ function productsQuery(includeMetaobjectRefs) {
     }
   `;
 }
+
+const ALL_COLLECTIONS_QUERY = `
+  query GetAllCollections($after: String) {
+    collections(first: 250, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id
+        handle
+        title
+      }
+    }
+  }
+`;
 
 const COLLECTION_PRODUCTS_QUERY = `
   query GetCollectionProducts($handle: String!, $after: String) {
@@ -678,17 +693,91 @@ async function seedNoteTypes() {
   }
 }
 
-async function seedCategories() {
-  for (const cat of CATEGORIES) {
-    const url = `${STOREFRONT_URL}/collections/${cat.handle}`;
-    const row = await prisma.productCategory.upsert({
-      where: { handle: cat.handle },
-      update: { name: cat.name, url },
-      create: { name: cat.name, handle: cat.handle, url }
-    });
-    lookups.category.set(cat.handle, row);
+async function ensureTables() {
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS \`product_tags\` (
+      \`id\` varchar(191) COLLATE utf8mb4_unicode_ci NOT NULL,
+      \`name\` varchar(191) COLLATE utf8mb4_unicode_ci NOT NULL,
+      \`created_at\` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      \`updated_at\` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (\`id\`),
+      UNIQUE KEY \`product_tags_name_key\` (\`name\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS \`product_tag_products\` (
+      \`id\` varchar(191) COLLATE utf8mb4_unicode_ci NOT NULL,
+      \`product_id\` varchar(191) COLLATE utf8mb4_unicode_ci NOT NULL,
+      \`tag_id\` varchar(191) COLLATE utf8mb4_unicode_ci NOT NULL,
+      \`created_at\` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      \`updated_at\` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (\`id\`),
+      UNIQUE KEY \`product_tag_products_product_id_tag_id_key\` (\`product_id\`,\`tag_id\`),
+      KEY \`product_tag_products_tag_id_idx\` (\`tag_id\`),
+      KEY \`product_tag_products_product_id_idx\` (\`product_id\`),
+      CONSTRAINT \`product_tag_products_tag_id_fkey\` FOREIGN KEY (\`tag_id\`) REFERENCES \`product_tags\` (\`id\`) ON DELETE CASCADE ON UPDATE CASCADE,
+      CONSTRAINT \`product_tag_products_product_id_fkey\` FOREIGN KEY (\`product_id\`) REFERENCES \`products\` (\`id\`) ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+  console.log("[sync-products] Ensured tables product_tags and product_tag_products exist");
+}
+
+async function loadExistingTags() {
+  try {
+    const rows = await prisma.$queryRawUnsafe(`SELECT id, name FROM product_tags`);
+    for (const row of rows) {
+      lookups.tag.set(row.name.toLowerCase(), row.id);
+    }
+    console.log(`[sync-products] Loaded ${rows.length} existing tags`);
+  } catch (err) {
+    console.warn(`[sync-products] Warning loading existing tags: ${err.message}`);
   }
-  console.log(`[sync-products] Seeded ${CATEGORIES.length} categories`);
+}
+
+async function seedAllCategories() {
+  console.log("[sync-products] Fetching and dumping all collections from Shopify into product_categories...");
+  const existingCats = await prisma.productCategory.findMany();
+  for (const cat of existingCats) {
+    lookups.category.set(cat.handle, cat);
+  }
+
+  let after = null;
+  let count = 0;
+  try {
+    while (true) {
+      const data = await shopifyGraphql(ALL_COLLECTIONS_QUERY, { after });
+      const conn = data?.collections;
+      const nodes = conn?.nodes || [];
+      for (const col of nodes) {
+        if (!col?.handle) continue;
+        const name = col.title || col.handle;
+        const url = `${STOREFRONT_URL}/collections/${col.handle}`;
+        const row = await prisma.productCategory.upsert({
+          where: { handle: col.handle },
+          update: { name, url },
+          create: { name, handle: col.handle, url }
+        });
+        lookups.category.set(col.handle, row);
+        count += 1;
+      }
+      if (!conn?.pageInfo?.hasNextPage) break;
+      after = conn.pageInfo.endCursor;
+      await sleep(80);
+    }
+    console.log(`[sync-products] Dumped ${count} total collections from Shopify into product_categories`);
+  } catch (err) {
+    console.warn(`[sync-products] Error fetching all collections from Shopify: ${err.message}. Seeding fallback list.`);
+    for (const cat of CATEGORIES) {
+      const url = `${STOREFRONT_URL}/collections/${cat.handle}`;
+      const row = await prisma.productCategory.upsert({
+        where: { handle: cat.handle },
+        update: { name: cat.name, url },
+        create: { name: cat.name, handle: cat.handle, url }
+      });
+      lookups.category.set(cat.handle, row);
+    }
+  }
 }
 
 async function fetchAllProducts({ limit, handle, query, includeMetaobjectRefs }) {
@@ -718,56 +807,14 @@ async function fetchAllProducts({ limit, handle, query, includeMetaobjectRefs })
   return products;
 }
 
-async function fetchCollectionMembership(limitMode) {
-  const membership = new Map();
-  if (limitMode) return membership;
-
-  for (const cat of CATEGORIES) {
-    let after = null;
-    let found = 0;
-    while (true) {
-      let data;
-      try {
-        data = await shopifyGraphql(COLLECTION_PRODUCTS_QUERY, {
-          handle: cat.handle,
-          after
-        });
-      } catch (err) {
-        console.warn(
-          `[sync-products] Could not load collection ${cat.handle}: ${err.message.slice(0, 300)}`
-        );
-        break;
-      }
-      const collection = data?.collectionByHandle;
-      if (!collection) {
-        console.warn(`[sync-products] Collection not found: ${cat.handle}`);
-        break;
-      }
-      if (collection.title) {
-        await prisma.productCategory.update({
-          where: { handle: cat.handle },
-          data: { name: collection.title }
-        });
-      }
-      for (const node of collection.products?.nodes || []) {
-        const id = numericId(node.id);
-        if (!membership.has(id)) membership.set(id, new Set());
-        membership.get(id).add(cat.handle);
-        found += 1;
-      }
-      if (!collection.products?.pageInfo?.hasNextPage) break;
-      after = collection.products.pageInfo.endCursor;
-      await sleep(120);
-    }
-    console.log(`[sync-products] Collection ${cat.handle}: ${found} products`);
-  }
-  return membership;
+async function fetchCollectionMembership() {
+  return new Map();
 }
 
 function handlesFromProduct(product) {
   const handles = new Set();
   for (const col of product.collections?.nodes || []) {
-    if (col?.handle && CATEGORY_HANDLES.has(col.handle)) handles.add(col.handle);
+    if (col?.handle) handles.add(col.handle);
   }
   return handles;
 }
@@ -971,10 +1018,96 @@ async function syncReview(productId, summary) {
   stats.reviews += 1;
 }
 
-async function syncCategories(productId, handles) {
-  const categoryIds = [...handles]
-    .map((handle) => lookups.category.get(handle)?.id)
-    .filter(Boolean);
+async function syncTags(productId, tags) {
+  if (!tags || !tags.length) {
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM product_tag_products WHERE product_id = ?`,
+      productId
+    );
+    return 0;
+  }
+
+  const tagIds = [];
+  const uniqueTags = [...new Set(tags.map((t) => String(t).trim()).filter(Boolean))];
+
+  for (const tagName of uniqueTags) {
+    const key = tagName.toLowerCase();
+    let tagId = lookups.tag.get(key);
+    if (!tagId) {
+      const existing = await prisma.$queryRawUnsafe(
+        `SELECT id FROM product_tags WHERE name = ? LIMIT 1`,
+        tagName
+      );
+      if (existing.length > 0) {
+        tagId = existing[0].id;
+      } else {
+        const newId = randomUUID();
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO product_tags (id, name, created_at, updated_at) VALUES (?, ?, NOW(3), NOW(3))
+           ON DUPLICATE KEY UPDATE updated_at = NOW(3)`,
+          newId,
+          tagName
+        );
+        const current = await prisma.$queryRawUnsafe(
+          `SELECT id FROM product_tags WHERE name = ? LIMIT 1`,
+          tagName
+        );
+        tagId = current.length > 0 ? current[0].id : newId;
+        stats.tags += 1;
+      }
+      lookups.tag.set(key, tagId);
+    }
+    tagIds.push(tagId);
+  }
+
+  if (tagIds.length > 0) {
+    const placeholders = tagIds.map(() => "?").join(", ");
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM product_tag_products WHERE product_id = ? AND tag_id NOT IN (${placeholders})`,
+      productId,
+      ...tagIds
+    );
+  } else {
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM product_tag_products WHERE product_id = ?`,
+      productId
+    );
+  }
+
+  let linked = 0;
+  for (const tagId of tagIds) {
+    const linkId = randomUUID();
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO product_tag_products (id, product_id, tag_id, created_at, updated_at)
+       VALUES (?, ?, ?, NOW(3), NOW(3))
+       ON DUPLICATE KEY UPDATE updated_at = NOW(3)`,
+      linkId,
+      productId,
+      tagId
+    );
+    linked += 1;
+  }
+  return linked;
+}
+
+async function syncCategories(productId, handles, productCollections = []) {
+  const categoryIds = [];
+  for (const handle of handles) {
+    let cat = lookups.category.get(handle);
+    if (!cat) {
+      const colNode = productCollections.find((c) => c.handle === handle);
+      const name = colNode?.title || handle;
+      const url = `${STOREFRONT_URL}/collections/${handle}`;
+      cat = await prisma.productCategory.upsert({
+        where: { handle },
+        update: { name, url },
+        create: { name, handle, url }
+      });
+      lookups.category.set(handle, cat);
+    }
+    if (cat?.id) categoryIds.push(cat.id);
+  }
+
   await prisma.productCategoryProduct.deleteMany({
     where: {
       productId,
@@ -1091,28 +1224,61 @@ async function upsertProduct(product, membership) {
   });
   await syncFaqs(saved.id, shopifyProductId, mf.product_faqs);
   await syncReview(saved.id, parseReviewSummary(mf.product_review_summary?.value));
+  stats.tagLinks += await syncTags(saved.id, tags);
 
   const handles = handlesFromProduct(product);
   for (const handle of membership.get(shopifyProductId) || []) handles.add(handle);
-  await syncCategories(saved.id, handles);
+  await syncCategories(saved.id, handles, product.collections?.nodes || []);
 
   stats.products += 1;
   return saved;
 }
 
 async function databaseTotals() {
-  const [products, variants, images, notes, faqs, faqLinks, reviews, categoryLinks] =
-    await Promise.all([
-      prisma.product.count(),
-      prisma.productVariant.count(),
-      prisma.productImage.count(),
-      prisma.productNote.count(),
-      prisma.productFaq.count(),
-      prisma.productFaqProduct.count(),
-      prisma.productReview.count(),
-      prisma.productCategoryProduct.count()
-    ]);
-  return { products, variants, images, notes, faqs, faqLinks, reviews, categoryLinks };
+  const [
+    products,
+    variants,
+    images,
+    notes,
+    faqs,
+    faqLinks,
+    reviews,
+    categoryLinks,
+    categories
+  ] = await Promise.all([
+    prisma.product.count(),
+    prisma.productVariant.count(),
+    prisma.productImage.count(),
+    prisma.productNote.count(),
+    prisma.productFaq.count(),
+    prisma.productFaqProduct.count(),
+    prisma.productReview.count(),
+    prisma.productCategoryProduct.count(),
+    prisma.productCategory.count()
+  ]);
+
+  let tags = 0;
+  let tagLinks = 0;
+  try {
+    const [t] = await prisma.$queryRawUnsafe(`SELECT COUNT(*) as count FROM product_tags`);
+    const [tl] = await prisma.$queryRawUnsafe(`SELECT COUNT(*) as count FROM product_tag_products`);
+    tags = Number(t?.count || 0);
+    tagLinks = Number(tl?.count || 0);
+  } catch {}
+
+  return {
+    products,
+    variants,
+    images,
+    notes,
+    faqs,
+    faqLinks,
+    reviews,
+    categoryLinks,
+    categories,
+    tags,
+    tagLinks
+  };
 }
 
 async function main() {
@@ -1130,8 +1296,10 @@ async function main() {
   }
 
   try {
+    await ensureTables();
+    await loadExistingTags();
     await seedNoteTypes();
-    await seedCategories();
+    await seedAllCategories();
   } catch (err) {
     if (String(err.message || "").includes("does not exist") || err.code === "P2021") {
       console.error(
@@ -1158,7 +1326,7 @@ async function main() {
     }
   }
 
-  const membership = await fetchCollectionMembership(Boolean(args.limit || args.handle));
+  const membership = await fetchCollectionMembership();
   const fetched = products.length;
   console.log(`[sync-products] Total products fetched from Shopify: ${fetched}`);
   console.log(`[sync-products] Upserting ${fetched} products...`);
@@ -1189,15 +1357,19 @@ async function main() {
   console.log(`  faq links:        ${stats.faqs}`);
   console.log(`  reviews:          ${stats.reviews}`);
   console.log(`  category links:   ${stats.categoryLinks}`);
+  console.log(`  tag links:        ${stats.tagLinks}`);
   console.log("[sync-products] Database totals:");
   console.log(`  products:         ${totals.products}`);
+  console.log(`  categories:       ${totals.categories}`);
+  console.log(`  category links:   ${totals.categoryLinks}`);
+  console.log(`  tags:             ${totals.tags}`);
+  console.log(`  tag links:        ${totals.tagLinks}`);
   console.log(`  variants:         ${totals.variants}`);
   console.log(`  images:           ${totals.images}`);
   console.log(`  notes:            ${totals.notes}`);
   console.log(`  faqs:             ${totals.faqs}`);
   console.log(`  faq links:        ${totals.faqLinks}`);
   console.log(`  reviews:          ${totals.reviews}`);
-  console.log(`  category links:   ${totals.categoryLinks}`);
 }
 
 main()

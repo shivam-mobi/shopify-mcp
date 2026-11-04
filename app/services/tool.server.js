@@ -20,6 +20,7 @@ import {
 } from "./product-compare.server.js";
 import { applyBuyNowUrlsToProducts } from "./shopify-prefilled-cart.server.js";
 import { normalizeCatalogSearchArgs } from "./catalog-search-args.server.js";
+import { parsePriceRange } from "./product-search/search-product.server.js";
 
 export { normalizeCatalogSearchArgs };
 
@@ -112,12 +113,6 @@ export function createToolService() {
     if (conversationId && isCatalogSearchToolName(toolName)) {
       const cursor = extractCatalogPaginationCursorFromResponse(toolUseResponse);
       await setConversationCatalogPaginationCursor(conversationId, cursor);
-      if (cursor) {
-        console.log("[tool] saved catalog pagination cursor for conversation", {
-          conversationId,
-          cursorLength: cursor.length
-        });
-      }
     }
 
     await addToolResultToHistory(conversationHistory, toolUseId, historyContent, conversationId);
@@ -125,29 +120,31 @@ export function createToolService() {
 
   const processProductSearchResult = (toolUseResponse, toolArgs = null, toolName = null) => {
     try {
-      console.log("Processing product search result");
       const responseData = extractToolResponseData(toolUseResponse);
       const products = extractProductsFromResponse(responseData);
-      const priceFilter = extractPriceFilter(toolArgs);
+      // search_product echoes the filters/sort it applied; prefer those over the raw args.
+      const applied = responseData?.applied;
+      const priceFilter = extractPriceFilter(
+        applied?.filters ? { filters: applied.filters } : toolArgs
+      );
       const genderFilter = extractCatalogGenderFilter(toolArgs);
 
       const catalogProducts = genderFilter
         ? filterProductsByCatalogGender(products, genderFilter)
         : products;
 
-      if (genderFilter) {
-        console.log("[tool] catalog gender tag filter", {
-          gender: genderFilter,
-          before: products.length,
-          after: catalogProducts.length
-        });
-      } else if (isCatalogSearchToolName(toolName)) {
-        console.log("[tool] catalog.filters.gender not set — gender tag filter skipped");
-      }
-
+      const sort = String(applied?.sort || toolArgs?.catalog?.sort || toolArgs?.sort || "").toLowerCase();
+      const priceSort = sort === "price_asc" || sort === "price_desc" ? sort : null;
       const formatted = catalogProducts
-        .map((product) => formatProductData(product, priceFilter))
+        .map((product) => formatProductData(product, priceFilter, priceSort))
         .filter(Boolean);
+      if (priceFilter && formatted.length < catalogProducts.length) {
+        console.warn("[tool] price filter hid cards the search returned — index may be stale, run npm run meili:sync", {
+          priceFilter,
+          returned: catalogProducts.length,
+          shown: formatted.length
+        });
+      }
 
       return enrichProductsWithComparison(formatted);
     } catch (error) {
@@ -213,29 +210,18 @@ export function createToolService() {
     return products.slice(0, maxUiCards);
   };
 
-  /** Read catalog.filters.price (or filters.price) from search tool args. Amounts are minor units. */
+  /**
+   * Budget from search tool args, in cents to match card variant prices.
+   * The tool takes US dollars; parsePriceRange is the same parser the search uses.
+   */
   const extractPriceFilter = (toolArgs) => {
     if (!toolArgs || typeof toolArgs !== "object") return null;
-
-    const price =
-      toolArgs.catalog?.filters?.price ||
-      toolArgs.filters?.price ||
-      null;
-
-    if (!price || typeof price !== "object") return null;
-
-    const minRaw = price.min;
-    const maxRaw = price.max;
-    const min = minRaw == null || minRaw === "" ? null : Number(minRaw);
-    const max = maxRaw == null || maxRaw === "" ? null : Number(maxRaw);
-
-    const hasMin = min != null && Number.isFinite(min);
-    const hasMax = max != null && Number.isFinite(max);
-    if (!hasMin && !hasMax) return null;
-
+    const filters = toolArgs.catalog?.filters || toolArgs.filters || {};
+    const range = parsePriceRange(filters.price, filters);
+    if (!range) return null;
     return {
-      min: hasMin ? min : null,
-      max: hasMax ? max : null
+      min: range.min != null ? Math.round(range.min * 100) : null,
+      max: range.max != null ? Math.round(range.max * 100) : null
     };
   };
 
@@ -271,13 +257,28 @@ export function createToolService() {
         }
       : null;
 
-    const matchInstruction = rankedProducts.length > 0
-      ? "Say matching products were found (generic only), then ask if they want to add one to the cart. Do NOT name brands, titles, or prices in this browse reply."
-      : "No products to show: say you could not find a match and ask them to rephrase.";
+    const searchNote = typeof originalData.note === "string" && originalData.note ? originalData.note : null;
+    const matchInstruction = searchNote
+      ? `FOLLOW the note field first: ${searchNote} `
+      : rankedProducts.length > 0
+        ? "Say matching products were found (generic only), then ask if they want to add one to the cart. Do NOT name brands, titles, or prices in this browse reply."
+        : "No products to show: say you could not find a match and ask them to rephrase.";
+    const isFirstPage = !originalData.pagination?.offset;
+    const pageInstruction = !pagination
+      ? ""
+      : pagination.has_next_page
+        ? ` If the customer asks for more products/results/next page, call ${toolName} again with the same query/filters plus pagination: { cursor } from THIS tool result. ` +
+          "CRITICAL: copy the cursor EXACTLY as the full string value — do not truncate, rewrite, re-encode, shorten, or change any character. A single wrong character causes Malformed cursor and zero products."
+        : rankedProducts.length > 0
+          ? ` has_next_page is false: ${isFirstPage ? `these ${rankedProducts.length} are ALL the matching products` : "this is the last page"}. ` +
+            `If the customer asks for more, do NOT call ${toolName} again with the same search; say that is everything for this search and offer to widen it (similar scents from other brands, or drop a filter).`
+          : "";
 
     const enriched = {
       status: originalData.status || "success",
       source: toolName,
+      ...(originalData.match_quality ? { match_quality: originalData.match_quality } : {}),
+      ...(searchNote ? { note: searchNote } : {}),
       products,
       ...listingMeta,
       ...(pagination ? { pagination } : {}),
@@ -301,17 +302,8 @@ export function createToolService() {
             "If they ask for the best with NO preference, ask one short preference question — do not pick randomly. " +
             "Never dump the full catalog list in chat. " +
             matchInstruction +
-            (pagination
-              ? ` If the customer asks for more products/results/next page and pagination.has_next_page is true, call ${toolName} again with the same query/filters and pagination.cursor from THIS tool result. ` +
-                "CRITICAL: copy pagination.cursor EXACTLY as the full string value — do not truncate, rewrite, re-encode, shorten, or change any character. A single wrong character causes Malformed cursor and zero products."
-              : "")
+            pageInstruction
     };
-
-    console.log("[tool] enriched product listing for LLM history", {
-      source: toolName,
-      count: products.length,
-      first_product_variant_id: listingMeta.first_product_variant_id
-    });
 
     return [{
       type: "text",
@@ -433,10 +425,18 @@ export function createToolService() {
 
   /**
    * Format a catalog product for chat cards.
-   * When priceFilter is set: default to cheapest in-stock variant in range;
-   * drop the product (return null) if none. All variants stay on the card (selectable).
+   * When priceFilter is set: default to the cheapest in-stock variant in range (dearest for
+   * price_desc); drop the product (return null) if none. Without a budget, price sorts still
+   * preselect the cheapest / dearest in-stock size so the card matches the list order.
+   * All variants stay on the card (selectable).
    */
-  const formatProductData = (product, priceFilter = null) => {
+  const formatProductData = (product, priceFilter = null, priceSort = null) => {
+    const byPrice = (a, b) => {
+      const diff =
+        (a.priceAmountCents ?? Number.POSITIVE_INFINITY) -
+        (b.priceAmountCents ?? Number.POSITIVE_INFINITY);
+      return priceSort === "price_desc" ? -diff : diff;
+    };
     const rawVariants = Array.isArray(product.variants)
       ? product.variants
       : product.variant
@@ -461,26 +461,22 @@ export function createToolService() {
         return null;
       }
 
-      selectedVariant = inRangeAvailable
-        .slice()
-        .sort(
-          (a, b) =>
-            (a.priceAmountCents ?? Number.POSITIVE_INFINITY) -
-            (b.priceAmountCents ?? Number.POSITIVE_INFINITY)
-        )[0];
+      selectedVariant = inRangeAvailable.slice().sort(byPrice)[0];
 
-      // Sort chips: in-range in-stock first (cheapest first), then the rest
+      // Sort chips: in-range in-stock first (in the selection order), then the rest
       variants.sort((a, b) => {
         const aIn =
           a.available && isPriceInFilterRange(a.priceAmountCents, priceFilter);
         const bIn =
           b.available && isPriceInFilterRange(b.priceAmountCents, priceFilter);
         if (aIn !== bIn) return aIn ? -1 : 1;
-        return (
-          (a.priceAmountCents ?? Number.POSITIVE_INFINITY) -
-          (b.priceAmountCents ?? Number.POSITIVE_INFINITY)
-        );
+        return byPrice(a, b);
       });
+    } else if (priceSort) {
+      selectedVariant =
+        variants.filter((variant) => variant.available).sort(byPrice)[0] ||
+        variants[0] ||
+        null;
     } else {
       // Prefer first in-stock variant so cards don't default to an OOS size
       selectedVariant =
@@ -633,6 +629,7 @@ export function createToolService() {
             : Number.isFinite(Number(product.score))
               ? Number(product.score)
               : null,
+      match_type: product.match_type || null,
       fragrance_family: product.fragrance_family || null,
       scent_type: product.scent_type || null,
       applicable_offer: product.applicable_offer || null,

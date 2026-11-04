@@ -60,10 +60,10 @@ import {
   isCatalogSearchWrapperTool
 } from "../services/catalog-search-tools.server.js";
 import {
-  getLocalCatalogSearchTools,
-  isLocalCatalogSearchTool,
-  callLocalCatalogSearchTool
-} from "../services/local-catalog-search-tools.server.js";
+  getSearchProductTools,
+  isSearchProductTool,
+  callSearchProductTool
+} from "../services/product-search/search-product-tool.server.js";
 import { logEmptyToolResultIfNeeded } from "../services/tool-empty-log.server.js";
 import { storeToolEmptyResultLog } from "../db.server.js";
 import {
@@ -418,7 +418,7 @@ async function handleChatSession({
     }
 
     const cartWrapperTools = getCartWrapperTools();
-    const localCatalogSearchTools = getLocalCatalogSearchTools();
+    const localCatalogSearchTools = getSearchProductTools();
     const storePolicyTools = getStorePolicyTools();
     const storefrontCatalogTools = getStorefrontCatalogTools();
     const loggedInCustomerId = String(
@@ -613,7 +613,6 @@ async function handleChatSession({
             const toolUseMessage = `Calling tool: ${toolName} with arguments: ${JSON.stringify(toolArgs)}`;
 
             if (AppConfig.tools.showToolCallsInChat) {
-              console.log("[chat] tool_use SSE → client", { toolName, toolArgs });
               stream.sendMessage({
                 type: 'tool_use',
                 tool_use_message: toolUseMessage,
@@ -683,15 +682,15 @@ async function handleChatSession({
                 toolUseResponse = await callStorefrontCatalogTool(toolName, toolArgs);
                 console.log("[chat] storefront catalog tool done", { toolName });
               } else if (
-                isLocalCatalogSearchTool(toolName) ||
+                isSearchProductTool(toolName) ||
                 isCatalogSearchWrapperTool(toolName) ||
                 toolName === "search_shop_catalog"
               ) {
-                console.log("[chat] local catalog search invoke", { toolName, toolArgs });
-                toolUseResponse = await callLocalCatalogSearchTool(toolArgs, {
+                toolUseResponse = await callSearchProductTool(toolArgs, {
+                  conversationId,
+                  shopperMessage: userMessage,
                   shopperText: recentShopperSearchText(conversationHistory, userMessage)
                 });
-                console.log("[chat] local catalog search done", { toolName });
               } else if (isCartWrapperTool(toolName)) {
                 console.log("[chat] cart wrapper invoke", { toolName, toolArgs });
                 toolUseResponse = await callCartWrapperTool(
@@ -876,16 +875,6 @@ async function handleChatSession({
     // Send product results if available
     if (productsToDisplay.length > 0) {
       productsToDisplay = enrichProductsWithComparison(productsToDisplay);
-      console.log(
-        "[chat] product_results to client:",
-        productsToDisplay.map((p) => ({
-          title: p.title,
-          brand: p.brand || p.vendor || null,
-          inStock: p.inStock,
-          similarity:
-            typeof p.similarity === "number" ? Number(p.similarity.toFixed(4)) : p.similarity ?? null
-        }))
-      );
       stream.sendMessage({
         type: 'product_results',
         products: productsToDisplay
