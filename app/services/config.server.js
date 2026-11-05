@@ -103,7 +103,9 @@ export const AppConfig = {
     conversationStorage:
       process.env.CHAT_CONVERSATION_STORAGE === "sessionStorage"
         ? "sessionStorage"
-        : "localStorage"
+        : "localStorage",
+    /** Number of recent messages to send to the LLM (keeps context window small and focused) */
+    maxHistoryMessages: Number(process.env.CHAT_MAX_HISTORY_MESSAGES || 5)
   },
 
   /**

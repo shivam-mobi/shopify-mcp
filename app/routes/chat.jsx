@@ -501,28 +501,48 @@ async function handleChatSession({
 
     const activeCartId = await getConversationCartId(conversationId);
     const activeCartContext = buildActiveCartContextMessage(activeCartId);
-    if (activeCartContext) {
-      conversationHistory.unshift(activeCartContext);
-    }
-
     const shippingAddressHint = buildShippingAddressHintMessage(userMessage);
-    if (shippingAddressHint) {
-      conversationHistory.unshift(shippingAddressHint);
-    }
-
     const shippingEmailHint = buildShippingEmailHintMessage(userMessage);
-    if (shippingEmailHint) {
-      conversationHistory.unshift(shippingEmailHint);
-    }
-
     const customerContextHint = buildCustomerContextHintMessage(customerProfile);
-    if (customerContextHint) {
-      conversationHistory.unshift(customerContextHint);
+    const greetingHint = buildGreetingHintMessage(userMessage, customerProfile);
+
+    // Retain only the most recent messages (default: last 5 messages)
+    // and extract a concise summary of older turns so context memory is preserved without token bloat.
+    const totalLoadedMessages = conversationHistory.length;
+    const maxMessages = AppConfig.chat?.maxHistoryMessages || 5;
+    const { recent, older } = trimToRecentMessages(conversationHistory, maxMessages);
+    conversationHistory = recent;
+
+    // Merge customer, cart, earlier conversation summary, and turn-specific hints
+    // into a unified system context instead of polluting the message history with pseudo-user turns.
+    const systemContextSections = [];
+    if (customerContextHint?.content) {
+      systemContextSections.push(`### Customer Context:\n${customerContextHint.content}`);
+    }
+    if (activeCartContext?.content) {
+      systemContextSections.push(`### Cart Context:\n${activeCartContext.content}`);
     }
 
-    const greetingHint = buildGreetingHintMessage(userMessage, customerProfile);
-    if (greetingHint) {
-      conversationHistory.unshift(greetingHint);
+    const olderSummary = buildOlderConversationSummary(older);
+    if (olderSummary) {
+      systemContextSections.push(`### Earlier Conversation Summary (for context):\n${olderSummary}`);
+    }
+
+    if (shippingAddressHint?.content) {
+      systemContextSections.push(`### Shipping Address Hint:\n${shippingAddressHint.content}`);
+    }
+    if (shippingEmailHint?.content) {
+      systemContextSections.push(`### Shipping Email Hint:\n${shippingEmailHint.content}`);
+    }
+    if (greetingHint?.content) {
+      systemContextSections.push(`### Greeting Hint:\n${greetingHint.content}`);
+    }
+    const systemContext = systemContextSections.join("\n\n");
+
+    if (totalLoadedMessages > conversationHistory.length) {
+      console.log(
+        `[chat] context window optimized: trimmed from ${totalLoadedMessages} to ${conversationHistory.length} messages (last ~${maxMessages} messages, summarized ${older.length} older messages)`
+      );
     }
 
     // Execute the conversation stream
@@ -540,7 +560,8 @@ async function handleChatSession({
           messages: conversationHistory,
           promptType,
           tools: allTools,
-          conversationId
+          conversationId,
+          systemContext
         },
         {
           // Handle text chunks
@@ -1031,6 +1052,177 @@ function isProductResultsOnlyMessage(content) {
 function stripProductResultsBlocks(content) {
   if (!Array.isArray(content)) return content;
   return content.filter((block) => block?.type !== "product_results");
+}
+
+/**
+ * Formats a concise 1-line action description for a tool call in older history.
+ */
+function summarizeToolCallAction(name = "", rawArgs = {}) {
+  let args = rawArgs;
+  if (typeof args === "string") {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      args = {};
+    }
+  }
+
+  if (name === "search_product" || name === "search_catalog" || name === "search_shop_catalog") {
+    const details = [];
+    if (args.query) details.push(`query: "${args.query}"`);
+    if (args.brand) details.push(`brand: ${args.brand}`);
+    if (args.gender) details.push(`gender: ${args.gender}`);
+    if (args.filters?.categories?.length) details.push(`categories: ${args.filters.categories.join(", ")}`);
+    if (args.categories?.length) details.push(`categories: ${args.categories.join(", ")}`);
+    if (args.filters?.kids || args.kids) details.push("kids");
+    if (args.on_sale) details.push("on sale");
+    return details.length ? `Searched products (${details.join(", ")})` : "Searched catalog";
+  }
+
+  if (name === "add_to_cart") {
+    return "Added item to cart";
+  }
+  if (name === "get_my_cart") {
+    return "Checked cart contents";
+  }
+  if (name === "get_product_details") {
+    return "Checked product details";
+  }
+  if (name === "set_cart_shipping") {
+    return "Updated shipping address";
+  }
+  if (name.includes("policy") || name.includes("articles") || name.includes("faqs")) {
+    return "Checked store policies/FAQ";
+  }
+  if (name === "get_customer_addresses") {
+    return "Looked up saved addresses";
+  }
+  return name ? `Used tool: ${name}` : "";
+}
+
+/**
+ * Extracts distinct tool actions from an assistant message (supports both tool_calls and content blocks).
+ */
+function extractActionsFromAssistant(msg = {}) {
+  const actions = [];
+  if (Array.isArray(msg.tool_calls)) {
+    for (const tc of msg.tool_calls) {
+      const name = tc?.function?.name || tc?.name || "";
+      const args = tc?.function?.arguments || tc?.input || {};
+      const action = summarizeToolCallAction(name, args);
+      if (action && !actions.includes(action)) actions.push(action);
+    }
+  }
+  if (Array.isArray(msg.content)) {
+    for (const block of msg.content) {
+      if (block?.type === "tool_use") {
+        const action = summarizeToolCallAction(block.name, block.input || {});
+        if (action && !actions.includes(action)) actions.push(action);
+      }
+    }
+  }
+  return actions;
+}
+
+/**
+ * Builds a compact, deterministic bullet-point summary of older conversation turns
+ * to preserve shopper intent and memory without bloating the context window with raw product JSON.
+ */
+function buildOlderConversationSummary(olderMessages = [], maxEntries = 6) {
+  if (!Array.isArray(olderMessages) || olderMessages.length === 0) return "";
+
+  const turns = [];
+  let currentTurn = null;
+
+  for (const msg of olderMessages) {
+    if (msg?.role === "user") {
+      let text = "";
+      if (typeof msg.content === "string") {
+        text = msg.content.trim();
+      } else if (Array.isArray(msg.content)) {
+        text = msg.content
+          .map((b) => (typeof b === "string" ? b : b?.text || ""))
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+      }
+
+      // Skip internal payloads, tool responses, or system hints stored with user role
+      if (
+        !text ||
+        text.startsWith("[{") ||
+        text.startsWith("{\"status\"") ||
+        text.startsWith("The customer is a guest") ||
+        text.startsWith("This conversation has an active cart")
+      ) {
+        continue;
+      }
+
+      if (currentTurn) {
+        turns.push(currentTurn);
+      }
+      currentTurn = {
+        userText: text.length > 80 ? `${text.slice(0, 77)}...` : text,
+        actions: []
+      };
+    } else if (msg?.role === "assistant" && currentTurn) {
+      const acts = extractActionsFromAssistant(msg);
+      for (const act of acts) {
+        if (!currentTurn.actions.includes(act)) {
+          currentTurn.actions.push(act);
+        }
+      }
+    }
+  }
+
+  if (currentTurn) {
+    turns.push(currentTurn);
+  }
+
+  const recentTurns = turns.slice(-maxEntries);
+  if (recentTurns.length === 0) return "";
+
+  return recentTurns
+    .map((t) => {
+      const actionStr = t.actions.length ? ` → ${t.actions.join(", ")}` : "";
+      return `- Shopper: "${t.userText}"${actionStr}`;
+    })
+    .join("\n");
+}
+
+/**
+ * Retains approximately the last N messages (default: 5) while ensuring
+ * tool-call pairs and message boundaries remain valid for the LLM.
+ * Returns both the recent slice (for the active message array) and older slice (for summary).
+ */
+function trimToRecentMessages(messages = [], maxMessages = 5) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { recent: [], older: [] };
+  }
+  if (maxMessages <= 0 || messages.length <= maxMessages) {
+    return { recent: messages, older: [] };
+  }
+
+  let startIndex = messages.length - maxMessages;
+
+  // If the window starts on a 'tool' message, include the preceding 'assistant' tool caller
+  while (startIndex > 0 && messages[startIndex]?.role === "tool") {
+    startIndex -= 1;
+  }
+
+  // If the window starts on an 'assistant' message, include the preceding 'user' prompt for context
+  if (
+    startIndex > 0 &&
+    messages[startIndex]?.role === "assistant" &&
+    messages[startIndex - 1]?.role === "user"
+  ) {
+    startIndex -= 1;
+  }
+
+  return {
+    recent: messages.slice(startIndex),
+    older: messages.slice(0, startIndex)
+  };
 }
 
 /**

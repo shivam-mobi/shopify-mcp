@@ -21,9 +21,13 @@ export function createGeminiService(apiKey = process.env.GEMINI_API_KEY) {
     messages,
     promptType = AppConfig.api.defaultPromptType,
     tools,
-    conversationId = null
+    conversationId = null,
+    systemContext = ""
   }, streamHandlers) => {
-    const systemInstruction = getSystemPrompt(promptType);
+    const basePrompt = getSystemPrompt(promptType);
+    const systemInstruction = systemContext
+      ? `${basePrompt}\n\n${systemContext}`
+      : basePrompt;
     const contents = convertMessagesToGemini(messages);
     const geminiTools = convertToolsToGemini(tools);
 

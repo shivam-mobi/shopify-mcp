@@ -15,9 +15,13 @@ export function createClaudeService(apiKey = process.env.CLAUDE_API_KEY) {
     messages,
     promptType = AppConfig.api.defaultPromptType,
     tools,
-    conversationId = null
+    conversationId = null,
+    systemContext = ""
   }, streamHandlers) => {
-    const systemInstruction = getSystemPrompt(promptType);
+    const basePrompt = getSystemPrompt(promptType);
+    const systemInstruction = systemContext
+      ? `${basePrompt}\n\n${systemContext}`
+      : basePrompt;
     const request = {
       model: providerConfig.model,
       max_tokens: AppConfig.api.maxTokens,

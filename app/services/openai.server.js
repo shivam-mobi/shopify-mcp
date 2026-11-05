@@ -15,9 +15,13 @@ export function createOpenAIService(apiKey = process.env.OPENAI_API_KEY) {
     messages,
     promptType = AppConfig.api.defaultPromptType,
     tools,
-    conversationId = null
+    conversationId = null,
+    systemContext = ""
   }, streamHandlers) => {
-    const systemInstruction = getSystemPrompt(promptType);
+    const basePrompt = getSystemPrompt(promptType);
+    const systemInstruction = systemContext
+      ? `${basePrompt}\n\n${systemContext}`
+      : basePrompt;
     const openAiMessages = repairOpenAIToolCallSequence(
       repairToolMessageOrder(convertMessagesToOpenAI(messages, systemInstruction))
     );
@@ -160,6 +164,14 @@ function convertMessagesToOpenAI(messages = [], systemInstruction) {
 
   for (const message of messages) {
     const content = message.content;
+
+    if (message.role === "system") {
+      openAiMessages.push({
+        role: "system",
+        content: typeof content === "string" ? content : String(content ?? "")
+      });
+      continue;
+    }
 
     if (typeof content === "string") {
       openAiMessages.push({
