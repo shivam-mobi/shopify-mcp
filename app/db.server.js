@@ -257,6 +257,70 @@ export async function setConversationCatalogPaginationCursor(conversationId, cur
 }
 
 /**
+ * Get stored running LLM summary for this conversation.
+ * @param {string} conversationId
+ * @returns {Promise<string|null>}
+ */
+export async function getConversationSummary(conversationId) {
+  const state = await getConversationMemoryState(conversationId);
+  return state.summary;
+}
+
+/**
+ * Running shopper memory plus the last message id already included in it.
+ * @param {string} conversationId
+ * @returns {Promise<{ summary: string|null, throughMessageId: string|null }>}
+ */
+export async function getConversationMemoryState(conversationId) {
+  if (!conversationId) return { summary: null, throughMessageId: null };
+  try {
+    await createOrUpdateConversation(conversationId);
+    const row = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { summary: true, summaryThroughMessageId: true }
+    });
+    const summary =
+      typeof row?.summary === "string" && row.summary.trim() ? row.summary.trim() : null;
+    const throughMessageId =
+      typeof row?.summaryThroughMessageId === "string" && row.summaryThroughMessageId.trim()
+        ? row.summaryThroughMessageId.trim()
+        : null;
+    return { summary, throughMessageId };
+  } catch (error) {
+    console.error("Error reading conversation summary:", error);
+    return { summary: null, throughMessageId: null };
+  }
+}
+
+/**
+ * Save updated running LLM summary for this conversation.
+ * @param {string} conversationId
+ * @param {string|null} summary
+ * @param {string|null} [throughMessageId] last Message.id folded into this summary
+ */
+export async function setConversationSummary(conversationId, summary, throughMessageId = null) {
+  if (!conversationId) return;
+  try {
+    await createOrUpdateConversation(conversationId);
+    const value =
+      typeof summary === "string" && summary.trim() ? summary.trim() : null;
+    const through =
+      typeof throughMessageId === "string" && throughMessageId.trim()
+        ? throughMessageId.trim()
+        : null;
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: {
+        summary: value,
+        summaryThroughMessageId: value ? through : null
+      }
+    });
+  } catch (error) {
+    console.error("Error saving conversation summary:", error);
+  }
+}
+
+/**
  * Resolve the shopper id used as ShopperCart.id (localStorage shopper id).
  * Never use conversation id — that would create one cart per chat.
  */

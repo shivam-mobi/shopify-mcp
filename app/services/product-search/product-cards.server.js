@@ -114,6 +114,7 @@ export function formatProductCard(product, similarity = null) {
     description: product.description || "",
     vendor: product.brand?.name || "",
     brand: product.brand?.name || "",
+    gender: genderName || null,
     productType: product.productType?.name || "",
     product_type: product.productType?.name || "",
     fragrance_family: product.fragranceFamily?.name || null,

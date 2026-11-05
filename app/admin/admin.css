@@ -1960,6 +1960,14 @@ body.admin-body {
   min-height: 2.3em;
 }
 
+.storefront-product-subtitle {
+  font-size: 0.76rem;
+  font-weight: 500;
+  color: var(--text-dim, #6b7280);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+
 .storefront-product-price-row {
   display: flex;
   align-items: baseline;

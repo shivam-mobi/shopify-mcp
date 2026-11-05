@@ -10,11 +10,19 @@ import {
   getCustomerAccountUrls as getCustomerAccountUrlsFromDb,
   getConversationCartId,
   getConversationCustomerProfile,
-  getConversationCatalogPaginationCursor
+  getConversationCatalogPaginationCursor,
+  getConversationSummary,
+  getConversationMemoryState,
+  setConversationSummary
 } from "../db.server";
 import AppConfig from "../services/config.server";
 import { createSseStream } from "../services/streaming.server";
 import { createLlmService } from "../services/llm.server";
+import {
+  assistantText,
+  messagesNotInMemory,
+  updateShopperMemory
+} from "../services/conversation-memory.server";
 import { createToolService, normalizeCatalogSearchArgs } from "../services/tool.server";
 import {
   applyStoredCatalogPaginationCursor,
@@ -513,7 +521,7 @@ async function handleChatSession({
     const { recent, older } = trimToRecentMessages(conversationHistory, maxMessages);
     conversationHistory = recent;
 
-    // Merge customer, cart, earlier conversation summary, and turn-specific hints
+    // Merge customer, cart, LLM shopper memory, and turn-specific hints
     // into a unified system context instead of polluting the message history with pseudo-user turns.
     const systemContextSections = [];
     if (customerContextHint?.content) {
@@ -523,9 +531,10 @@ async function handleChatSession({
       systemContextSections.push(`### Cart Context:\n${activeCartContext.content}`);
     }
 
-    const olderSummary = buildOlderConversationSummary(older);
-    if (olderSummary) {
-      systemContextSections.push(`### Earlier Conversation Summary (for context):\n${olderSummary}`);
+    // Running shopper memory from the separate LLM call after each turn (searches, preferences, cart).
+    const savedMemory = await getConversationSummary(conversationId);
+    if (savedMemory) {
+      systemContextSections.push(`### Shopper Memory (earlier in this conversation):\n${savedMemory}`);
     }
 
     if (shippingAddressHint?.content) {
@@ -541,7 +550,7 @@ async function handleChatSession({
 
     if (totalLoadedMessages > conversationHistory.length) {
       console.log(
-        `[chat] context window optimized: trimmed from ${totalLoadedMessages} to ${conversationHistory.length} messages (last ~${maxMessages} messages, summarized ${older.length} older messages)`
+        `[chat] context window optimized: trimmed from ${totalLoadedMessages} to ${conversationHistory.length} messages (last ~${maxMessages}; ${older.length} older turns covered by shopper memory)`
       );
     }
 
@@ -550,6 +559,8 @@ async function handleChatSession({
     // When a tool already showed the apology via tool_error SSE, stop the turn
     // so the LLM does not repeat the same message as a second assistant bubble.
     let stopAfterToolError = false;
+    const turnToolCalls = [];
+    let finalReplyText = "";
 
     while (finalMessage.stop_reason !== "end_turn") {
       let cartMutatedThisTurn = false;
@@ -567,13 +578,16 @@ async function handleChatSession({
           // Handle text chunks
           onText: (textDelta) => {
             stream.sendMessage({
-              type: 'chunk',
+              type: "chunk",
               chunk: textDelta
             });
           },
 
           // Handle complete messages
           onMessage: (message) => {
+            const replyText = assistantText(message.content);
+            if (replyText) finalReplyText = replyText;
+
             conversationHistory.push({
               role: message.role,
               content: message.content
@@ -585,7 +599,7 @@ async function handleChatSession({
               });
 
             // Send a completion message
-            stream.sendMessage({ type: 'message_complete' });
+            stream.sendMessage({ type: "message_complete" });
           },
 
           // Handle tool use requests
@@ -603,6 +617,7 @@ async function handleChatSession({
               toolArgs = normalizeCatalogSearchArgs(toolArgs);
               content.input = toolArgs;
             }
+            turnToolCalls.push({ name: toolName, input: toolArgs });
 
             if (isCatalogSearchToolName(toolName)) {
               if (llmRequestedCatalogPaginationCursor(toolArgs)) {
@@ -881,6 +896,55 @@ async function handleChatSession({
       }
     }
 
+    // Not awaited: the shopper already has the reply; memory is ready for the next turn.
+    // Pass previous memory + only messages not yet folded into it (watermarked by message id).
+    (async () => {
+      try {
+        const state = await getConversationMemoryState(conversationId);
+        const latestHistory = await getConversationHistory(conversationId);
+        let pending = messagesNotInMemory(latestHistory, state.throughMessageId);
+
+        // Assistant saves are fire-and-forget; include this turn's reply if it is not in DB yet.
+        const last = pending[pending.length - 1];
+        const lastText = last ? assistantText(parseStoredMessageContent(last.content)) : "";
+        if (finalReplyText && lastText !== finalReplyText) {
+          pending = [
+            ...pending,
+            {
+              id: null,
+              role: "assistant",
+              content: JSON.stringify([
+                ...turnToolCalls.map((call, index) => ({
+                  type: "tool_use",
+                  id: `memory_tool_${index}`,
+                  name: call.name,
+                  input: call.input
+                })),
+                { type: "text", text: finalReplyText }
+              ])
+            }
+          ];
+        }
+
+        if (!pending.length) return;
+
+        const { memory, throughMessageId } = await updateShopperMemory({
+          conversationId,
+          previous: state.summary,
+          newMessages: pending
+        });
+        const lastIncludedId =
+          throughMessageId ||
+          [...latestHistory].reverse().find((message) => message?.id)?.id ||
+          null;
+        if (memory) {
+          await setConversationSummary(conversationId, memory, lastIncludedId);
+        }
+      } catch (error) {
+        console.error("[memory] update failed:", error?.message || error);
+      }
+    })();
+
     // Signal end of turn
     stream.sendMessage({ type: 'end_turn' });
 
@@ -1055,145 +1119,9 @@ function stripProductResultsBlocks(content) {
 }
 
 /**
- * Formats a concise 1-line action description for a tool call in older history.
- */
-function summarizeToolCallAction(name = "", rawArgs = {}) {
-  let args = rawArgs;
-  if (typeof args === "string") {
-    try {
-      args = JSON.parse(args);
-    } catch {
-      args = {};
-    }
-  }
-
-  if (name === "search_product" || name === "search_catalog" || name === "search_shop_catalog") {
-    const details = [];
-    if (args.query) details.push(`query: "${args.query}"`);
-    if (args.brand) details.push(`brand: ${args.brand}`);
-    if (args.gender) details.push(`gender: ${args.gender}`);
-    if (args.filters?.categories?.length) details.push(`categories: ${args.filters.categories.join(", ")}`);
-    if (args.categories?.length) details.push(`categories: ${args.categories.join(", ")}`);
-    if (args.filters?.kids || args.kids) details.push("kids");
-    if (args.on_sale) details.push("on sale");
-    return details.length ? `Searched products (${details.join(", ")})` : "Searched catalog";
-  }
-
-  if (name === "add_to_cart") {
-    return "Added item to cart";
-  }
-  if (name === "get_my_cart") {
-    return "Checked cart contents";
-  }
-  if (name === "get_product_details") {
-    return "Checked product details";
-  }
-  if (name === "set_cart_shipping") {
-    return "Updated shipping address";
-  }
-  if (name.includes("policy") || name.includes("articles") || name.includes("faqs")) {
-    return "Checked store policies/FAQ";
-  }
-  if (name === "get_customer_addresses") {
-    return "Looked up saved addresses";
-  }
-  return name ? `Used tool: ${name}` : "";
-}
-
-/**
- * Extracts distinct tool actions from an assistant message (supports both tool_calls and content blocks).
- */
-function extractActionsFromAssistant(msg = {}) {
-  const actions = [];
-  if (Array.isArray(msg.tool_calls)) {
-    for (const tc of msg.tool_calls) {
-      const name = tc?.function?.name || tc?.name || "";
-      const args = tc?.function?.arguments || tc?.input || {};
-      const action = summarizeToolCallAction(name, args);
-      if (action && !actions.includes(action)) actions.push(action);
-    }
-  }
-  if (Array.isArray(msg.content)) {
-    for (const block of msg.content) {
-      if (block?.type === "tool_use") {
-        const action = summarizeToolCallAction(block.name, block.input || {});
-        if (action && !actions.includes(action)) actions.push(action);
-      }
-    }
-  }
-  return actions;
-}
-
-/**
- * Builds a compact, deterministic bullet-point summary of older conversation turns
- * to preserve shopper intent and memory without bloating the context window with raw product JSON.
- */
-function buildOlderConversationSummary(olderMessages = [], maxEntries = 6) {
-  if (!Array.isArray(olderMessages) || olderMessages.length === 0) return "";
-
-  const turns = [];
-  let currentTurn = null;
-
-  for (const msg of olderMessages) {
-    if (msg?.role === "user") {
-      let text = "";
-      if (typeof msg.content === "string") {
-        text = msg.content.trim();
-      } else if (Array.isArray(msg.content)) {
-        text = msg.content
-          .map((b) => (typeof b === "string" ? b : b?.text || ""))
-          .filter(Boolean)
-          .join(" ")
-          .trim();
-      }
-
-      // Skip internal payloads, tool responses, or system hints stored with user role
-      if (
-        !text ||
-        text.startsWith("[{") ||
-        text.startsWith("{\"status\"") ||
-        text.startsWith("The customer is a guest") ||
-        text.startsWith("This conversation has an active cart")
-      ) {
-        continue;
-      }
-
-      if (currentTurn) {
-        turns.push(currentTurn);
-      }
-      currentTurn = {
-        userText: text.length > 80 ? `${text.slice(0, 77)}...` : text,
-        actions: []
-      };
-    } else if (msg?.role === "assistant" && currentTurn) {
-      const acts = extractActionsFromAssistant(msg);
-      for (const act of acts) {
-        if (!currentTurn.actions.includes(act)) {
-          currentTurn.actions.push(act);
-        }
-      }
-    }
-  }
-
-  if (currentTurn) {
-    turns.push(currentTurn);
-  }
-
-  const recentTurns = turns.slice(-maxEntries);
-  if (recentTurns.length === 0) return "";
-
-  return recentTurns
-    .map((t) => {
-      const actionStr = t.actions.length ? ` → ${t.actions.join(", ")}` : "";
-      return `- Shopper: "${t.userText}"${actionStr}`;
-    })
-    .join("\n");
-}
-
-/**
  * Retains approximately the last N messages (default: 5) while ensuring
  * tool-call pairs and message boundaries remain valid for the LLM.
- * Returns both the recent slice (for the active message array) and older slice (for summary).
+ * Older turns are covered by the LLM shopper memory, not a JS action list.
  */
 function trimToRecentMessages(messages = [], maxMessages = 5) {
   if (!Array.isArray(messages) || messages.length === 0) {

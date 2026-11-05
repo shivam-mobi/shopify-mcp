@@ -543,6 +543,36 @@ function StorefrontProductSection({ products }) {
               .replace(/\s+/g, " ")
               .trim();
 
+            let gender = String(p.gender || "").trim();
+            if (!gender && Array.isArray(p.tags)) {
+              const genderTag = p.tags.find(
+                (t) => typeof t === "string" && (/^gender_/i.test(t) || /^GENDER_/i.test(t))
+              );
+              if (genderTag) {
+                gender = genderTag.replace(/^gender_/i, "").replace(/^GENDER_/i, "");
+              }
+            }
+            let formattedGender = "";
+            if (gender) {
+              const gLower = gender.toLowerCase();
+              if (gLower === "men" || gLower === "man") formattedGender = "For Men";
+              else if (gLower === "women" || gLower === "woman") formattedGender = "For Women";
+              else if (gLower === "unisex") formattedGender = "For Unisex";
+              else if (gLower === "kids" || gLower === "kid") formattedGender = "For Kids";
+              else if (gLower === "boys" || gLower === "boy") formattedGender = "For Boys";
+              else if (gLower === "girls" || gLower === "girl") formattedGender = "For Girls";
+              else if (/^for\s+/i.test(gender)) formattedGender = gender;
+              else formattedGender = `For ${gender.charAt(0).toUpperCase() + gender.slice(1)}`;
+            }
+            let type = String(p.product_type || p.productType || p.fragrance_type || "").trim();
+            if (type) {
+              type = type
+                .replace(/\b\w/g, (char) => char.toUpperCase())
+                .replace(/\s*[-–—]?\s*(for\s+(men|women|unisex|kids|boys|girls)|men|women|unisex)\s*$/i, "")
+                .trim();
+            }
+            const subtitle = type && formattedGender ? `${type} - ${formattedGender}` : type || formattedGender || "";
+
             return (
               <div
                 key={key}
@@ -577,6 +607,9 @@ function StorefrontProductSection({ products }) {
                   <h3 className="storefront-product-title" title={title}>
                     {title}
                   </h3>
+                  {subtitle && (
+                    <p className="storefront-product-subtitle">{subtitle}</p>
+                  )}
                   <div className="storefront-product-price-row">
                     <span className="storefront-product-price">{price}</span>
                     {p.compareAtPrice && (

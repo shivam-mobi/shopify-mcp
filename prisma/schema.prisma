@@ -57,6 +57,8 @@ model Conversation {
   id                      String    @id
   shopperId               String? // ShopperCart.id (localStorage shopper id)
   catalogPaginationCursor String? // Last search_catalog pagination.cursor for this thread
+  summary                 String?   @db.Text // Running LLM summary of shopper preferences and context
+  summaryThroughMessageId String? // Last Message.id already folded into summary
   messages                Message[]
   createdAt               DateTime  @default(now())
   updatedAt               DateTime  @updatedAt

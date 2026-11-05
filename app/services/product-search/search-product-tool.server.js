@@ -92,7 +92,8 @@ export function getSearchProductTools() {
           query: {
             type: "string",
             description:
-              "Descriptive words only, e.g. 'fresh citrus summer', 'warm vanilla date night', 'light blue'. Omit when the ask is only filters/sort. " +
+              "Descriptive words only: scent, notes, mood, season, occasion (e.g. 'vanilla caramel', 'fresh citrus summer', 'warm woody date night', 'light blue'). " +
+              "All desired fragrance notes go here, never in filters. Omit when the ask is only filters/sort. " +
               "Never put what the shopper does NOT want here; that goes in filters.exclude."
           },
           sort: {
@@ -128,12 +129,6 @@ export function getSearchProductTools() {
                 description: "e.g. Eau de Parfum, Eau de Toilette, Body Spray, Gift Set, Body Lotion."
               },
               fragrance_family: { type: "string", description: "e.g. Floral, Fresh, Woody, Oriental, Citrus." },
-              scent_type: { type: "string", description: "e.g. Fruity Florals, Woody Spicy." },
-              notes: {
-                type: "array",
-                items: { type: "string" },
-                description: "Notes the shopper asked for, e.g. ['vanilla', 'oud']."
-              },
               exclude: {
                 type: "array",
                 items: { type: "string" },

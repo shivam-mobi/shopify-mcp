@@ -184,8 +184,15 @@ export function parseSearchProductArgs(input = {}) {
   const price = parsePriceRange(filters.price, filters);
 
   const legacyWords = asList(filters.must_match || filters.mustMatch);
+  const legacyNotes = asList(filters.notes);
+  const legacyScentType = filters.scent_type || filters.scentType ? [String(filters.scent_type || filters.scentType).trim()] : [];
   const kidsFromLegacy = legacyWords.some((word) => KIDS_WORDS.has(word.toLowerCase()));
-  const queryParts = [String(catalog.query || "").trim(), ...legacyWords.filter((w) => !KIDS_WORDS.has(w.toLowerCase()))];
+  const queryParts = [
+    String(catalog.query || "").trim(),
+    ...legacyNotes,
+    ...legacyScentType,
+    ...legacyWords.filter((w) => !KIDS_WORDS.has(w.toLowerCase()))
+  ];
 
   let limit = Number(pagination.limit);
   if (!Number.isFinite(limit) || limit < 1) limit = SEARCH_TUNING.defaultLimit;
@@ -203,8 +210,8 @@ export function parseSearchProductArgs(input = {}) {
       brand: String(filters.brand || "").trim(),
       productType: String(filters.product_type || filters.productType || "").trim(),
       fragranceFamily: String(filters.fragrance_family || filters.fragranceFamily || "").trim(),
-      scentType: String(filters.scent_type || filters.scentType || "").trim(),
-      notes: asList(filters.notes),
+      scentType: "",
+      notes: [],
       categories: [
         ...new Set([filters.categories, filters.category, filters.collection].flatMap(asList).map(normalizeCategory))
       ],
@@ -464,8 +471,7 @@ async function resolveFilters(index, filters) {
 
   const facetFilters = [
     ["product_type", "productType", "product_type"],
-    ["fragrance_family", "fragranceFamily", "fragrance_family"],
-    ["scent_type", "scentType", "scent_type"]
+    ["fragrance_family", "fragranceFamily", "fragrance_family"]
   ];
   for (const [key, argKey, field] of facetFilters) {
     if (!filters[argKey]) continue;
@@ -475,19 +481,6 @@ async function resolveFilters(index, filters) {
       applied[key] = filters[argKey];
     } else {
       unresolved.push(filters[argKey]);
-    }
-  }
-
-  if (filters.notes.length) {
-    const values = new Set();
-    for (const note of filters.notes) {
-      const matches = await resolveFacet(index, "notes", note);
-      if (matches.length) matches.forEach((value) => values.add(value));
-      else unresolved.push(note);
-    }
-    if (values.size) {
-      clauses.push({ key: "notes", expr: inList("notes", [...values]) });
-      applied.notes = filters.notes;
     }
   }
 
@@ -673,11 +666,12 @@ async function relevanceProbe(index, { query, vector, clauses }) {
     cutoffs.push(keywordTop - tuning.keywordWindow);
   }
   if (semanticTop != null) cutoffs.push(semanticTop - tuning.semanticWindow);
+  const midCutoff = cutoffs.length ? cutoffs.reduce((sum, val) => sum + val, 0) / cutoffs.length : null;
   return {
     keywordTop,
     semanticTop,
     keywordConfident,
-    threshold: cutoffs.length ? Number(Math.max(tuning.minScore, Math.min(...cutoffs)).toFixed(4)) : null,
+    threshold: midCutoff != null ? Number(Math.max(tuning.minScore, midCutoff).toFixed(4)) : null,
     keywordHits: keywordResponse.hits,
     keywordMs: keywordResponse.processingTimeMs
   };

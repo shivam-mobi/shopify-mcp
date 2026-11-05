@@ -1594,6 +1594,19 @@
   text-decoration: underline;
 }
 
+.shop-ai-product-subtitle {
+  margin: 0 0 6px;
+  font-size: 11px;
+  line-height: 1.35;
+  font-weight: 400;
+  color: #4B5563;
+}
+
+.shop-ai-product-card--detail .shop-ai-product-subtitle {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
 .shop-ai-product-vendor,
 .shop-ai-product-brand {
   margin: 0 0 4px;

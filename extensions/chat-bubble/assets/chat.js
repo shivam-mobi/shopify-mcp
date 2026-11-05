@@ -4585,6 +4585,51 @@
         return row;
       },
 
+      formatSubtitle: function(product) {
+        if (!product) return '';
+
+        // 1. Resolve gender from product.gender or tags
+        let gender = String(product.gender || '').trim();
+        if (!gender && Array.isArray(product.tags)) {
+          const genderTag = product.tags.find(
+            (t) => typeof t === 'string' && (/^gender_/i.test(t) || /^GENDER_/i.test(t))
+          );
+          if (genderTag) {
+            gender = genderTag.replace(/^gender_/i, '').replace(/^GENDER_/i, '');
+          }
+        }
+
+        let formattedGender = '';
+        if (gender) {
+          const gLower = gender.toLowerCase();
+          if (gLower === 'men' || gLower === 'man') formattedGender = 'For Men';
+          else if (gLower === 'women' || gLower === 'woman') formattedGender = 'For Women';
+          else if (gLower === 'unisex') formattedGender = 'For Unisex';
+          else if (gLower === 'kids' || gLower === 'kid') formattedGender = 'For Kids';
+          else if (gLower === 'boys' || gLower === 'boy') formattedGender = 'For Boys';
+          else if (gLower === 'girls' || gLower === 'girl') formattedGender = 'For Girls';
+          else if (/^for\s+/i.test(gender)) formattedGender = gender;
+          else formattedGender = `For ${gender.charAt(0).toUpperCase() + gender.slice(1)}`;
+        }
+
+        // 2. Resolve product type
+        let type = String(
+          product.product_type || product.productType || product.fragrance_type || ''
+        ).trim();
+        if (type) {
+          type = type
+            .replace(/\b\w/g, (char) => char.toUpperCase())
+            .replace(/\s*[-–—]?\s*(for\s+(men|women|unisex|kids|boys|girls)|men|women|unisex)\s*$/i, '')
+            .trim();
+        }
+
+        // 3. Combine: "Eau De Parfum - For Men" or "For Men"
+        if (type && formattedGender) {
+          return `${type} - ${formattedGender}`;
+        }
+        return type || formattedGender || '';
+      },
+
       createFragranceProfile: function(product) {
         if (!this.shouldShowDetailProfile(product)) return null;
 
@@ -4925,6 +4970,14 @@
         }
 
         info.appendChild(title);
+
+        const subtitleText = ShopAIChat.Product.formatSubtitle(product);
+        if (subtitleText) {
+          const subtitleEl = document.createElement('p');
+          subtitleEl.classList.add('shop-ai-product-subtitle');
+          subtitleEl.textContent = subtitleText;
+          info.appendChild(subtitleEl);
+        }
 
         if (
           ShopAIChat.Product.shouldShowDetailProfile(product) &&
