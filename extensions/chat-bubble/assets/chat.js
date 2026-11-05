@@ -4740,19 +4740,67 @@
           card.classList.add('shop-ai-product-card--detail');
         }
 
+        const isVariantAvailable = (variant) => {
+          if (!variant) {
+            const qty = typeof product.inventoryQuantity === 'number' ? product.inventoryQuantity : null;
+            return (
+              product.inStock !== false &&
+              product.availableForSale !== false &&
+              qty !== 0
+            );
+          }
+          if (variant.available === false) return false;
+          if (variant.inStock === false) return false;
+          if (variant.availableForSale === false) return false;
+          if (typeof variant.inventoryQuantity === 'number' && variant.inventoryQuantity === 0) {
+            return false;
+          }
+          return true;
+        };
+
         const variants = Array.isArray(product.variants) ? product.variants.filter(Boolean) : [];
         const preferredVariantId = String(
           product.variantId || product.variant_id || product.id || ''
         ).trim();
-        let selectedVariant =
-          (preferredVariantId &&
-            variants.find((variant) => {
+
+        const normalizeOfferStr = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+        const targetOffer = String(product.applicable_offer || product.applicableOffer || '').trim();
+        const targetOfferNorm = normalizeOfferStr(targetOffer);
+
+        const variantHasOffer = (v) => {
+          if (!v) return false;
+          const vOfferNorm = normalizeOfferStr(v.applicable_offer || v.applicableOffer);
+          if (!vOfferNorm) return false;
+          return targetOfferNorm ? vOfferNorm === targetOfferNorm : true;
+        };
+
+        const preferredVariant = preferredVariantId
+          ? variants.find((variant) => {
               const id = String(variant.id || variant.variantId || variant.variant_id || '').trim();
-              return id && id === preferredVariantId;
-            })) ||
-          variants.find((variant) => variant.available !== false && variant.inStock !== false) ||
-          variants[0] ||
-          null;
+              return (
+                id &&
+                (id === preferredVariantId ||
+                  id.replace(/\D+/g, '') === preferredVariantId.replace(/\D+/g, ''))
+              );
+            })
+          : null;
+
+        let selectedVariant = null;
+        if (preferredVariant) {
+          selectedVariant = preferredVariant;
+        } else if (targetOfferNorm) {
+          selectedVariant =
+            variants.find((v) => isVariantAvailable(v) && variantHasOffer(v)) ||
+            variants.find((v) => variantHasOffer(v)) ||
+            null;
+        }
+
+        if (!selectedVariant) {
+          selectedVariant =
+            variants.find((v) => isVariantAvailable(v)) ||
+            variants[0] ||
+            null;
+        }
 
         // Create image container
         const imageContainer = document.createElement('div');
@@ -4761,8 +4809,12 @@
         // Add product image or placeholder
         const image = document.createElement('img');
         image.src =
+          selectedVariant?.images?.[0]?.url ||
           selectedVariant?.image_url ||
-          product.image_url ||
+          selectedVariant?.image?.url ||
+          variants[0]?.images?.[0]?.url ||
+          variants[0]?.image_url ||
+          variants[0]?.image?.url ||
           'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png';
         image.alt = product.title;
         image.onerror = function() {
@@ -4771,23 +4823,27 @@
         };
         imageContainer.appendChild(image);
 
-        const offerLabel = ShopAIChat.Product.formatOfferLabel(product);
-        if (offerLabel) {
-          const badge = document.createElement('div');
+        const productHasAnyOffer =
+          variants.some((v) => Boolean(v.applicable_offer || v.applicableOffer)) ||
+          Boolean(product.applicable_offer || product.applicableOffer);
+
+        let badge = null;
+        let deal = null;
+        let mix = null;
+        if (productHasAnyOffer) {
+          badge = document.createElement('div');
           badge.classList.add('shop-ai-product-offer');
-          badge.setAttribute('aria-label', `${offerLabel.deal} MIX & Match`);
+          badge.style.display = 'none';
           const icon = document.createElement('span');
           icon.classList.add('shop-ai-product-offer-icon');
           icon.setAttribute('aria-hidden', 'true');
           icon.textContent = '%';
           const text = document.createElement('span');
           text.classList.add('shop-ai-product-offer-text');
-          const deal = document.createElement('span');
+          deal = document.createElement('span');
           deal.classList.add('shop-ai-product-offer-deal');
-          deal.textContent = offerLabel.deal;
-          const mix = document.createElement('span');
+          mix = document.createElement('span');
           mix.classList.add('shop-ai-product-offer-mix');
-          mix.textContent = offerLabel.mix;
           text.appendChild(deal);
           text.appendChild(mix);
           badge.appendChild(icon);
@@ -4832,21 +4888,24 @@
           title.textContent = productTitle;
         }
 
-        let productHref = '';
-        if (product.url) {
-          productHref = product.url;
-          if (productHref.includes('yourstore.com')) {
+        function resolveHref(rawUrl) {
+          let href = String(rawUrl || '').trim();
+          if (!href) return '';
+          if (href.includes('yourstore.com')) {
             const storefrontOrigin = (window.shopChatConfig && window.shopChatConfig.storefrontUrl)
               ? String(window.shopChatConfig.storefrontUrl).replace(/\/+$/, '')
               : window.location.origin;
-            productHref = productHref.replace(/https?:\/\/(?:www\.)?yourstore\.com/gi, storefrontOrigin);
-          } else if (productHref.startsWith('/')) {
+            href = href.replace(/https?:\/\/(?:www\.)?yourstore\.com/gi, storefrontOrigin);
+          } else if (href.startsWith('/')) {
             const storefrontOrigin = (window.shopChatConfig && window.shopChatConfig.storefrontUrl)
               ? String(window.shopChatConfig.storefrontUrl).replace(/\/+$/, '')
               : window.location.origin;
-            productHref = storefrontOrigin + productHref;
+            href = storefrontOrigin + href;
           }
+          return href;
         }
+
+        let productHref = resolveHref(selectedVariant?.url || product.url);
 
         if (productHref) {
           title.classList.add('shop-ai-product-title--link');
@@ -4997,32 +5056,20 @@
         actions.appendChild(buyNowButton);
         info.appendChild(actions);
 
-        const isVariantAvailable = (variant) => {
-          if (!variant) {
-            const qty = typeof product.inventoryQuantity === 'number' ? product.inventoryQuantity : null;
-            return (
-              product.inStock === true &&
-              product.availableForSale !== false &&
-              qty !== 0
-            );
-          }
-          if (variant.available === false) return false;
-          if (variant.inStock === false) return false;
-          if (variant.availableForSale === false) return false;
-          if (typeof variant.inventoryQuantity === 'number' && variant.inventoryQuantity === 0) {
-            return false;
-          }
-          return true;
-        };
-
         const applySelectedVariant = (variant) => {
           selectedVariant = variant || null;
           const available = isVariantAvailable(selectedVariant);
 
-          const nextPrice = selectedVariant?.price || product.price || 'Price not available';
+          let nextPrice = selectedVariant?.price || product.price || 'Price not available';
+          if (typeof nextPrice === 'object' && nextPrice?.amount != null) {
+            nextPrice = `$${(nextPrice.amount / 100).toFixed(2)}`;
+          }
           price.childNodes[0].textContent = nextPrice;
 
-          const compareAt = selectedVariant?.compareAtPrice || product.compareAtPrice || '';
+          let compareAt = selectedVariant?.compareAtPrice || product.compareAtPrice || '';
+          if (!compareAt && selectedVariant?.compare_at_price?.amount) {
+            compareAt = `$${(selectedVariant.compare_at_price.amount / 100).toFixed(2)}`;
+          }
           if (compareAt) {
             compare.textContent = ` ${compareAt}`;
             compare.style.display = '';
@@ -5031,8 +5078,31 @@
             compare.style.display = 'none';
           }
 
-          if (selectedVariant?.image_url) {
-            image.src = selectedVariant.image_url;
+          productHref = resolveHref(selectedVariant?.url || product.url);
+
+          const variantImg =
+            selectedVariant?.images?.[0]?.url ||
+            selectedVariant?.image_url ||
+            selectedVariant?.image?.url;
+          if (variantImg) {
+            image.src = variantImg;
+          }
+
+          if (badge) {
+            const offerText = String(
+              selectedVariant?.applicable_offer || selectedVariant?.applicableOffer || ''
+            ).trim();
+            const currentOffer = offerText
+              ? ShopAIChat.Product.formatOfferLabel({ applicable_offer: offerText })
+              : null;
+            if (currentOffer) {
+              deal.textContent = currentOffer.deal;
+              mix.textContent = currentOffer.mix;
+              badge.setAttribute('aria-label', `${currentOffer.deal} MIX & Match`);
+              badge.style.display = '';
+            } else {
+              badge.style.display = 'none';
+            }
           }
 
           const buyNowUrl =
@@ -5074,7 +5144,13 @@
 
           if (variants.length > 1) {
             variantButtons.forEach((chip) => {
-              const isSelected = chip.dataset.variantId === (selectedVariant?.id || '');
+              const chipId = String(chip.dataset.variantId || '').trim();
+              const selId = String(selectedVariant?.id || selectedVariant?.variantId || '').trim();
+              const isSelected = Boolean(
+                chipId &&
+                  selId &&
+                  (chipId === selId || chipId.replace(/\D+/g, '') === selId.replace(/\D+/g, ''))
+              );
               chip.classList.toggle('is-selected', isSelected);
               chip.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
             });

@@ -41,7 +41,7 @@ export async function printSearchProductConsole({
   console.log("");
   (result.products || []).forEach((product, i) => {
     const price = product.variants?.[0]?.price?.amount;
-    const listPrice = product.variants?.[0]?.list_price?.amount;
+    const listPrice = product.variants?.[0]?.compare_at_price?.amount;
     const discount = listPrice && price && listPrice > price ? Math.round((1 - price / listPrice) * 100) : null;
     const discountStr = discount ? ` (${discount}% off)` : "";
     const matchTag = product.match_type ? ` [${product.match_type}]` : "";
@@ -67,104 +67,105 @@ export async function printSearchProductConsole({
   }
 
   const queryText = (debug.query || payload.query || "").trim();
-  if (queryText) {
-    try {
-      const index = getProductsIndex();
-      const filter =
-        debug.attempts?.[0]?.filter ||
-        (debug.filter?.every?.((f) => !f.endsWith("…")) ? debug.filter : ["in_stock = true"]);
-      const vector = await generateEmbedding(queryText);
+  try {
+    const index = getProductsIndex();
+    const filter =
+      debug.attempts?.[0]?.filter ||
+      (debug.filter?.every?.((f) => !f.endsWith("…")) ? debug.filter : ["in_stock = true"]);
+    const vector = queryText ? await generateEmbedding(queryText) : null;
 
-      const [keywordRes, vectorRes] = await Promise.all([
-        index.search(queryText, {
-          filter,
-          limit: 10,
-          showRankingScore: true,
-          showRankingScoreDetails: true,
-          attributesToRetrieve: [
-            "id",
-            "title",
-            "brand",
-            "price",
-            "popularity",
-            "rating",
-            "review_count",
-            "notes"
-          ]
-        }),
-        vector
-          ? index.search(queryText, {
-              filter,
-              limit: 10,
-              showRankingScore: true,
-              showRankingScoreDetails: true,
-              hybrid: { embedder: PRODUCT_EMBEDDER, semanticRatio: 1 },
-              vector,
-              attributesToRetrieve: [
-                "id",
-                "title",
-                "brand",
-                "price",
-                "popularity",
-                "rating",
-                "review_count",
-                "notes"
-              ]
-            })
-          : Promise.resolve({ hits: [] })
-      ]);
+    const [keywordRes, vectorRes] = await Promise.all([
+      index.search(queryText, {
+        filter,
+        limit: 10,
+        showRankingScore: true,
+        showRankingScoreDetails: true,
+        attributesToRetrieve: [
+          "id",
+          "title",
+          "brand",
+          "price",
+          "popularity",
+          "rating",
+          "review_count",
+          "notes"
+        ]
+      }),
+      vector
+        ? index.search(queryText, {
+            filter,
+            limit: 10,
+            showRankingScore: true,
+            showRankingScoreDetails: true,
+            hybrid: { embedder: PRODUCT_EMBEDDER, semanticRatio: 1 },
+            vector,
+            attributesToRetrieve: [
+              "id",
+              "title",
+              "brand",
+              "price",
+              "popularity",
+              "rating",
+              "review_count",
+              "notes"
+            ]
+          })
+        : Promise.resolve({ hits: [] })
+    ]);
 
-      const formatHits = (hits) =>
-        hits.map((h, i) => {
-          const words = h._rankingScoreDetails?.words;
-          const matchingWords = words?.matchingWords ?? null;
-          const maxMatchingWords = words?.maxMatchingWords ?? null;
-          return {
-            rank: i + 1,
-            id: h.id,
-            title: h.title,
-            brand: h.brand,
-            price: h.price != null ? `$${Number(h.price).toFixed(2)}` : null,
-            similarity: h._rankingScore != null ? Number(h._rankingScore.toFixed(4)) : null,
-            matchingWords,
-            maxMatchingWords,
-            reviews: h.review_count ?? 0
-          };
-        });
+    const formatHits = (hits) =>
+      hits.map((h, i) => {
+        const words = h._rankingScoreDetails?.words;
+        const matchingWords = words?.matchingWords ?? null;
+        const maxMatchingWords = words?.maxMatchingWords ?? null;
+        return {
+          rank: i + 1,
+          id: h.id,
+          title: h.title,
+          brand: h.brand,
+          price: h.price != null ? `$${Number(h.price).toFixed(2)}` : null,
+          similarity: h._rankingScore != null ? Number(h._rankingScore.toFixed(4)) : null,
+          matchingWords,
+          maxMatchingWords,
+          reviews: h.review_count ?? 0
+        };
+      });
 
-      const keywordFormatted = formatHits(keywordRes.hits || []);
-      const vectorFormatted = formatHits(vectorRes.hits || []);
+    const keywordFormatted = formatHits(keywordRes.hits || []);
+    const vectorFormatted = formatHits(vectorRes.hits || []);
 
-      const wordInfo = (h) =>
-        h.matchingWords != null && h.maxMatchingWords != null
-          ? ` (words: ${h.matchingWords}/${h.maxMatchingWords})`
-          : "";
+    const wordInfo = (h) =>
+      h.matchingWords != null && h.maxMatchingWords != null
+        ? ` (words: ${h.matchingWords}/${h.maxMatchingWords})`
+        : "";
 
-      console.log("\n============================================================");
-      console.log("1. KEYWORD SEARCH RESULTS (Pure text matching)");
-      console.log("============================================================");
-      if (!keywordFormatted.length) {
-        console.log("  (no keyword hits)");
-      } else {
-        keywordFormatted.forEach((h) => {
-          console.log(
-            `  ${String(h.rank).padStart(2)}. [${h.similarity ?? "-"}]${wordInfo(h)} ${h.title} — ${h.brand}  ${h.price || ""} (${h.reviews} reviews)`
-          );
-        });
-      }
+    console.log("\n============================================================");
+    console.log("1. KEYWORD SEARCH RESULTS (Pure text matching & filters)");
+    console.log("============================================================");
+    if (!keywordFormatted.length) {
+      console.log("  (no keyword hits)");
+    } else {
+      keywordFormatted.forEach((h) => {
+        console.log(
+          `  ${String(h.rank).padStart(2)}. [${h.similarity ?? "-"}]${wordInfo(h)} ${h.title} — ${h.brand}  ${h.price || ""} (${h.reviews} reviews)`
+        );
+      });
+    }
 
-      console.log("\n============================================================");
-      console.log("2. VECTOR SEARCH RESULTS (Pure semantic embedding)");
-      console.log("============================================================");
-      if (!vectorFormatted.length) {
-        console.log("  (no vector hits)");
-      } else {
-        vectorFormatted.forEach((h) => {
-          console.log(
-            `  ${String(h.rank).padStart(2)}. [${h.similarity ?? "-"}]${wordInfo(h)} ${h.title} — ${h.brand}  ${h.price || ""} (${h.reviews} reviews)`
-          );
-        });
-      }
+    console.log("\n============================================================");
+    console.log("2. VECTOR SEARCH RESULTS (Pure semantic embedding)");
+    console.log("============================================================");
+    if (!queryText) {
+      console.log("  (no text query to embed — filter search only)");
+    } else if (!vectorFormatted.length) {
+      console.log("  (no vector hits)");
+    } else {
+      vectorFormatted.forEach((h) => {
+        console.log(
+          `  ${String(h.rank).padStart(2)}. [${h.similarity ?? "-"}]${wordInfo(h)} ${h.title} — ${h.brand}  ${h.price || ""} (${h.reviews} reviews)`
+        );
+      });
+    }
 
       console.log("\n============================================================");
       console.log("3. FINAL COMBINED RESULTS (Keywords first, then Vector similar)");
@@ -211,5 +212,5 @@ export async function printSearchProductConsole({
     } catch (err) {
       console.warn("[search_product_console] failed to generate breakdown:", err.message);
     }
-  }
 }
+

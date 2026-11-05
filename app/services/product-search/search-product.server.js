@@ -31,7 +31,10 @@ export const APPLICABLE_OFFERS = ["3 For $20", "2 For $25", "BOGO 50", "3 For $9
 const GENDER_VALUES = {
   men: ["men", "unisex", "unknown"],
   women: ["women", "unisex", "unknown"],
-  unisex: ["unisex", "unknown"]
+  unisex: ["unisex", "unknown"],
+  boys: ["boys", "kids"],
+  girls: ["girls", "kids"],
+  kids: ["kids", "boys", "girls"]
 };
 
 const KIDS_WORDS = new Set(SEARCH_TUNING.kidsWords);
@@ -69,7 +72,7 @@ function asList(value) {
 /** "$1,250.50", "100 USD", 100 → dollars; anything else (or <= 0) → null. */
 function parseDollars(value) {
   if (value == null || value === "" || typeof value === "boolean") return null;
-  const text = String(value).replace(/[$,\s]|usd/gi, "");
+  const text = String(value).replace(/[$,\s]|usd|<=|>=|<|>|under|below|above|over/gi, "").trim();
   if (!/^\d+(\.\d+)?$/.test(text)) return null;
   const n = Number(text);
   return n > 0 ? n : null;
@@ -91,6 +94,8 @@ export function parsePriceRange(price, fallback = {}) {
     const [low, high] = price.split(/\s*(?:-|to)\s*/i);
     min = parseDollars(low);
     max = parseDollars(high);
+  } else if (typeof price === "string" && /(?:>=|>|above|over)\s*\$?\d/i.test(price)) {
+    min = parseDollars(price);
   } else if (price != null) {
     max = parseDollars(price);
   }
@@ -111,6 +116,9 @@ function normalizeGender(value) {
   const g = String(value || "").toLowerCase().trim();
   if (["men", "man", "mens", "male"].includes(g)) return "men";
   if (["women", "woman", "womens", "female"].includes(g)) return "women";
+  if (["boys", "boy", "son"].includes(g)) return "boys";
+  if (["girls", "girl", "daughter"].includes(g)) return "girls";
+  if (["kids", "kid", "child", "children"].includes(g)) return "kids";
   if (g === "unisex") return "unisex";
   return null;
 }
@@ -227,16 +235,19 @@ function moveIntentWordsOutOfQuery(query, sort) {
       hinted = hinted || hint;
       continue;
     }
+    if (GENDER_WORDS.has(key)) {
+      genders.add(GENDER_WORDS.get(key));
+      if (KIDS_WORDS.has(key)) {
+        kids = true;
+      }
+      continue;
+    }
     if (KIDS_WORDS.has(key)) {
       kids = true;
       continue;
     }
     if (SHARED_WORDS.has(key)) {
       shared = true;
-      continue;
-    }
-    if (GENDER_WORDS.has(key)) {
-      genders.add(GENDER_WORDS.get(key));
       continue;
     }
     kept.push(word);
@@ -250,12 +261,12 @@ function moveIntentWordsOutOfQuery(query, sort) {
 }
 
 /**
- * Gender from the shopper's current message ("Versace for my wife") when the LLM sent none.
- * Only one gender, and not for couples / family / kids.
+ * Gender from the shopper's current message ("Versace for my wife", "perfume for my son") when the LLM sent none.
+ * Only one gender, and not for couples / family.
  */
 function genderFromShopperMessage(message) {
   const intent = moveIntentWordsOutOfQuery(String(message || ""), "relevance");
-  return intent.kids ? null : intent.gender;
+  return intent.gender || (intent.kids ? "kids" : null);
 }
 
 /** "perfumes for him" has nothing to search for once gender is a filter: browse instead. */
@@ -508,13 +519,14 @@ async function resolveFilters(index, filters) {
   }
   if (filters.price) {
     const { min, max } = filters.price;
+    const priceField = filters.applicableOffer ? "offer_variant_prices" : "variant_prices";
     // One condition on the array, so a single in-stock size must satisfy both bounds.
     const expr =
       min != null && max != null
-        ? `variant_prices ${min} TO ${max}`
+        ? `${priceField} ${min} TO ${max}`
         : min != null
-          ? `variant_prices >= ${min}`
-          : `variant_prices <= ${max}`;
+          ? `${priceField} >= ${min}`
+          : `${priceField} <= ${max}`;
     clauses.push({ key: "price", expr });
     applied.price = { min, max };
   }
@@ -545,31 +557,41 @@ const HIT_ATTRIBUTES = [
   "price",
   "max_price",
   "variant_prices",
+  "offer_variant_prices",
   "popularity",
   "rating",
   "review_count",
   "created_at",
-  "discount_percent"
+  "discount_percent",
+  "card"
 ];
 
 /** Cheapest / dearest in-stock size inside the budget: the price the shopper can actually pay. */
-function budgetPrice(hit, range, pick) {
-  const prices = (hit.variant_prices || []).filter((amount) => inPriceRange(amount, range));
+function budgetPrice(hit, range, pick, hasOffer = false) {
+  const source =
+    hasOffer && hit.offer_variant_prices?.length
+      ? hit.offer_variant_prices
+      : hit.variant_prices || [];
+  const prices = source.filter((amount) => inPriceRange(amount, range));
   if (!prices.length) return pick === "max" ? hit.max_price ?? hit.price : hit.price;
   return pick === "max" ? Math.max(...prices) : Math.min(...prices);
 }
 
 /** Applied in code; Array.sort is stable, so ties keep relevance order. */
-function sortComparator(sort, range) {
+function sortComparator(sort, range, hasOffer = false) {
   switch (sort) {
     case "popular":
       return (a, b) => (b.popularity ?? 0) - (a.popularity ?? 0);
     case "top_rated":
       return (a, b) => (b.rating ?? 0) - (a.rating ?? 0) || (b.review_count ?? 0) - (a.review_count ?? 0);
     case "price_asc":
-      return (a, b) => (budgetPrice(a, range, "min") ?? Infinity) - (budgetPrice(b, range, "min") ?? Infinity);
+      return (a, b) =>
+        (budgetPrice(a, range, "min", hasOffer) ?? Infinity) -
+        (budgetPrice(b, range, "min", hasOffer) ?? Infinity);
     case "price_desc":
-      return (a, b) => (budgetPrice(b, range, "max") ?? -Infinity) - (budgetPrice(a, range, "max") ?? -Infinity);
+      return (a, b) =>
+        (budgetPrice(b, range, "max", hasOffer) ?? -Infinity) -
+        (budgetPrice(a, range, "max", hasOffer) ?? -Infinity);
     case "newest":
       return (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0);
     case "discount_desc":
@@ -706,7 +728,8 @@ async function queryCandidates(index, { query, vector, clauses, withFacets = fal
  */
 async function searchWithQuery(index, { query, vector, clauses, sort, priceRange, limit, offset, withFacets }) {
   const candidates = await queryCandidates(index, { query, vector, clauses, withFacets });
-  const comparator = sortComparator(sort, priceRange);
+  const hasOffer = clauses.some((clause) => clause.key === "applicable_offer");
+  const comparator = sortComparator(sort, priceRange, hasOffer);
   const ordered = [candidates.keyword, candidates.similar].flatMap((group) =>
     comparator ? [...group].sort(comparator) : group
   );
@@ -724,6 +747,7 @@ async function searchWithQuery(index, { query, vector, clauses, sort, priceRange
 /** Filter-only browse: Meilisearch sorts (popular by default) and pages. */
 async function browse(index, { clauses, sort, priceRange, limit, offset, withFacets }) {
   const resort = needsBudgetResort(sort, priceRange);
+  const hasOffer = clauses.some((clause) => clause.key === "applicable_offer");
   const response = await index.search("", {
     ...baseParams(clauses),
     hitsPerPage: resort ? SEARCH_TUNING.maxCandidates : limit,
@@ -732,7 +756,7 @@ async function browse(index, { clauses, sort, priceRange, limit, offset, withFac
     ...(withFacets ? { facets: SEARCH_TUNING.facets } : {})
   });
   const hits = resort
-    ? [...response.hits].sort(sortComparator(sort, priceRange)).slice(offset, offset + limit)
+    ? [...response.hits].sort(sortComparator(sort, priceRange, hasOffer)).slice(offset, offset + limit)
     : response.hits;
   return {
     hits,
@@ -870,10 +894,11 @@ export async function searchProducts(input = {}, options = {}) {
   if (intent.kids) args.filters.kids = true;
   if (intent.gender && !args.filters.gender) args.filters.gender = intent.gender;
   const genderFromMessage =
-    !args.filters.gender && !args.filters.kids
+    !args.filters.gender
       ? genderFromShopperMessage(options.shopperMessage) || options.inheritedGender || null
       : null;
   if (genderFromMessage) args.filters.gender = genderFromMessage;
+  if (["boys", "girls", "kids"].includes(args.filters.gender)) args.filters.kids = true;
   const { clauses, applied, unresolved, brand, categoryHandles, exclusion } = await resolveFilters(index, args.filters);
   const remaining = [
     withoutExcludedWords(withoutBrandWords(intent.query, [args.filters.brand, brand?.value]), args.filters.exclude),
@@ -953,7 +978,41 @@ export async function searchProducts(input = {}, options = {}) {
   const hasNext = args.offset + hits.length < total;
   const scores = new Map(hits.map((hit) => [hit.id, Number((hit._rankingScore ?? 0).toFixed(4))]));
   const matchTypes = new Map(hits.filter((hit) => hit._match).map((hit) => [hit.id, { match_type: hit._match }]));
-  const products = await loadProductCards(hits.map((hit) => hit.id), scores, matchTypes);
+
+  const missingCardHits = hits.filter((hit) => !hit.card);
+  let sqlCards = [];
+  if (missingCardHits.length > 0) {
+    sqlCards = await loadProductCards(
+      missingCardHits.map((hit) => hit.id),
+      scores,
+      matchTypes
+    );
+  }
+  const sqlCardsById = new Map(missingCardHits.map((hit, i) => [hit.id, sqlCards[i]]));
+
+  const loadedProducts = hits
+    .map((hit) => {
+      if (hit.card) {
+        return {
+          ...hit.card,
+          similarity: scores.get(hit.id) ?? null,
+          ...matchTypes.get(hit.id)
+        };
+      }
+      return sqlCardsById.get(hit.id) || null;
+    })
+    .filter(Boolean);
+
+  const products =
+    applied.applicable_offer && applied.price
+      ? loadedProducts.filter((product) =>
+          (product.variants || []).some((variant) => {
+            const priceInDollars = Number(variant.price?.amount ?? 0) / 100;
+            const hasOffer = Boolean(variant.applicable_offer || variant.applicableOffer);
+            return hasOffer && inPriceRange(priceInDollars, applied.price);
+          })
+        )
+      : loadedProducts;
   debug.hits = hits.map((hit) => ({ id: hit.id, title: hit.title, score: scores.get(hit.id), match: hit._match }));
 
   const relaxed = attempt?.relaxed || [];

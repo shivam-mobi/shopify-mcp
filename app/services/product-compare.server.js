@@ -292,6 +292,9 @@ export function extractCatalogGenderFilter(toolArgs) {
   const g = String(raw).toLowerCase().trim();
   if (g === "men" || g === "man" || g === "mens") return "men";
   if (g === "women" || g === "woman" || g === "womens") return "women";
+  if (g === "boys" || g === "boy") return "boys";
+  if (g === "girls" || g === "girl") return "girls";
+  if (g === "kids" || g === "kid" || g === "children") return "kids";
   if (g === "unisex") return "unisex";
   if (g === "null" || g === "none" || g === "undefined") return null;
   return null;
@@ -313,6 +316,18 @@ export function productMatchesCatalogGender(product, genderFilter) {
     const v = normalizeGenderTagValue(t);
     return v === "women" || v === "woman" || v === "womens";
   });
+  const hasBoys = genderTags.some((t) => {
+    const v = normalizeGenderTagValue(t);
+    return v === "boys" || v === "boy";
+  });
+  const hasGirls = genderTags.some((t) => {
+    const v = normalizeGenderTagValue(t);
+    return v === "girls" || v === "girl";
+  });
+  const hasKids = genderTags.some((t) => {
+    const v = normalizeGenderTagValue(t);
+    return v === "kids" || v === "kid";
+  });
   const hasUnisex = genderTags.some((t) => normalizeGenderTagValue(t) === "unisex");
 
   if (genderFilter === "men") {
@@ -323,8 +338,19 @@ export function productMatchesCatalogGender(product, genderFilter) {
     if (hasMen && !hasWomen && !hasUnisex) return false;
     return hasWomen || hasUnisex;
   }
+  if (genderFilter === "boys") {
+    if (hasGirls && !hasBoys && !hasKids && !hasUnisex) return false;
+    return hasBoys || hasKids || hasUnisex;
+  }
+  if (genderFilter === "girls") {
+    if (hasBoys && !hasGirls && !hasKids && !hasUnisex) return false;
+    return hasGirls || hasKids || hasUnisex;
+  }
+  if (genderFilter === "kids") {
+    return hasKids || hasBoys || hasGirls || hasUnisex;
+  }
   if (genderFilter === "unisex") {
-    return hasUnisex || (!hasMen && !hasWomen);
+    return hasUnisex || (!hasMen && !hasWomen && !hasBoys && !hasGirls);
   }
   return true;
 }

@@ -110,13 +110,18 @@ export function getSearchProductTools() {
             properties: {
               gender: {
                 type: "string",
-                enum: ["men", "women", "unisex"],
+                enum: ["men", "women", "unisex", "boys", "girls", "kids"],
                 description:
-                  "From intent: he/him/husband/boyfriend/dad → men; she/her/wife/girlfriend/mom → women. " +
-                  "unisex only if said. Omit when unknown, for kids, or for more than one person (couple, his and hers, both of us, family). " +
+                  "From intent: he/him/husband/boyfriend/dad → men; she/her/wife/girlfriend/mom → women; " +
+                  "son/boy/grandson → boys; daughter/girl/granddaughter → girls; kids/children/child/baby → kids. " +
+                  "Never omit gender for son or daughter. unisex only if said. Omit gender only when unknown or for more than one person (couple, his and hers, both of us, family). " +
                   "Men/women results include unisex."
               },
-              kids: { type: "boolean", description: "true for kids/children/baby products." },
+              kids: {
+                type: "boolean",
+                description:
+                  "true for generic kids/children/baby products when specific gender (boys/girls) is not specified. Prefer gender: 'boys' for son/boy and gender: 'girls' for daughter/girl."
+              },
               brand: { type: "string", description: "Brand name as the shopper said it, e.g. 'Gucci'." },
               product_type: {
                 type: "string",
@@ -240,7 +245,7 @@ export async function callSearchProductTool(toolArgs = {}, options = {}) {
       return toolResult(repeat);
     }
     const { result, debug } = await searchProducts(toolArgs, {
-      shopperMessage: options.shopperMessage,
+      shopperMessage: options.shopperMessage || options.shopperText,
       inheritedGender: inheritedGender(options.conversationId, toolArgs)
     });
     rememberSearch(options.conversationId, toolArgs, result, debug.genderFromMessage);
@@ -249,6 +254,7 @@ export async function callSearchProductTool(toolArgs = {}, options = {}) {
       payload: toolArgs,
       result,
       debug,
+      shopperText: options.shopperMessage || options.shopperText,
       elapsedMs: Date.now() - started
     });
     return toolResult(result);

@@ -12,14 +12,17 @@ export const PRODUCT_INCLUDE = {
   productType: true,
   fragranceFamily: true,
   scentType: true,
-  applicableOffer: true,
-  variants: { orderBy: { position: "asc" } },
+  variants: {
+    include: { applicableOffer: true },
+    orderBy: { position: "asc" }
+  },
   images: { orderBy: { position: "asc" } },
   notes: {
     include: { note: true, type: true },
     orderBy: [{ type: { position: "asc" } }, { position: "asc" }]
   },
   categories: { include: { category: true } },
+  tags: { include: { tag: true } },
   review: true
 };
 
@@ -38,6 +41,12 @@ function notesByType(notes = []) {
   return grouped;
 }
 
+function numericShopifyId(value) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/(\d+)\s*$/);
+  return match ? match[1] : "";
+}
+
 function toVariantGid(shopifyVariantId) {
   const id = String(shopifyVariantId || "").trim();
   if (!id) return "";
@@ -54,30 +63,54 @@ export function formatProductCard(product, similarity = null) {
   const notes = notesByType(product.notes);
   const genderName = product.gender?.name || "";
   const genderTag = genderName ? `gender_${genderName.toLowerCase().replace(/\s+/g, "_")}` : null;
+  const productTags = (product.tags || []).map((t) => t.tag?.name).filter(Boolean);
+  const cardTags = [...new Set([genderTag, ...productTags].filter(Boolean))];
   const imageNodes = (product.images || []).filter((img) => img.url);
-  const variants = (product.variants || []).map((variant) => {
+  const productUrl = STOREFRONT_URL
+    ? `${STOREFRONT_URL}/products/${product.handle}`
+    : `/products/${product.handle}`;
+
+  const variants = (product.variants || []).map((variant, index) => {
     const amount = Math.round(Number(variant.price) * 100);
     const compare =
       variant.compareAtPrice != null ? Math.round(Number(variant.compareAtPrice) * 100) : null;
-    const image = imageNodes.find((img) => img.variantId === variant.id) || imageNodes[0];
+    const variantImageNodes = imageNodes.filter((img) => img.variantId === variant.id);
+    const assignedImages = variantImageNodes.length > 0 ? variantImageNodes : imageNodes;
+    const variantImages = assignedImages.map((img) => ({
+      url: img.url,
+      altText: img.alt || product.title,
+      position: img.position ?? 1
+    }));
+    const variantNumId = numericShopifyId(variant.shopifyVariantId);
+    const variantUrl = variantNumId ? `${productUrl}?variant=${variantNumId}` : productUrl;
+    const comparePriceObj =
+      compare != null && Number.isFinite(compare) ? { amount: compare, currency: "USD" } : null;
+
     return {
       id: toVariantGid(variant.shopifyVariantId),
       title: variant.title || variant.option1 || "",
       sku: variant.sku || "",
+      position: variant.position ?? index + 1,
       price: { amount, currency: "USD" },
-      list_price:
-        compare != null && Number.isFinite(compare) ? { amount: compare, currency: "USD" } : null,
+      compare_at_price: comparePriceObj,
+      applicable_offer: variant.applicableOffer?.name || null,
       availableForSale: variant.availableForSale === true,
       inventoryQuantity: variant.inventoryQuantity,
-      image: image?.url ? { url: image.url, altText: image.alt || product.title } : null
+      images: variantImages,
+      url: variantUrl
     };
   });
+
+  const activeOffer =
+    variants.find((v) => v.applicable_offer && v.availableForSale)?.applicable_offer ||
+    variants.find((v) => v.applicable_offer)?.applicable_offer ||
+    null;
 
   return {
     id: toProductGid(product.shopifyProductId),
     handle: product.handle,
     title: product.title,
-    url: STOREFRONT_URL ? `${STOREFRONT_URL}/products/${product.handle}` : `/products/${product.handle}`,
+    url: productUrl,
     description: product.description || "",
     vendor: product.brand?.name || "",
     brand: product.brand?.name || "",
@@ -85,15 +118,13 @@ export function formatProductCard(product, similarity = null) {
     product_type: product.productType?.name || "",
     fragrance_family: product.fragranceFamily?.name || null,
     scent_type: product.scentType?.name || null,
-    applicable_offer: product.applicableOffer?.name || null,
+    applicable_offer: activeOffer,
     key_notes: notes.key.join(", ") || null,
     top_notes: notes.top.join(", ") || null,
     middle_notes: notes.middle.join(", ") || null,
     base_notes: notes.base.join(", ") || null,
-    tags: genderTag ? [genderTag] : [],
+    tags: cardTags,
     availableForSale: variants.some((v) => v.availableForSale),
-    media: imageNodes.map((img) => ({ type: "image", url: img.url })),
-    images: imageNodes.map((img) => ({ url: img.url, alt: img.alt })),
     variants,
     average_rating: product.review ? Number(product.review.averageRating) : null,
     total_reviews: product.review ? Number(product.review.totalReviews) : null,
@@ -116,12 +147,6 @@ export async function loadProductCards(ids = [], scores = new Map(), extras = ne
     .map((id) => byId.get(id))
     .filter(Boolean)
     .map((product) => ({ ...formatProductCard(product, scores.get(product.id) ?? null), ...extras.get(product.id) }));
-}
-
-function numericShopifyId(value) {
-  const raw = String(value || "").trim();
-  const match = raw.match(/(\d+)\s*$/);
-  return match ? match[1] : "";
 }
 
 /**

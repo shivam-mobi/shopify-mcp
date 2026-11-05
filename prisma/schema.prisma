@@ -466,6 +466,34 @@ model ProductCategoryProduct {
   @@map("product_category_products")
 }
 
+/// Product tags lookup from Shopify tags.
+model ProductTag {
+  id        String              @id @default(uuid())
+  name      String              @unique
+  createdAt DateTime            @default(now()) @map("created_at")
+  updatedAt DateTime            @default(now()) @updatedAt @map("updated_at")
+
+  products  ProductTagProduct[]
+
+  @@map("product_tags")
+}
+
+/// Product-to-tag link.
+model ProductTagProduct {
+  id        String     @id @default(uuid())
+  productId String     @map("product_id")
+  product   Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tagId     String     @map("tag_id")
+  tag       ProductTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([productId, tagId])
+  @@index([tagId])
+  @@index([productId])
+  @@map("product_tag_products")
+}
+
 /// Offer label from custom.applicable_offer (e.g. "3 For $99", "BOGO 50").
 model ApplicableOffer {
   id         String    @id @default(uuid())
@@ -475,7 +503,7 @@ model ApplicableOffer {
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  products   Product[]
+  variants   ProductVariant[]
 
   @@map("applicable_offers")
 }
@@ -493,8 +521,6 @@ model Product {
   gender              ProductGender? @relation(fields: [genderId], references: [id], onDelete: SetNull)
   productTypeId       String?   @map("product_type_id")
   productType         ProductType? @relation(fields: [productTypeId], references: [id], onDelete: SetNull)
-  applicableOfferId   String?   @map("applicable_offer_id")
-  applicableOffer     ApplicableOffer? @relation(fields: [applicableOfferId], references: [id], onDelete: SetNull)
   fragranceFamilyId   String?   @map("fragrance_family_id")
   fragranceFamily     FragranceFamily? @relation(fields: [fragranceFamilyId], references: [id], onDelete: SetNull)
   scentTypeId         String?   @map("scent_type_id")
@@ -515,12 +541,12 @@ model Product {
   images              ProductImage[]
   review              ProductReview?
   categories          ProductCategoryProduct[]
+  tags                ProductTagProduct[]
 
   @@index([brandId])
   @@index([genderId])
   @@index([status])
   @@index([productTypeId])
-  @@index([applicableOfferId])
   @@index([fragranceFamilyId])
   @@index([scentTypeId])
   @@index([shopifyUpdatedAt])
@@ -585,6 +611,8 @@ model ProductVariant {
   barcode            String?
   price              Decimal  @db.Decimal(10, 2)
   compareAtPrice     Decimal? @map("compare_at_price") @db.Decimal(10, 2)
+  applicableOfferId  String?  @map("applicable_offer_id")
+  applicableOffer    ApplicableOffer? @relation(fields: [applicableOfferId], references: [id], onDelete: SetNull)
   availableForSale   Boolean  @default(false) @map("available_for_sale")
   inventoryQuantity  Int      @default(0) @map("inventory_quantity")
   position           Int      @default(1)
@@ -594,6 +622,7 @@ model ProductVariant {
   images             ProductImage[]
 
   @@index([shopifyProductId])
+  @@index([applicableOfferId])
   @@index([sku])
   @@index([barcode])
   @@map("product_variants")

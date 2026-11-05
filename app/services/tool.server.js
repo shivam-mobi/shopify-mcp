@@ -2,8 +2,8 @@
  * Tool Service
  * Manages tool execution and processing
  */
-import { saveMessage, setConversationCatalogPaginationCursor } from "../db.server";
-import AppConfig from "./config.server";
+import { saveMessage, setConversationCatalogPaginationCursor } from "../db.server.js";
+import AppConfig from "./config.server.js";
 import {
   extractCatalogPaginationCursorFromResponse,
   isCatalogSearchToolName
@@ -135,8 +135,18 @@ export function createToolService() {
 
       const sort = String(applied?.sort || toolArgs?.catalog?.sort || toolArgs?.sort || "").toLowerCase();
       const priceSort = sort === "price_asc" || sort === "price_desc" ? sort : null;
+      const offerFilter =
+        applied?.filters?.applicable_offer ||
+        applied?.filters?.applicableOffer ||
+        applied?.applicable_offer ||
+        applied?.applicableOffer ||
+        toolArgs?.filters?.applicable_offer ||
+        toolArgs?.filters?.applicableOffer ||
+        toolArgs?.applicable_offer ||
+        toolArgs?.applicableOffer ||
+        null;
       const formatted = catalogProducts
-        .map((product) => formatProductData(product, priceFilter, priceSort))
+        .map((product) => formatProductData(product, priceFilter, priceSort, offerFilter))
         .filter(Boolean);
       if (priceFilter && formatted.length < catalogProducts.length) {
         console.warn("[tool] price filter hid cards the search returned — index may be stale, run npm run meili:sync", {
@@ -369,9 +379,15 @@ export function createToolService() {
     }
 
     let compareAtPrice = null;
-    const listAmount = variant?.list_price?.amount ?? variant?.compareAtPrice?.amount;
+    const listAmount =
+      variant?.compare_at_price?.amount ??
+      variant?.list_price?.amount ??
+      variant?.compareAtPrice?.amount;
     const listCurrency =
-      variant?.list_price?.currency ?? variant?.compareAtPrice?.currency ?? priceCurrency;
+      variant?.compare_at_price?.currency ??
+      variant?.list_price?.currency ??
+      variant?.compareAtPrice?.currency ??
+      priceCurrency;
     if (listAmount != null && listCurrency && Number(listAmount) > 0) {
       compareAtPrice = `${listCurrency} ${formatMinorCurrencyAmount(listAmount, listCurrency)}`;
     }
@@ -383,10 +399,11 @@ export function createToolService() {
       "Option";
 
     const variantImage =
+      (Array.isArray(variant.images) && variant.images[0]?.url) ||
+      variant.image_url ||
+      variant.image?.url ||
       (Array.isArray(variant.media) &&
         variant.media.find((item) => item?.url && (!item.type || item.type === "image"))?.url) ||
-      variant.image?.url ||
-      variant.image_url ||
       null;
 
     const normalizedVariantId = resolveProductVariantId({
@@ -407,18 +424,22 @@ export function createToolService() {
       variantId: normalizedVariantId,
       variant_id: normalizedVariantId,
       checkout_url: variant.checkout_url || null,
+      url: variant.url || null,
       title: optionLabel,
       label: optionLabel,
+      position: variant.position ?? null,
       price,
       priceAmountCents:
         priceAmountCents != null && Number.isFinite(priceAmountCents)
           ? priceAmountCents
           : null,
       compareAtPrice,
+      applicable_offer: variant.applicable_offer || null,
       available: availability.availableForSale !== false && availability.inStock !== false,
       availableForSale: availability.availableForSale,
       inStock: availability.inStock,
       inventoryQuantity: availability.inventoryQuantity,
+      images: Array.isArray(variant.images) ? variant.images : (variantImage ? [{ url: variantImage, position: 1 }] : []),
       image_url: variantImage
     };
   };
@@ -430,7 +451,7 @@ export function createToolService() {
    * preselect the cheapest / dearest in-stock size so the card matches the list order.
    * All variants stay on the card (selectable).
    */
-  const formatProductData = (product, priceFilter = null, priceSort = null) => {
+  const formatProductData = (product, priceFilter = null, priceSort = null, offerFilter = null) => {
     const byPrice = (a, b) => {
       const diff =
         (a.priceAmountCents ?? Number.POSITIVE_INFINITY) -
@@ -447,39 +468,80 @@ export function createToolService() {
       .map((variant) => formatVariantOption(variant, product))
       .filter(Boolean);
 
+    const normalizeOffer = (val) => String(val || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const requestedOffer = offerFilter || null;
+    const productOffer = product.applicable_offer || product.applicableOffer || null;
+
+    const variantMatchesOffer = (v, offer) => {
+      if (!v) return false;
+      const vOffer = normalizeOffer(v.applicable_offer || v.applicableOffer);
+      if (!vOffer) return false;
+      if (!offer) return true;
+      return vOffer === normalizeOffer(offer);
+    };
+
     let selectedVariant = null;
 
     if (priceFilter) {
+      // 1. Budget is active (e.g. under $30 or $40)
       const inRangeAvailable = variants.filter(
         (variant) =>
           variant.available &&
           isPriceInFilterRange(variant.priceAmountCents, priceFilter)
       );
 
-      // No in-stock size within the requested budget/min → hide the card
+      // If no in-stock size is within the requested budget/min, drop this product
       if (inRangeAvailable.length === 0) {
         return null;
       }
 
-      selectedVariant = inRangeAvailable.slice().sort(byPrice)[0];
+      // If an offer was requested (or product has an offer), prefer an in-range size with that offer
+      const targetOffer = requestedOffer || productOffer;
+      const inRangeWithOffer = targetOffer
+        ? inRangeAvailable.filter((v) => variantMatchesOffer(v, targetOffer))
+        : [];
 
-      // Sort chips: in-range in-stock first (in the selection order), then the rest
+      if (inRangeWithOffer.length > 0) {
+        selectedVariant = inRangeWithOffer.slice().sort(byPrice)[0];
+      } else {
+        selectedVariant = inRangeAvailable.slice().sort(byPrice)[0];
+      }
+
+      // Sort chips: in-range in-stock first (in selection order), then the rest
       variants.sort((a, b) => {
-        const aIn =
-          a.available && isPriceInFilterRange(a.priceAmountCents, priceFilter);
-        const bIn =
-          b.available && isPriceInFilterRange(b.priceAmountCents, priceFilter);
+        const aIn = a.available && isPriceInFilterRange(a.priceAmountCents, priceFilter);
+        const bIn = b.available && isPriceInFilterRange(b.priceAmountCents, priceFilter);
         if (aIn !== bIn) return aIn ? -1 : 1;
         return byPrice(a, b);
       });
+    } else if (requestedOffer) {
+      // 2. No price filter, but the shopper specifically asked for a promotion (e.g. "2 for $75 offer")
+      const offerAvailable = variants.filter(
+        (variant) => variant.available && variantMatchesOffer(variant, requestedOffer)
+      );
+
+      if (offerAvailable.length > 0) {
+        selectedVariant = priceSort ? offerAvailable.slice().sort(byPrice)[0] : offerAvailable[0];
+      } else {
+        // If all sizes with the requested offer are OOS, still preselect it so user sees the deal and OOS status
+        const offerAny = variants.filter((v) => variantMatchesOffer(v, requestedOffer));
+        if (offerAny.length > 0) {
+          selectedVariant = offerAny[0];
+        }
+      }
     } else if (priceSort) {
+      // 3. Sorted by price (e.g. cheap to expensive)
       selectedVariant =
         variants.filter((variant) => variant.available).sort(byPrice)[0] ||
         variants[0] ||
         null;
     } else {
-      // Prefer first in-stock variant so cards don't default to an OOS size
+      // 4. Default browse / search: prefer variant with active offer if available, else first in-stock
+      const offerAvailable = productOffer
+        ? variants.filter((v) => v.available && variantMatchesOffer(v, productOffer))
+        : [];
       selectedVariant =
+        offerAvailable[0] ||
         variants.find((variant) => variant.available) ||
         variants[0] ||
         null;
@@ -632,7 +694,7 @@ export function createToolService() {
       match_type: product.match_type || null,
       fragrance_family: product.fragrance_family || null,
       scent_type: product.scent_type || null,
-      applicable_offer: product.applicable_offer || null,
+      applicable_offer: selectedVariant?.applicable_offer || product.applicable_offer || null,
       key_notes: product.key_notes || null,
       top_notes: product.top_notes || null,
       middle_notes: product.middle_notes || null,

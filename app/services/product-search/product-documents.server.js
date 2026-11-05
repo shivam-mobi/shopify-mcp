@@ -5,22 +5,11 @@
  */
 import prisma from "../../db.server.js";
 import { PRODUCT_EMBEDDER, PRODUCT_EMBEDDING_DIMENSIONS, POPULARITY } from "./products-index.config.js";
-import { isVariantInStock } from "./product-cards.server.js";
+import { isVariantInStock, formatProductCard, PRODUCT_INCLUDE } from "./product-cards.server.js";
 
 const DESCRIPTION_MAX_CHARS = 1200;
 
-const DOCUMENT_INCLUDE = {
-  brand: true,
-  gender: true,
-  productType: true,
-  fragranceFamily: true,
-  scentType: true,
-  applicableOffer: true,
-  variants: true,
-  notes: { include: { note: true, type: true } },
-  categories: { include: { category: true } },
-  review: true
-};
+const DOCUMENT_INCLUDE = PRODUCT_INCLUDE;
 
 /** Shopify tags that duplicate other fields or carry no meaning for search. */
 const SKIPPED_TAG_PATTERN =
@@ -109,6 +98,10 @@ export function buildProductDocument(product, vector, stats) {
     .filter((variant) => Number.isFinite(variant.price) && variant.price > 0);
   const prices = priced.map((variant) => variant.price);
   const price = prices.length ? Math.min(...prices) : null;
+  const offerPrices = (inStockVariants.length ? inStockVariants : variants)
+    .filter((variant) => Boolean(variant.applicableOfferId || variant.applicableOffer?.name))
+    .map((variant) => Number(variant.price))
+    .filter((amount) => Number.isFinite(amount) && amount > 0);
   const discounts = priced
     .filter((variant) => variant.compareAt && variant.compareAt > variant.price)
     .map((variant) => Math.round((1 - variant.price / variant.compareAt) * 100));
@@ -131,11 +124,16 @@ export function buildProductDocument(product, vector, stats) {
     title: product.title,
     brand: product.brand?.name || null,
     gender: gender || "unknown",
-    kids: lowerTags.some((tag) => tag === "gender_kids" || tag === "type_kids"),
+    kids:
+      ["boys", "girls", "kids"].includes(gender) ||
+      lowerTags.some((tag) => tag === "gender_kids" || tag === "type_kids" || tag.includes("kids")),
     product_type: product.productType?.name || null,
     fragrance_family: product.fragranceFamily?.name || null,
     scent_type: product.scentType?.name || null,
-    applicable_offer: product.applicableOffer?.name || null,
+    applicable_offer:
+      inStockVariants.find((v) => v.applicableOffer?.name)?.applicableOffer?.name ||
+      variants.find((v) => v.applicableOffer?.name)?.applicableOffer?.name ||
+      null,
     notes: unique((product.notes || []).map((row) => row.note?.name)),
     key_notes: unique(
       (product.notes || []).filter((row) => row.type?.code === "key").map((row) => row.note?.name)
@@ -148,6 +146,7 @@ export function buildProductDocument(product, vector, stats) {
     max_price: prices.length ? Math.max(...prices) : null,
     /** Every in-stock size's price, so a budget matches a product when any size fits it. */
     variant_prices: inStockVariants.length ? unique(prices) : [],
+    offer_variant_prices: unique(offerPrices),
     on_sale: discounts.length > 0,
     discount_percent: discounts.length ? Math.max(...discounts) : 0,
     in_stock: inStockVariants.length > 0,
@@ -157,6 +156,7 @@ export function buildProductDocument(product, vector, stats) {
     best_seller: bestSeller,
     popularity: popularityScore({ rating, reviews, bestSeller }, stats),
     created_at: Math.floor(new Date(product.createdAt).getTime() / 1000),
+    card: formatProductCard(product),
     _vectors: { [PRODUCT_EMBEDDER]: vector || null }
   };
 }

@@ -38,6 +38,7 @@ export const PRODUCTS_INDEX_SETTINGS = {
     "price",
     "max_price",
     "variant_prices",
+    "offer_variant_prices",
     "on_sale",
     "in_stock",
     "online_only",
@@ -233,7 +234,10 @@ export const SEARCH_TUNING = {
   /** Query words that set the gender filter when the LLM did not set it. */
   genderWords: {
     men: ["men", "mens", "man", "male", "him", "his", "he", "boyfriend", "husband", "dad", "father", "guy", "guys", "gentleman", "gents"],
-    women: ["women", "womens", "woman", "female", "her", "she", "ladies", "lady", "girlfriend", "wife", "mom", "mother", "gal", "gals"]
+    women: ["women", "womens", "woman", "female", "her", "she", "ladies", "lady", "girlfriend", "wife", "mom", "mother", "gal", "gals"],
+    boys: ["boy", "boys", "son", "grandson", "little boy"],
+    girls: ["girl", "girls", "daughter", "granddaughter", "little girl"],
+    kids: ["kid", "kids", "child", "children", "baby", "toddler"]
   },
   /** Safety net when the LLM leaves ranking words in the query instead of setting sort. */
   sortHints: {

@@ -534,6 +534,9 @@ function productsQuery(includeMetaobjectRefs) {
               position
               selectedOptions { name value }
               image { id url altText }
+              is_offer_applicable: metafield(namespace: "custom", key: "is_offer_applicable") {
+                value
+              }
             }
           }
           ${metafieldBlock}
@@ -849,7 +852,7 @@ async function syncNotes(productId, groups) {
   return count;
 }
 
-async function syncVariants(shopifyProductId, variants) {
+async function syncVariants(shopifyProductId, variants, offerId = null) {
   const keepIds = [];
   const imageToVariant = new Map();
 
@@ -860,6 +863,10 @@ async function syncVariants(shopifyProductId, variants) {
       variant.selectedOptions?.[0]?.value ||
       variant.title ||
       null;
+    const isOfferApplicable =
+      String(variant.is_offer_applicable?.value || "").toLowerCase() === "true";
+    const applicableOfferId = isOfferApplicable && offerId ? offerId : null;
+
     const row = await prisma.productVariant.upsert({
       where: { shopifyVariantId },
       update: {
@@ -870,6 +877,7 @@ async function syncVariants(shopifyProductId, variants) {
         barcode: variant.barcode || null,
         price: variant.price || "0.00",
         compareAtPrice: variant.compareAtPrice || null,
+        applicableOfferId,
         availableForSale: variant.availableForSale === true,
         inventoryQuantity: Number.isFinite(Number(variant.inventoryQuantity))
           ? Number(variant.inventoryQuantity)
@@ -885,6 +893,7 @@ async function syncVariants(shopifyProductId, variants) {
         barcode: variant.barcode || null,
         price: variant.price || "0.00",
         compareAtPrice: variant.compareAtPrice || null,
+        applicableOfferId,
         availableForSale: variant.availableForSale === true,
         inventoryQuantity: Number.isFinite(Number(variant.inventoryQuantity))
           ? Number(variant.inventoryQuantity)
@@ -1199,7 +1208,6 @@ async function upsertProduct(product, membership) {
     brandId: brand?.id || null,
     genderId: gender?.id || null,
     productTypeId: productType?.id || null,
-    applicableOfferId: offer?.id || null,
     fragranceFamilyId: family?.id || null,
     scentTypeId: scent?.id || null,
     status: String(product.status || "ACTIVE").toLowerCase(),
@@ -1214,7 +1222,7 @@ async function upsertProduct(product, membership) {
     create: { shopifyProductId, ...data }
   });
 
-  const imageToVariant = await syncVariants(shopifyProductId, product.variants?.nodes || []);
+  const imageToVariant = await syncVariants(shopifyProductId, product.variants?.nodes || [], offer?.id || null);
   await syncImages(saved.id, product.images?.nodes || [], imageToVariant);
   stats.notes += await syncNotes(saved.id, {
     key: keyNotes,

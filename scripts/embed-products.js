@@ -29,8 +29,10 @@ const PRODUCT_INCLUDE = {
   productType: true,
   fragranceFamily: true,
   scentType: true,
-  applicableOffer: true,
-  variants: { orderBy: { position: "asc" } },
+  variants: {
+    include: { applicableOffer: true },
+    orderBy: { position: "asc" }
+  },
   notes: {
     include: { note: true, type: true },
     orderBy: [{ type: { position: "asc" } }, { position: "asc" }]
@@ -83,7 +85,10 @@ function buildEmbeddingContent(product) {
   const categories = (product.categories || [])
     .map((row) => row.category?.name)
     .filter(Boolean);
-  const offer = product.applicableOffer?.name || product.applicableOffer?.offerText;
+  const offer =
+    product.variants?.find((v) => v.applicableOffer)?.applicableOffer?.name ||
+    product.variants?.find((v) => v.applicableOffer)?.applicableOffer?.offerText ||
+    null;
 
   const lines = [
     product.title,
